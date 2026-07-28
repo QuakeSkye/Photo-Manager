@@ -1,6 +1,6 @@
 # 本地 Fuji 照片管理器 v1 设计规格
 
-- 状态：评审后重写，待用户复核
+- 状态：需求已确认，进入分阶段实施
 - 日期：2026-07-28
 - 目标平台：Windows 10/11 x64 桌面
 - 技术路线：Tauri + React/TypeScript + Rust + SQLite
