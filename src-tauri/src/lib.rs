@@ -1,7 +1,9 @@
+pub mod cache;
 pub mod catalog;
 mod commands;
 pub mod db;
 pub mod domain;
+pub mod media;
 pub mod roots;
 pub mod safety;
 
@@ -23,7 +25,13 @@ pub fn run() {
             let app_data_directory = resolve_app_data_directory(application)?;
             let database = db::Database::open(&app_data_directory)?;
             let safety_state = safety::SafetyState::from_database_mode(database.mode());
-            application.manage(std::sync::Arc::new(database));
+            let database = std::sync::Arc::new(database);
+            let catalog = std::sync::Arc::new(catalog::CatalogService::new(database.clone()));
+            let scan_coordinator = catalog::ScanCoordinator::new(catalog.clone());
+            let _ = scan_coordinator.start_background_if_bound();
+            application.manage(database);
+            application.manage(catalog);
+            application.manage(scan_coordinator);
             application.manage(safety_state);
             Ok(())
         })

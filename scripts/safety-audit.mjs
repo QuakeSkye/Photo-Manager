@@ -11,6 +11,13 @@ const reviewedAllowlist = [
     reason:
       'Retention only removes enumerated .sqlite3 snapshots from the application-owned backup directory.',
   },
+  {
+    rule: 'rust-handle-delete',
+    path: 'src-tauri/src/cache/mod.rs',
+    excerpt: 'SetFileInformationByHandle(',
+    reason:
+      'Phase 1 cache eviction deletes only a registered CacheEntry through the same verified, write/delete-share-denying handle.',
+  },
 ];
 
 const rules = [
@@ -35,6 +42,22 @@ const rules = [
     id: 'rust-general-shell',
     include: ['.rs'],
     pattern: /std::process::Command|Command::new\s*\(/,
+  },
+  {
+    id: 'rust-handle-delete',
+    include: ['.rs'],
+    pattern: /SetFileInformationByHandle\s*\(/,
+  },
+  {
+    id: 'readonly-library-layer-write',
+    include: ['.rs'],
+    pathPrefixes: [
+      'src-tauri/src/catalog/',
+      'src-tauri/src/media/',
+      'src-tauri/src/roots/',
+    ],
+    pattern:
+      /\.write\s*\(\s*true\s*\)|\.append\s*\(\s*true\s*\)|\.truncate\s*\(\s*true\s*\)|\.create_new\s*\(\s*true\s*\)|fs::create_dir|fs::write|SetFileInformationByHandle/,
   },
 ];
 
@@ -62,15 +85,25 @@ async function walk(directory) {
       continue;
     }
 
+    const path = relative(root, absolute).replaceAll('\\', '/');
+    if (path.endsWith('_tests.rs')) {
+      continue;
+    }
     const extension = extname(entry.name);
-    const applicable = rules.filter((rule) => rule.include.includes(extension));
+    const applicable = rules.filter(
+      (rule) =>
+        rule.include.includes(extension) &&
+        (!rule.pathPrefixes ||
+          rule.pathPrefixes.some((prefix) => path.startsWith(prefix))),
+    );
     if (applicable.length === 0) {
       continue;
     }
 
-    const path = relative(root, absolute).replaceAll('\\', '/');
     const text = await readFile(absolute, 'utf8');
-    const lines = text.split(/\r?\n/u);
+    const productionText =
+      extension === '.rs' ? text.split(/\r?\n#\[cfg\(test\)\]/u)[0] : text;
+    const lines = productionText.split(/\r?\n/u);
 
     for (const rule of applicable) {
       lines.forEach((line, index) => {
@@ -117,7 +150,7 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 0,
+  phase: 1,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
@@ -133,7 +166,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: no forbidden filesystem, permanent-delete, overwrite-rename, or general-shell API was found in production paths.\n'
+    ? 'PASS: phase 1 read-only library boundaries and cache-only handle deletion passed the static safety audit.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

@@ -8,11 +8,18 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 1;
+pub const LATEST_SCHEMA_VERSION: u32 = 2;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
+pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
+
+const MIGRATIONS: &[(u32, &str)] = &[(1, MIGRATION_SQL), (2, PHASE_ONE_MIGRATION_SQL)];
 
 pub fn migration_checksum() -> String {
-    hex::encode(Sha256::digest(MIGRATION_SQL.as_bytes()))
+    migration_file_checksum(PHASE_ONE_MIGRATION_SQL)
+}
+
+fn migration_file_checksum(sql: &str) -> String {
+    hex::encode(Sha256::digest(sql.as_bytes()))
 }
 
 pub fn current_schema_version(connection: &Connection) -> Result<u32, DomainError> {
@@ -38,25 +45,25 @@ pub fn apply_pending_migrations(
         return Ok(());
     }
 
-    let checksum = migration_checksum();
+    let pending = MIGRATIONS
+        .iter()
+        .copied()
+        .filter(|(version, _)| *version > current)
+        .collect::<Vec<_>>();
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Exclusive)
         .map_err(map_sqlite_error)?;
-    transaction
-        .execute_batch(MIGRATION_SQL)
-        .map_err(map_sqlite_error)?;
-    transaction
-        .execute(
-            "INSERT INTO schema_migration(version, checksum, applied_at, app_build_hash)
-             VALUES (?1, ?2, ?3, ?4)",
-            (
-                i64::from(LATEST_SCHEMA_VERSION),
-                &checksum,
-                now_micros(),
-                build_hash,
-            ),
-        )
-        .map_err(map_sqlite_error)?;
+    for (version, sql) in pending {
+        let checksum = migration_file_checksum(sql);
+        transaction.execute_batch(sql).map_err(map_sqlite_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migration(version, checksum, applied_at, app_build_hash)
+                 VALUES (?1, ?2, ?3, ?4)",
+                (i64::from(version), &checksum, now_micros(), build_hash),
+            )
+            .map_err(map_sqlite_error)?;
+    }
     fault_injector.checkpoint(FaultPoint::SqliteBeforeCommit)?;
     transaction.commit().map_err(map_sqlite_error)?;
     fault_injector.checkpoint(FaultPoint::SqliteAfterCommit)?;
@@ -65,19 +72,20 @@ pub fn apply_pending_migrations(
 }
 
 pub fn verify_migration_history(connection: &Connection) -> Result<(), DomainError> {
-    let (version, checksum): (u32, String) = connection
-        .query_row(
-            "SELECT version, checksum FROM schema_migration ORDER BY version DESC LIMIT 1",
-            (),
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(map_sqlite_error)?;
-
-    if version != LATEST_SCHEMA_VERSION || checksum != migration_checksum() {
-        return Err(DomainError::new(
-            ErrorCode::ReadOnlySafeMode,
-            "数据库迁移记录与当前构建不一致，已关闭照片写入功能。",
-        ));
+    for (version, sql) in MIGRATIONS {
+        let checksum = connection
+            .query_row(
+                "SELECT checksum FROM schema_migration WHERE version=?1",
+                [i64::from(*version)],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if checksum != migration_file_checksum(sql) {
+            return Err(DomainError::new(
+                ErrorCode::ReadOnlySafeMode,
+                "数据库迁移记录与当前构建不一致，已关闭照片写入功能。",
+            ));
+        }
     }
 
     Ok(())
