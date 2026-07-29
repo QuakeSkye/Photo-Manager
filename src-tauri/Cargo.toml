@@ -1,0 +1,28 @@
+[package]
+name = "local-photo-manager"
+version = "0.1.0"
+description = "Local Fuji photo manager safety foundation"
+authors = ["Local Photo Manager Contributors"]
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "local_photo_manager"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+hex = "0.4"
+rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-single-instance = "2.4.3"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+

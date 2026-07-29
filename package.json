@@ -1,0 +1,47 @@
+{
+  "name": "local-photo-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "format": "prettier --write . && node scripts/run-cargo.mjs fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "prettier --check . && node scripts/run-cargo.mjs fmt --manifest-path src-tauri/Cargo.toml --check",
+    "lint": "eslint . --max-warnings 0 && tsc -b --pretty false",
+    "test": "vitest run",
+    "test:ui": "vitest run src",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:rust": "node scripts/run-cargo.mjs test --manifest-path src-tauri/Cargo.toml --all-targets",
+    "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1",
+    "clippy": "node scripts/run-cargo.mjs clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+    "safety:audit": "node scripts/safety-audit.mjs",
+    "tauri": "node scripts/run-tauri.mjs",
+    "check": "npm run format:check && npm run lint && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "2.11.4",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/node": "24.10.9",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "5.2.0",
+    "eslint": "10.8.0",
+    "jsdom": "30.0.1",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  }
+}

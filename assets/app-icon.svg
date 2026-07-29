@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Fuji 照片管理器">
+  <rect width="512" height="512" rx="112" fill="#ffffff"/>
+  <rect x="52" y="52" width="408" height="408" rx="76" fill="#f1f2f4" stroke="#202633" stroke-width="20"/>
+  <circle cx="256" cy="256" r="112" fill="#ffffff" stroke="#3d6dd8" stroke-width="28"/>
+  <circle cx="256" cy="256" r="42" fill="#202633"/>
+  <path d="M112 154h92l24-34h56l24 34h92" fill="none" stroke="#202633" stroke-linecap="round" stroke-linejoin="round" stroke-width="24"/>
+</svg>

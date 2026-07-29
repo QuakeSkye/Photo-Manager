@@ -1,0 +1,10 @@
+node_modules
+dist
+artifacts
+.superpowers
+*.log
+src-tauri/target
+src-tauri/gen
+docs/superpowers/specs
+docs/superpowers/plans
+package-lock.json
