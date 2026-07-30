@@ -1,89 +1,306 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { getSafetyStatus, type SafetyStatus } from '../shared/commands/safety';
+import { LibraryView } from '../features/library/LibraryView';
+import { ScanView } from '../features/scanning/ScanView';
+import { SettingsView } from '../features/settings/SettingsView';
+import {
+  getLibrarySnapshot,
+  getScanStatus,
+  saveViewingCursor,
+  type BindResult,
+  type LibrarySnapshot,
+  type SortMode,
+} from '../shared/commands/library';
 
-const unavailableStatus: SafetyStatus = {
-  phase: '阶段 0：工程与安全底座',
-  globalWriteGate: 'closed',
-  importGate: 'closed',
-  recycleGate: 'closed',
-  databaseMode: 'unavailable',
-  message: '正在连接本地安全核心…',
-};
+type Route = 'library' | 'settings' | 'scan';
 
 export function App() {
-  const [status, setStatus] = useState<SafetyStatus>(unavailableStatus);
+  const [sortMode, setSortMode] = useState<SortMode>('captureDesc');
+  const [snapshot, setSnapshot] = useState<LibrarySnapshot | null>(null);
+  const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
+  const [route, setRoute] = useState<Route>('library');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreAfterSettings = useRef<{
+    photoId: string | null;
+    route: Route;
+  } | null>(null);
+
+  const load = useCallback(
+    async (mode: SortMode, preserveSelection = false) => {
+      setError(null);
+      try {
+        const next = await getLibrarySnapshot(mode);
+        setSnapshot(next);
+        setSelectedPhotoId((current) => {
+          if (
+            preserveSelection &&
+            current !== null &&
+            next.photos.some((photo) => photo.photoId === current)
+          ) {
+            return current;
+          }
+          return next.restoredPhotoId ?? next.photos[0]?.photoId ?? null;
+        });
+        return next;
+      } catch (reason) {
+        setError(readError(reason));
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
-    let active = true;
+    void load(sortMode).then((next) => {
+      if (next === null) return;
+      const stalePendingRoute = window.location.hash.includes('pending-delete');
+      if (stalePendingRoute) window.history.replaceState(null, '', '#/library');
+      if (next.binding === null) {
+        setRoute('settings');
+      } else if (next.scan?.kind === 'full') {
+        setRoute('scan');
+      } else {
+        setRoute('library');
+      }
+    });
+  }, [load, sortMode]);
 
-    void getSafetyStatus()
-      .then((nextStatus) => {
-        if (active) {
-          setStatus(nextStatus);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setStatus({
-            ...unavailableStatus,
-            message:
-              '无法读取安全状态。照片写入功能保持关闭；请查看开发诊断日志。',
-          });
-        }
-      });
+  useEffect(() => {
+    if (
+      snapshot?.scan?.phase !== 'running' &&
+      snapshot?.scan?.phase !== 'cancelling'
+    )
+      return;
+    const timer = window.setInterval(() => {
+      void getScanStatus()
+        .then((scan) =>
+          setSnapshot((current) =>
+            current === null ? current : { ...current, scan },
+          ),
+        )
+        .catch((reason) => setError(readError(reason)));
+    }, 350);
+    return () => window.clearInterval(timer);
+  }, [snapshot?.scan?.phase]);
 
-    return () => {
-      active = false;
-    };
+  const selectedIndex =
+    snapshot?.photos.findIndex((photo) => photo.photoId === selectedPhotoId) ??
+    -1;
+  const selectIndex = useCallback((index: number) => {
+    setSnapshot((current) => {
+      if (current === null || current.photos.length === 0) return current;
+      const bounded = Math.max(0, Math.min(current.photos.length - 1, index));
+      setSelectedPhotoId(current.photos[bounded]?.photoId ?? null);
+      return current;
+    });
   }, []);
 
-  return (
-    <main className="safety-shell">
-      <section className="safety-card" aria-labelledby="app-title">
-        <p className="eyebrow">FUJI 图库</p>
-        <h1 id="app-title">本地照片管理器</h1>
-        <p className="phase">{status.phase}</p>
-        <p className="message">{status.message}</p>
-
-        <dl className="status-grid">
-          <StatusRow label="共享照片写入" value={status.globalWriteGate} />
-          <StatusRow label="导入执行" value={status.importGate} />
-          <StatusRow label="回收站执行" value={status.recycleGate} />
-          <StatusRow label="应用数据库" value={status.databaseMode} />
-        </dl>
-
-        <p className="scope-note">
-          当前版本不会扫描照片，不会读取内存卡，也不会导入、移动或删除任何照片。
-        </p>
-      </section>
-    </main>
+  const navigate = useCallback(
+    (delta: number) => {
+      if (selectedIndex < 0) return;
+      selectIndex(selectedIndex + delta);
+    },
+    [selectIndex, selectedIndex],
   );
-}
 
-interface StatusRowProps {
-  readonly label: string;
-  readonly value: string;
-}
+  useEffect(() => {
+    if (loading || route !== 'library' || selectedPhotoId === null) return;
+    void saveViewingCursor(sortMode, selectedPhotoId).catch((reason) =>
+      setError(readError(reason)),
+    );
+  }, [loading, route, selectedPhotoId, sortMode]);
 
-function StatusRow({ label, value }: StatusRowProps) {
-  const translated = value === 'closed' ? '已关闭' : translateDatabase(value);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        route !== 'library' ||
+        event.repeat ||
+        event.ctrlKey ||
+        event.altKey ||
+        event.metaKey
+      )
+        return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target instanceof Element &&
+        target.closest('input, select, textarea, button, [role="dialog"]') !==
+          null
+      )
+        return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        navigate(-1);
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        navigate(1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navigate, route]);
+
+  const openSettings = () => {
+    restoreAfterSettings.current = { photoId: selectedPhotoId, route };
+    setRoute('settings');
+  };
+
+  const closeSettings = () => {
+    const restore = restoreAfterSettings.current;
+    const target =
+      restore?.route === 'scan' && snapshot?.scan !== null ? 'scan' : 'library';
+    if (
+      restore !== null &&
+      restore.photoId !== null &&
+      snapshot?.photos.some((photo) => photo.photoId === restore.photoId)
+    ) {
+      setSelectedPhotoId(restore.photoId);
+    }
+    setRoute(target);
+    window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
+  };
+
+  const changeSort = (mode: SortMode) => {
+    setSortMode(mode);
+    setLoading(true);
+  };
+
+  const bindingStarted = async (result: BindResult) => {
+    const next = await load(sortMode);
+    if (next !== null) {
+      setSnapshot({
+        ...next,
+        scan: next.scan ?? {
+          kind: result.scanKind,
+          phase: 'running',
+          rootPath: result.displayPath,
+          directoriesChecked: 0,
+          filesChecked: 0,
+          discoveredAssets: 0,
+          ignoredFiles: 0,
+          warningCount: 0,
+          currentRelativePath: null,
+          errorMessage: null,
+        },
+      });
+      setRoute(result.scanKind === 'full' ? 'scan' : 'library');
+    }
+  };
+
+  const enterLibrary = async () => {
+    const next = await load(sortMode);
+    if (next !== null) setRoute('library');
+  };
+
+  if (loading && snapshot === null)
+    return (
+      <BootState title="正在打开图库" message="正在恢复只读索引与浏览位置…" />
+    );
+  if (snapshot === null) {
+    return (
+      <BootState
+        title="无法打开图库"
+        message={error ?? '本地只读核心暂时不可用。'}
+        error
+      />
+    );
+  }
 
   return (
-    <div className="status-row">
-      <dt>{label}</dt>
-      <dd>{translated}</dd>
+    <div className="app-shell" data-route={route}>
+      {error !== null && (
+        <div className="global-error" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            aria-label="关闭错误消息"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {route === 'library' && (
+        <LibraryView
+          snapshot={snapshot}
+          selectedPhotoId={selectedPhotoId}
+          selectedIndex={selectedIndex}
+          sortMode={sortMode}
+          settingsButtonRef={settingsButtonRef}
+          onSelectIndex={selectIndex}
+          onNavigate={navigate}
+          onSortChange={changeSort}
+          onOpenSettings={openSettings}
+          onOpenScan={() => setRoute('scan')}
+        />
+      )}
+      {route === 'settings' && (
+        <SettingsView
+          snapshot={snapshot}
+          isBindingGate={snapshot.binding === null}
+          settingsButtonRef={settingsButtonRef}
+          onBack={closeSettings}
+          onBindingStarted={(result) => void bindingStarted(result)}
+        />
+      )}
+      {route === 'scan' && snapshot.scan !== null && (
+        <ScanView
+          scan={snapshot.scan}
+          settingsButtonRef={settingsButtonRef}
+          onBack={() =>
+            setRoute(
+              snapshot.scan?.kind === 'full' &&
+                snapshot.scan.phase !== 'completed'
+                ? 'scan'
+                : 'library',
+            )
+          }
+          onEnterLibrary={() => void enterLibrary()}
+          onOpenSettings={openSettings}
+          onStatusChange={(scan) =>
+            setSnapshot((current) =>
+              current === null ? current : { ...current, scan },
+            )
+          }
+        />
+      )}
     </div>
   );
 }
 
-function translateDatabase(value: string): string {
-  switch (value) {
-    case 'read_write':
-      return '读写正常';
-    case 'read_only_safe':
-      return '只读安全模式';
-    default:
-      return '尚未连接';
+function BootState({
+  title,
+  message,
+  error = false,
+}: {
+  title: string;
+  message: string;
+  error?: boolean;
+}) {
+  return (
+    <main className="boot-state" aria-live="polite">
+      <div
+        className={error ? 'boot-mark boot-mark-error' : 'boot-mark'}
+        aria-hidden="true"
+      >
+        F
+      </div>
+      <h1>{title}</h1>
+      <p>{message}</p>
+    </main>
+  );
+}
+
+function readError(reason: unknown): string {
+  if (
+    typeof reason === 'object' &&
+    reason !== null &&
+    'userMessage' in reason
+  ) {
+    return String(reason.userMessage);
   }
+  return reason instanceof Error ? reason.message : '操作失败，请重试。';
 }

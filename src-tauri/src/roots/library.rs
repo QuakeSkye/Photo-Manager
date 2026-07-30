@@ -26,6 +26,13 @@ pub struct FujiLibraryBinding {
     pub created_new_library: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FujiLibraryCandidate {
+    pub display_path: String,
+    pub reconnects_existing_library: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct FujiLibraryService {
     database: Arc<Database>,
@@ -49,6 +56,49 @@ impl FujiLibraryService {
             ));
         }
         self.bind_probed(probe)
+    }
+
+    pub fn inspect_candidate(
+        &self,
+        selected_directory: &Path,
+    ) -> Result<FujiLibraryCandidate, DomainError> {
+        let probe = probe_directory(selected_directory)?;
+        if paths_overlap(&probe.absolute_path, &self.app_data_directory) {
+            return Err(DomainError::new(
+                ErrorCode::RootConflict,
+                "图库与应用数据目录不能重叠。",
+            ));
+        }
+        let reconnects_existing_library = if probe.strong_identity {
+            match &probe.directory_file_id {
+                Some(directory_id) => self
+                    .database
+                    .open_read_connection()?
+                    .query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM root_binding binding
+                            JOIN root ON root.root_id=binding.root_id
+                            JOIN library ON library.library_id=root.library_id
+                            JOIN volume_identity volume ON volume.volume_id=binding.volume_id
+                            WHERE root.root_kind='FujiLibrary'
+                              AND root.lifecycle!='Tombstoned'
+                              AND library.lifecycle!='Tombstoned'
+                              AND volume.strong_identity_key=?1
+                              AND binding.root_directory_file_id=?2
+                         )",
+                        (&probe.volume_identity_key, directory_id),
+                        |row| row.get(0),
+                    )
+                    .map_err(map_sqlite_error)?,
+                None => false,
+            }
+        } else {
+            false
+        };
+        Ok(FujiLibraryCandidate {
+            display_path: probe.absolute_path.to_string_lossy().into_owned(),
+            reconnects_existing_library,
+        })
     }
 
     pub fn verify_current(&self) -> Result<FujiLibraryBinding, DomainError> {

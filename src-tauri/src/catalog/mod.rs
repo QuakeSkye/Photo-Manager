@@ -18,8 +18,8 @@ use crate::{
     media::{MEDIA_PARSER_VERSION, PreviewState},
 };
 
-pub use coordinator::{BackgroundScan, ScanCoordinator};
-pub use scanner::{LibraryScanner, ScanIssue, ScanReport, ScanRequest};
+pub use coordinator::{BackgroundScan, ScanCoordinator, ScanKind, ScanPhase, ScanStatus};
+pub use scanner::{LibraryScanner, ScanIssue, ScanProgress, ScanReport, ScanRequest};
 pub use timeline::{SortMode, TimelinePhoto, ViewingCursor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -346,6 +346,76 @@ impl CatalogService {
                             result='Failed'
                      WHERE scan_run_id=?2 AND report_state='Open'",
                     (now, scan_run_id.as_bytes().as_slice()),
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+    }
+
+    pub fn interrupt_scan(
+        &self,
+        scan_run_id: ScanRunId,
+        observed_assets: usize,
+        ignored_files: usize,
+        skipped_reparse: usize,
+        errors: usize,
+    ) -> Result<ScanCompletion, DomainError> {
+        self.database.writer()?.transaction(move |transaction| {
+            let now = now_micros();
+            transaction
+                .execute(
+                    "UPDATE scan_run SET run_state='Interrupted', completed_at=?1,
+                            observed_assets=?2, ignored_files=?3, skipped_reparse=?4,
+                            error_count=?5
+                     WHERE scan_run_id=?6 AND run_state='Running'",
+                    rusqlite::params![
+                        now,
+                        to_i64(observed_assets)?,
+                        to_i64(ignored_files)?,
+                        to_i64(skipped_reparse)?,
+                        to_i64(errors)?,
+                        scan_run_id.as_bytes().as_slice(),
+                    ],
+                )
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute(
+                    "UPDATE operation_report SET report_state='Finalized', completed_at=?1,
+                            result='Cancelled', item_count=?2
+                     WHERE scan_run_id=?3 AND report_state='Open'",
+                    (
+                        now,
+                        to_i64(observed_assets)?,
+                        scan_run_id.as_bytes().as_slice(),
+                    ),
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(ScanCompletion {
+                observed_assets,
+                missing_assets: 0,
+                ignored_files,
+                skipped_reparse,
+                errors,
+            })
+        })
+    }
+
+    pub fn recover_interrupted_scans(&self) -> Result<(), DomainError> {
+        self.database.writer()?.transaction(|transaction| {
+            let now = now_micros();
+            transaction
+                .execute(
+                    "UPDATE scan_run SET run_state='Interrupted', completed_at=?1
+                     WHERE run_state='Running'",
+                    [now],
+                )
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute(
+                    "UPDATE operation_report SET report_state='Finalized', completed_at=?1,
+                            result='Cancelled'
+                     WHERE report_kind='Scan' AND report_state='Open'",
+                    [now],
                 )
                 .map_err(map_sqlite_error)?;
             Ok(())

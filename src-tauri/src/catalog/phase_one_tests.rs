@@ -192,6 +192,62 @@ fn repeat_scan_pairs_sorts_unknown_last_and_changes_no_original() {
 }
 
 #[test]
+fn cancelled_full_scan_keeps_partial_index_but_never_changes_originals_or_reconciles_missing() {
+    let fixture = fixture();
+    for index in 1..=4 {
+        fs::write(
+            fixture.library_path.join(format!("DSCF{index}.JPG")),
+            generated_jpeg(Some(&format!("2026:07:{index:02} 12:00:00"))),
+        )
+        .unwrap();
+    }
+    let before = tree_snapshot(&fixture.library_path);
+    let catalog = Arc::new(CatalogService::new(fixture.database.clone()));
+    let scanner = LibraryScanner::new(catalog.clone());
+    let mut cancellation_polls = 0;
+
+    let report = scanner
+        .scan_with_observer(
+            request(&fixture),
+            || {
+                cancellation_polls += 1;
+                cancellation_polls > 2
+            },
+            |_| {},
+        )
+        .unwrap();
+
+    assert!(report.cancelled);
+    assert!(report.completion.observed_assets > 0);
+    assert!(report.completion.observed_assets < 4);
+    assert_eq!(tree_snapshot(&fixture.library_path), before);
+    assert_eq!(
+        catalog
+            .timeline(fixture.binding.library_id, SortMode::CaptureDesc)
+            .unwrap()
+            .len(),
+        report.completion.observed_assets
+    );
+    let connection = fixture.database.open_read_connection().unwrap();
+    let run_state: String = connection
+        .query_row(
+            "SELECT run_state FROM scan_run ORDER BY started_at DESC LIMIT 1",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    let result: String = connection
+        .query_row(
+            "SELECT result FROM operation_report WHERE report_kind='Scan' ORDER BY started_at DESC LIMIT 1",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(run_state, "Interrupted");
+    assert_eq!(result, "Cancelled");
+}
+
+#[test]
 fn changed_pair_member_propagates_versions_and_conservative_split() {
     let fixture = fixture();
     let jpeg = generated_jpeg(Some("2026:07:29 12:00:00"));

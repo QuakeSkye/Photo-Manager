@@ -15,10 +15,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 hex = "0.4"
+base64 = "0.22"
 rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.3"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }

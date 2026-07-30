@@ -31,6 +31,19 @@ impl PreviewService {
         cache_kind: CacheKind,
         render_key: &[u8],
     ) -> Result<CacheEntryHandle, DomainError> {
+        let bytes = self.read_controlled(asset_id, asset_version)?;
+        self.cache
+            .get_or_create(asset_id, asset_version, cache_kind, render_key, &bytes)
+    }
+
+    /// Reads preview bytes only after resolving an AssetId + immutable version through the
+    /// catalog and re-validating the bound Root and file identity. No caller-controlled path is
+    /// accepted or returned.
+    pub fn read_controlled(
+        &self,
+        asset_id: AssetId,
+        asset_version: i64,
+    ) -> Result<Vec<u8>, DomainError> {
         let source = self.load_source(asset_id, asset_version)?;
         let root = probe_directory(&source.root_path)?;
         if root.directory_file_id != source.root_file_id
@@ -56,8 +69,7 @@ impl PreviewService {
         }
         let bytes = read_preview_bytes(&mut file, source.preview)?;
         drop(file);
-        self.cache
-            .get_or_create(asset_id, asset_version, cache_kind, render_key, &bytes)
+        Ok(bytes)
     }
 
     fn load_source(

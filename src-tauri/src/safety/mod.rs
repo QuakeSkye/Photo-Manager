@@ -34,12 +34,12 @@ impl SafetyState {
 
     pub fn status(&self) -> SafetyStatus {
         SafetyStatus {
-            phase: "阶段 0：工程与安全底座",
+            phase: "阶段 2：白色沉浸式只读浏览 UI",
             global_write_gate: GateState::Closed,
             import_gate: GateState::Closed,
             recycle_gate: GateState::Closed,
             database_mode: self.database_mode,
-            message: "阶段 0 安全壳已启动。照片写入功能默认且强制关闭。",
+            message: "只读浏览已启动。导入、外部工具与回收站执行保持关闭。",
         }
     }
 }

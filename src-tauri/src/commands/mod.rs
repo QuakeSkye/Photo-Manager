@@ -1,3 +1,5 @@
+pub(crate) mod library;
+
 use crate::safety::{SafetyState, SafetyStatus};
 
 #[tauri::command]

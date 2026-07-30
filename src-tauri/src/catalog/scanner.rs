@@ -38,6 +38,17 @@ pub struct ScanReport {
     pub completion: ScanCompletion,
     pub ignored_by_extension: BTreeMap<String, usize>,
     pub issues: Vec<ScanIssue>,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanProgress {
+    pub directories_checked: usize,
+    pub files_checked: usize,
+    pub observed_assets: usize,
+    pub ignored_files: usize,
+    pub warning_count: usize,
+    pub current_relative_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +62,19 @@ impl LibraryScanner {
     }
 
     pub fn scan(&self, request: ScanRequest) -> Result<ScanReport, DomainError> {
+        self.scan_with_observer(request, || false, |_| {})
+    }
+
+    pub fn scan_with_observer<C, O>(
+        &self,
+        request: ScanRequest,
+        mut cancelled: C,
+        mut observe: O,
+    ) -> Result<ScanReport, DomainError>
+    where
+        C: FnMut() -> bool,
+        O: FnMut(ScanProgress),
+    {
         let root_probe = probe_directory(&request.root_path)?;
         self.verify_binding(&request, &root_probe)?;
         let scan_run_id = self.catalog.begin_scan(
@@ -59,12 +83,34 @@ impl LibraryScanner {
             request.root_binding_id,
         )?;
         let mut state = ScanState::default();
-        let scan_result = self.walk_directory(&request, &root_probe, scan_run_id, &mut state);
+        let scan_result = self.walk_directory(
+            &request,
+            &root_probe,
+            scan_run_id,
+            &mut state,
+            &mut cancelled,
+            &mut observe,
+        );
         if let Err(error) = scan_result {
             let _ = self.catalog.fail_scan(scan_run_id);
             return Err(error);
         }
         let ignored_files = state.ignored_by_extension.values().sum();
+        if state.cancelled {
+            let completion = self.catalog.interrupt_scan(
+                scan_run_id,
+                state.observed.len(),
+                ignored_files,
+                state.skipped_reparse,
+                state.issues.len(),
+            )?;
+            return Ok(ScanReport {
+                completion,
+                ignored_by_extension: state.ignored_by_extension,
+                issues: state.issues,
+                cancelled: true,
+            });
+        }
         let completion = self.catalog.complete_scan_with_deferred(
             scan_run_id,
             &state.observed,
@@ -77,6 +123,7 @@ impl LibraryScanner {
             completion,
             ignored_by_extension: state.ignored_by_extension,
             issues: state.issues,
+            cancelled: false,
         })
     }
 
@@ -118,26 +165,49 @@ impl LibraryScanner {
         Ok(())
     }
 
-    fn walk_directory(
+    fn walk_directory<C, O>(
         &self,
         request: &ScanRequest,
         root_probe: &crate::roots::DirectoryProbe,
         scan_run_id: crate::domain::ScanRunId,
         state: &mut ScanState,
-    ) -> Result<(), DomainError> {
+        cancelled: &mut C,
+        observe: &mut O,
+    ) -> Result<(), DomainError>
+    where
+        C: FnMut() -> bool,
+        O: FnMut(ScanProgress),
+    {
         let mut stack = vec![request.root_path.clone()];
         while let Some(directory) = stack.pop() {
+            if cancelled() {
+                state.cancelled = true;
+                break;
+            }
+            state.directories_checked += 1;
+            state.current_relative_path = directory
+                .strip_prefix(&request.root_path)
+                .ok()
+                .map(|value| value.to_string_lossy().replace('/', "\\"))
+                .filter(|value| !value.is_empty());
+            observe(state.progress());
             let mut entries = fs::read_dir(&directory)
                 .map_err(scan_io_error)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(scan_io_error)?;
             entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
             for entry in entries.into_iter().rev() {
+                if cancelled() {
+                    state.cancelled = true;
+                    break;
+                }
+                state.files_checked += 1;
                 let path = entry.path();
                 let relative = path.strip_prefix(&request.root_path).map_err(|_| {
                     DomainError::new(ErrorCode::UnsafePath, "扫描路径离开了图库 Root。")
                 })?;
                 let display = relative.to_string_lossy().replace('/', "\\");
+                state.current_relative_path = Some(display.clone());
                 match path_is_reparse(&path) {
                     Ok(true) => {
                         state.skipped_reparse += 1;
@@ -276,6 +346,10 @@ impl LibraryScanner {
                         message: error.user_message,
                     }),
                 }
+                observe(state.progress());
+            }
+            if state.cancelled {
+                break;
             }
         }
         state.observed.sort_unstable();
@@ -293,6 +367,23 @@ struct ScanState {
     skipped_reparse: usize,
     deferred_path_keys: Vec<Vec<u8>>,
     issues: Vec<ScanIssue>,
+    directories_checked: usize,
+    files_checked: usize,
+    current_relative_path: Option<String>,
+    cancelled: bool,
+}
+
+impl ScanState {
+    fn progress(&self) -> ScanProgress {
+        ScanProgress {
+            directories_checked: self.directories_checked,
+            files_checked: self.files_checked,
+            observed_assets: self.observed.len(),
+            ignored_files: self.ignored_by_extension.values().sum(),
+            warning_count: self.issues.len(),
+            current_relative_path: self.current_relative_path.clone(),
+        }
+    }
 }
 
 fn is_application_partial(path: &Path) -> bool {

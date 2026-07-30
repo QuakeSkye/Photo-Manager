@@ -12,6 +12,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(
             |application, _arguments, _working_directory| {
                 if let Some(window) = application.get_webview_window("main") {
@@ -27,15 +28,40 @@ pub fn run() {
             let safety_state = safety::SafetyState::from_database_mode(database.mode());
             let database = std::sync::Arc::new(database);
             let catalog = std::sync::Arc::new(catalog::CatalogService::new(database.clone()));
+            catalog.recover_interrupted_scans()?;
             let scan_coordinator = catalog::ScanCoordinator::new(catalog.clone());
+            let library_service = std::sync::Arc::new(roots::FujiLibraryService::new(
+                database.clone(),
+                app_data_directory.clone(),
+            ));
+            let cache_service = std::sync::Arc::new(cache::CacheService::new(
+                database.clone(),
+                app_data_directory,
+                safety::FaultInjector::default(),
+            ));
+            let preview_service =
+                std::sync::Arc::new(cache::PreviewService::new(database.clone(), cache_service));
             let _ = scan_coordinator.start_background_if_bound();
             application.manage(database);
             application.manage(catalog);
+            application.manage(library_service);
+            application.manage(preview_service);
             application.manage(scan_coordinator);
             application.manage(safety_state);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![commands::get_safety_status])
+        .invoke_handler(tauri::generate_handler![
+            commands::get_safety_status,
+            commands::library::get_library_snapshot,
+            commands::library::get_photo_detail,
+            commands::library::get_photo_preview,
+            commands::library::save_viewing_cursor,
+            commands::library::validate_library_folder,
+            commands::library::bind_library_folder,
+            commands::library::get_scan_status,
+            commands::library::cancel_library_scan,
+            commands::library::retry_library_scan,
+        ])
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application");
 

@@ -20,6 +20,13 @@ const reviewedAllowlist = [
   },
 ];
 
+const reviewedPermissions = new Map([
+  [
+    'dialog:allow-open',
+    'Phase 2 uses only the native folder picker; the selected path is revalidated by the Rust Root service before binding.',
+  ],
+]);
+
 const rules = [
   {
     id: 'frontend-general-fs-shell',
@@ -137,7 +144,8 @@ const capabilityText = await readFile(
 );
 const capability = JSON.parse(capabilityText);
 const unexpectedPermissions = capability.permissions.filter(
-  (permission) => permission !== 'core:default',
+  (permission) =>
+    permission !== 'core:default' && !reviewedPermissions.has(permission),
 );
 for (const permission of unexpectedPermissions) {
   findings.push({
@@ -150,10 +158,11 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 1,
+  phase: 2,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
+  reviewedPermissions: Object.fromEntries(reviewedPermissions),
   findings,
 };
 
@@ -166,7 +175,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 1 read-only library boundaries and cache-only handle deletion passed the static safety audit.\n'
+    ? 'PASS: phase 2 read-only browsing boundaries and cache-only handle deletion passed the static safety audit.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );
