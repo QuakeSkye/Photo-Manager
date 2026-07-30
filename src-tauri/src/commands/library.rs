@@ -9,6 +9,7 @@ use crate::{
     catalog::{ScanCoordinator, ScanKind, ScanStatus, SortMode},
     db::{Database, migration::map_sqlite_error},
     domain::{AssetId, DomainError, ErrorCode, LibraryId, PhotoId},
+    pending_delete::{MarkReviewState, PendingDeleteService, PendingDeleteSummary},
     roots::{FujiLibraryCandidate, FujiLibraryService},
 };
 
@@ -20,6 +21,7 @@ pub struct LibrarySnapshot {
     restored_photo_id: Option<String>,
     scan: Option<ScanStatus>,
     pending_review_count: usize,
+    pending_delete_summary: PendingDeleteSummary,
     reports: Vec<ScanReportSummary>,
 }
 
@@ -39,6 +41,7 @@ struct PhotoSummary {
     file_name: String,
     capture_local_key: Option<String>,
     preview: Option<PreviewReference>,
+    deletion_state: Option<MarkReviewState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +109,7 @@ pub fn get_library_snapshot(
     database: tauri::State<'_, Arc<Database>>,
     catalog: tauri::State<'_, Arc<crate::catalog::CatalogService>>,
     scans: tauri::State<'_, ScanCoordinator>,
+    pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
 ) -> Result<LibrarySnapshot, DomainError> {
     let sort_mode = parse_sort_mode(&sort_mode)?;
     let connection = database.open_read_connection()?;
@@ -132,16 +136,34 @@ pub fn get_library_snapshot(
         .map_err(map_sqlite_error)?;
 
     let Some((library_bytes, display_name, display_path, root_status)) = binding else {
+        let pending_delete_summary = PendingDeleteSummary::default();
         return Ok(LibrarySnapshot {
             binding: None,
             photos: Vec::new(),
             restored_photo_id: None,
             scan: scans.status()?,
             pending_review_count: 0,
+            pending_delete_summary,
             reports: load_scan_reports(&connection)?,
         });
     };
     let library_id = id_from_bytes::<LibraryId>(&library_bytes)?;
+    let pending_snapshot = pending_delete.snapshot(SortMode::CaptureDesc)?;
+    let review_states = pending_snapshot
+        .items
+        .iter()
+        .map(|item| {
+            Ok((
+                PhotoId::from_str(&item.photo_id)?,
+                if item.problem.is_some() {
+                    MarkReviewState::Problem
+                } else {
+                    MarkReviewState::Marked
+                },
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, DomainError>>()?;
+    let pending_delete_summary = pending_snapshot.summary;
     let timeline = catalog.timeline(library_id, sort_mode)?;
     let restored_photo_id = catalog
         .restore_viewing_cursor(library_id, sort_mode)?
@@ -191,6 +213,7 @@ pub fn get_library_snapshot(
             file_name: photo.natural_name_display,
             capture_local_key: photo.capture_local_key,
             preview: preview_by_photo.remove(photo.photo_id.as_bytes().as_slice()),
+            deletion_state: review_states.get(&photo.photo_id).copied(),
         })
         .collect();
     Ok(LibrarySnapshot {
@@ -202,7 +225,8 @@ pub fn get_library_snapshot(
         photos,
         restored_photo_id,
         scan: scans.status()?,
-        pending_review_count: 0,
+        pending_review_count: pending_delete_summary.total_count,
+        pending_delete_summary,
         reports: load_scan_reports(&connection)?,
     })
 }

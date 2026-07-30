@@ -15,7 +15,16 @@ use crate::{
 
 use super::{DirectoryProbe, probe_directory};
 
-const PHASE_ONE_READ_CAPABILITIES: i64 = 0b1111;
+const READ_CAPABILITIES: i64 = 0b1111;
+const RECYCLE_REVIEW_CAPABILITY: i64 = 1 << 6;
+
+fn current_fuji_capabilities(probe: &DirectoryProbe) -> i64 {
+    if probe.filesystem_kind.as_sql() == "NTFS" {
+        READ_CAPABILITIES | RECYCLE_REVIEW_CAPABILITY
+    } else {
+        READ_CAPABILITIES
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FujiLibraryBinding {
@@ -250,7 +259,7 @@ impl FujiLibraryService {
                              WHERE root_id=?3",
                             (
                                 next_binding.as_bytes().as_slice(),
-                                PHASE_ONE_READ_CAPABILITIES,
+                                current_fuji_capabilities(&probe),
                                 root_id.as_bytes().as_slice(),
                             ),
                         )
@@ -308,7 +317,7 @@ fn create_new_library(
             (
                 root_id.as_bytes().as_slice(),
                 library_id.as_bytes().as_slice(),
-                PHASE_ONE_READ_CAPABILITIES,
+                current_fuji_capabilities(probe),
                 created_at,
             ),
         )

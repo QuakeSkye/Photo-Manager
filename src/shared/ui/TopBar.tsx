@@ -1,6 +1,6 @@
 import type { RefObject } from 'react';
 
-import type { SortMode } from '../commands/library';
+import type { PendingDeleteSummary, SortMode } from '../commands/library';
 
 interface TopBarProps {
   readonly context?: string;
@@ -8,6 +8,10 @@ interface TopBarProps {
   readonly sortMode?: SortMode;
   readonly settingsButtonRef: RefObject<HTMLButtonElement | null>;
   readonly showLibraryControls?: boolean;
+  readonly currentPhotoView?: 'library' | 'pending-delete';
+  readonly pendingDeleteSummary?: PendingDeleteSummary;
+  readonly onOpenLibrary?: () => void;
+  readonly onOpenPendingDelete?: () => void;
   readonly onSortChange?: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onBack?: () => void;
@@ -19,6 +23,10 @@ export function TopBar({
   sortMode,
   settingsButtonRef,
   showLibraryControls = false,
+  currentPhotoView = 'library',
+  pendingDeleteSummary,
+  onOpenLibrary,
+  onOpenPendingDelete,
   onSortChange,
   onOpenSettings,
   onBack,
@@ -32,9 +40,33 @@ export function TopBar({
         <span>FUJI 图库</span>
       </div>
       <nav className="photo-tabs" aria-label="照片视图">
-        <button className="photo-tab is-active" type="button">
+        <button
+          className={
+            currentPhotoView === 'library' ? 'photo-tab is-active' : 'photo-tab'
+          }
+          type="button"
+          onClick={onOpenLibrary}
+        >
           图库
         </button>
+        {(pendingDeleteSummary?.totalCount ?? 0) > 0 && (
+          <button
+            className={
+              currentPhotoView === 'pending-delete'
+                ? 'photo-tab danger-tab is-active'
+                : 'photo-tab danger-tab'
+            }
+            type="button"
+            onClick={onOpenPendingDelete}
+          >
+            待删除 {pendingDeleteSummary?.totalCount}
+            {(pendingDeleteSummary?.problemCount ?? 0) > 0 && (
+              <span className="tab-warning" aria-label="含待处理问题">
+                !
+              </span>
+            )}
+          </button>
+        )}
       </nav>
       {context !== undefined && <div className="tool-context">{context}</div>}
       <div className="top-spacer" />

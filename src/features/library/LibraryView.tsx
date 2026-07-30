@@ -28,6 +28,10 @@ interface LibraryViewProps {
   readonly onSortChange: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenScan: () => void;
+  readonly mutationPending: boolean;
+  readonly onToggleDeletion: () => void;
+  readonly onUndoDeletion: () => void;
+  readonly onOpenPendingDelete: () => void;
 }
 
 export function LibraryView({
@@ -41,6 +45,10 @@ export function LibraryView({
   onSortChange,
   onOpenSettings,
   onOpenScan,
+  mutationPending,
+  onToggleDeletion,
+  onUndoDeletion,
+  onOpenPendingDelete,
 }: LibraryViewProps) {
   const current = snapshot.photos[selectedIndex] ?? null;
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
@@ -93,6 +101,10 @@ export function LibraryView({
         sortMode={sortMode}
         settingsButtonRef={settingsButtonRef}
         showLibraryControls
+        currentPhotoView="library"
+        pendingDeleteSummary={snapshot.pendingDeleteSummary}
+        onOpenLibrary={() => undefined}
+        onOpenPendingDelete={onOpenPendingDelete}
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
       />
@@ -133,6 +145,9 @@ export function LibraryView({
           detail={detail}
           loading={current !== null && detail === null && detailError === null}
           error={detailError}
+          marked={current?.deletionState !== null}
+          mutationPending={mutationPending}
+          onToggleDeletion={onToggleDeletion}
         />
       </main>
       <footer className="status-bar">
@@ -143,11 +158,29 @@ export function LibraryView({
         </div>
         <div className="shortcut-hint">
           <kbd>←</kbd>
-          <kbd>→</kbd> 浏览 <span>·</span> 鼠标滚轮切换
+          <kbd>→</kbd> 浏览 <span>·</span> <kbd>D</kbd> 标记 <span>·</span>{' '}
+          <button
+            className="status-link"
+            type="button"
+            disabled={mutationPending}
+            onClick={onUndoDeletion}
+          >
+            <kbd>R</kbd> 撤销
+          </button>
         </div>
-        <div className="readonly-status">
-          <span aria-hidden="true">◉</span> 只读浏览
-        </div>
+        {snapshot.pendingDeleteSummary.totalCount > 0 ? (
+          <button
+            className="pending-status"
+            type="button"
+            onClick={onOpenPendingDelete}
+          >
+            待删除 {snapshot.pendingDeleteSummary.totalCount}
+            {snapshot.pendingDeleteSummary.problemCount > 0 &&
+              ` · 问题 ${snapshot.pendingDeleteSummary.problemCount}`}
+          </button>
+        ) : (
+          <div />
+        )}
       </footer>
     </div>
   );

@@ -19,6 +19,53 @@ export interface PhotoSummary {
   readonly fileName: string;
   readonly captureLocalKey: string | null;
   readonly preview: PreviewReference | null;
+  readonly deletionState: 'Marked' | 'Problem' | null;
+}
+
+export interface PendingDeleteSummary {
+  readonly totalCount: number;
+  readonly executableCount: number;
+  readonly problemCount: number;
+  readonly needsAttentionCount: number;
+  readonly executableFileCount: number;
+  readonly executableBytes: number;
+}
+
+export type DeletionProblemKind =
+  | 'RootOffline'
+  | 'PhotoVersionChanged'
+  | 'MembersChanged'
+  | 'FileMissing'
+  | 'FileIdentityChanged'
+  | 'UnsupportedHardLink';
+
+export interface DeletionProblem {
+  readonly lifecycle: 'Open' | 'Resolved' | 'Superseded';
+  readonly kind: DeletionProblemKind;
+  readonly message: string;
+  readonly canRescan: boolean;
+  readonly canRebind: boolean;
+}
+
+export interface PendingDeleteItem extends PhotoSummary {
+  readonly jpegPresent: boolean;
+  readonly rafPresent: boolean;
+  readonly relativeDirectory: string;
+  readonly physicalFileCount: number;
+  readonly totalSizeBytes: number;
+  readonly problem: DeletionProblem | null;
+}
+
+export interface PendingDeleteSnapshot {
+  readonly summary: PendingDeleteSummary;
+  readonly items: readonly PendingDeleteItem[];
+}
+
+export interface DeletionMutationResult {
+  readonly photoId: string;
+  readonly marked: boolean;
+  readonly summary: PendingDeleteSummary;
+  readonly undoneOperationId: string | null;
 }
 
 export interface ScanStatus {
@@ -52,7 +99,8 @@ export interface LibrarySnapshot {
   readonly photos: readonly PhotoSummary[];
   readonly restoredPhotoId: string | null;
   readonly scan: ScanStatus | null;
-  readonly pendingReviewCount: 0;
+  readonly pendingReviewCount: number;
+  readonly pendingDeleteSummary: PendingDeleteSummary;
   readonly reports: readonly ScanReportSummary[];
 }
 
@@ -103,6 +151,36 @@ export async function getPhotoDetail(
 ): Promise<PhotoDetail> {
   if (useDemoBackend()) return demoDetail(photoId, photoVersion);
   return invoke<PhotoDetail>('get_photo_detail', { photoId, photoVersion });
+}
+
+export async function getPendingDeleteSnapshot(
+  sortMode: SortMode,
+): Promise<PendingDeleteSnapshot> {
+  if (useDemoBackend()) return demoPendingSnapshot(sortMode);
+  return invoke<PendingDeleteSnapshot>('get_pending_delete_snapshot', {
+    sortMode,
+  });
+}
+
+export async function toggleDeletionMark(
+  photoId: string,
+  photoVersion: number,
+  operationId: string,
+): Promise<DeletionMutationResult> {
+  if (useDemoBackend())
+    return demoToggleDeletionMark(photoId, photoVersion, operationId);
+  return invoke<DeletionMutationResult>('toggle_deletion_mark', {
+    photoId,
+    photoVersion,
+    operationId,
+  });
+}
+
+export async function undoDeletionMark(
+  operationId: string,
+): Promise<DeletionMutationResult> {
+  if (useDemoBackend()) return demoUndoDeletionMark(operationId);
+  return invoke<DeletionMutationResult>('undo_deletion_mark', { operationId });
 }
 
 export function getPhotoPreview(reference: PreviewReference): Promise<string> {
@@ -189,6 +267,7 @@ function demoSnapshot(sortMode: SortMode): LibrarySnapshot {
       restoredPhotoId: null,
       scan: null,
       pendingReviewCount: 0,
+      pendingDeleteSummary: emptyPendingSummary(),
       reports: [],
     };
   }
@@ -219,6 +298,8 @@ function demoSnapshot(sortMode: SortMode): LibrarySnapshot {
         phase === 'failed' ? '图库连接中断，剩余目录未能可靠枚举。' : null,
     };
   }
+  const deletion = demoDeletionState();
+  const summary = demoPendingSummary(deletion);
   return {
     binding: {
       displayName: 'Fuji Library',
@@ -228,13 +309,24 @@ function demoSnapshot(sortMode: SortMode): LibrarySnapshot {
           : 'G:\\照片\\2026 Fuji 图库',
       status: selectedScenario === 'offline' ? 'Offline' : 'Online',
     },
-    photos: selectedScenario === 'empty' ? [] : sorted,
+    photos:
+      selectedScenario === 'empty'
+        ? []
+        : sorted.map((photo) => ({
+            ...photo,
+            deletionState: deletion.problems.has(photo.photoId)
+              ? 'Problem'
+              : deletion.marks.has(photo.photoId)
+                ? 'Marked'
+                : null,
+          })),
     restoredPhotoId:
       selectedScenario === 'unknown'
         ? (sorted.at(-1)?.photoId ?? null)
         : (sorted[2]?.photoId ?? sorted[0]?.photoId ?? null),
     scan,
-    pendingReviewCount: 0,
+    pendingReviewCount: summary.totalCount,
+    pendingDeleteSummary: summary,
     reports: [
       {
         startedAt: 1785373200000000,
@@ -286,7 +378,172 @@ function demoPhotos(): PhotoSummary[] {
             ? 'RafEmbeddedJpeg'
             : 'JpegSource',
     },
+    deletionState: null,
   }));
+}
+
+interface DemoDeletionAction {
+  readonly photoId: string;
+  readonly effect: 'Marked' | 'Unmarked';
+}
+
+interface DemoDeletionState {
+  readonly scenario: string;
+  readonly marks: Set<string>;
+  readonly problems: Map<string, DeletionProblem>;
+  readonly operations: Map<string, DeletionMutationResult>;
+  readonly undo: DemoDeletionAction[];
+}
+
+let activeDemoDeletionState: DemoDeletionState | null = null;
+
+function demoDeletionState(): DemoDeletionState {
+  const selectedScenario = scenario();
+  if (activeDemoDeletionState?.scenario === selectedScenario)
+    return activeDemoDeletionState;
+  const photos = demoPhotos();
+  const marks = new Set<string>();
+  const problems = new Map<string, DeletionProblem>();
+  if (selectedScenario.includes('pending') || selectedScenario === 'recovery')
+    marks.add(photos[0].photoId);
+  if (selectedScenario.includes('problem')) {
+    marks.add(photos[1].photoId);
+    problems.set(photos[1].photoId, {
+      lifecycle: 'Open',
+      kind: selectedScenario.includes('offline')
+        ? 'RootOffline'
+        : 'PhotoVersionChanged',
+      message: selectedScenario.includes('offline')
+        ? '照片文件夹离线；标记已保留，但不能重新标记或执行删除。'
+        : '照片版本在标记后发生变化，需要取消失效标记并重新确认。',
+      canRescan: !selectedScenario.includes('offline'),
+      canRebind: selectedScenario.includes('offline'),
+    });
+  }
+  activeDemoDeletionState = {
+    scenario: selectedScenario,
+    marks,
+    problems,
+    operations: new Map(),
+    undo: [],
+  };
+  return activeDemoDeletionState;
+}
+
+function demoPendingSummary(state: DemoDeletionState): PendingDeleteSummary {
+  const problemCount = [...state.marks].filter((id) =>
+    state.problems.has(id),
+  ).length;
+  const executableCount = state.marks.size - problemCount;
+  return {
+    totalCount: state.marks.size,
+    executableCount,
+    problemCount,
+    needsAttentionCount: 0,
+    executableFileCount: executableCount,
+    executableBytes: executableCount * 18_420_000,
+  };
+}
+
+function emptyPendingSummary(): PendingDeleteSummary {
+  return {
+    totalCount: 0,
+    executableCount: 0,
+    problemCount: 0,
+    needsAttentionCount: 0,
+    executableFileCount: 0,
+    executableBytes: 0,
+  };
+}
+
+function demoPendingSnapshot(sortMode: SortMode): PendingDeleteSnapshot {
+  const state = demoDeletionState();
+  const photos = demoSnapshot(sortMode).photos;
+  return {
+    summary: demoPendingSummary(state),
+    items: photos
+      .filter((photo) => state.marks.has(photo.photoId))
+      .map((photo) => {
+        const detail = demoDetail(photo.photoId, photo.photoVersion);
+        return {
+          ...photo,
+          jpegPresent: detail.jpeg !== null,
+          rafPresent: detail.raf !== null,
+          relativeDirectory: '2026\\07\\30',
+          physicalFileCount:
+            Number(detail.jpeg !== null) + Number(detail.raf !== null),
+          totalSizeBytes: detail.totalSizeBytes,
+          problem: state.problems.get(photo.photoId) ?? null,
+        };
+      }),
+  };
+}
+
+function demoToggleDeletionMark(
+  photoId: string,
+  _photoVersion: number,
+  operationId: string,
+): DeletionMutationResult {
+  const state = demoDeletionState();
+  const prior = state.operations.get(operationId);
+  if (prior !== undefined) return prior;
+  if (scenario().includes('mark-failure')) {
+    throw demoError('待删除标记未能可靠保存，请重试。');
+  }
+  const wasMarked = state.marks.has(photoId);
+  if (!wasMarked && scenario().includes('offline')) {
+    throw demoError('照片文件夹离线时不能新增或恢复待删除标记。');
+  }
+  if (wasMarked) {
+    state.marks.delete(photoId);
+    state.problems.delete(photoId);
+  } else {
+    state.marks.add(photoId);
+  }
+  state.undo.push({ photoId, effect: wasMarked ? 'Unmarked' : 'Marked' });
+  const result: DeletionMutationResult = {
+    photoId,
+    marked: !wasMarked,
+    summary: demoPendingSummary(state),
+    undoneOperationId: null,
+  };
+  state.operations.set(operationId, result);
+  return result;
+}
+
+function demoUndoDeletionMark(operationId: string): DeletionMutationResult {
+  const state = demoDeletionState();
+  const prior = state.operations.get(operationId);
+  if (prior !== undefined) return prior;
+  const action = state.undo.at(-1);
+  if (action === undefined)
+    throw demoError('当前会话没有可撤销的待删除标记操作。');
+  if (action.effect === 'Unmarked' && scenario().includes('offline'))
+    throw demoError('照片文件夹离线时不能新增或恢复待删除标记。');
+  state.undo.pop();
+  const marked = action.effect === 'Unmarked';
+  if (marked) state.marks.add(action.photoId);
+  else state.marks.delete(action.photoId);
+  const result = {
+    photoId: action.photoId,
+    marked,
+    summary: demoPendingSummary(state),
+    undoneOperationId: 'demo-operation',
+  };
+  state.operations.set(operationId, result);
+  return result;
+}
+
+export function resetDemoDeletionState(): void {
+  activeDemoDeletionState = null;
+}
+
+export function simulateDemoRestart(): void {
+  demoDeletionState().undo.length = 0;
+}
+
+function demoError(userMessage: string): Error & { userMessage: string } {
+  return Object.assign(new Error(userMessage), { userMessage });
 }
 
 function demoDetail(photoId: string, photoVersion: number): PhotoDetail {

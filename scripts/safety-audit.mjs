@@ -23,7 +23,7 @@ const reviewedAllowlist = [
 const reviewedPermissions = new Map([
   [
     'dialog:allow-open',
-    'Phase 2 uses only the native folder picker; the selected path is revalidated by the Rust Root service before binding.',
+    'Phase 3 uses only the native folder picker; the selected path is revalidated by the Rust Root service before binding.',
   ],
 ]);
 
@@ -48,7 +48,8 @@ const rules = [
   {
     id: 'rust-general-shell',
     include: ['.rs'],
-    pattern: /std::process::Command|Command::new\s*\(/,
+    pattern:
+      /std::process::Command|Command::new\s*\(|IFileOperation|SHCreateItemFromParsingName|ShellExecute|SHFileOperation/,
   },
   {
     id: 'rust-handle-delete',
@@ -65,6 +66,22 @@ const rules = [
     ],
     pattern:
       /\.write\s*\(\s*true\s*\)|\.append\s*\(\s*true\s*\)|\.truncate\s*\(\s*true\s*\)|\.create_new\s*\(\s*true\s*\)|fs::create_dir|fs::write|SetFileInformationByHandle/,
+  },
+  {
+    id: 'phase-three-photo-mutation',
+    include: ['.rs'],
+    pathPrefixes: [
+      'src-tauri/src/pending_delete/',
+      'src-tauri/src/commands/pending_delete.rs',
+    ],
+    pattern:
+      /std::fs|fs::write|fs::rename|fs::remove|OpenOptions|SetFileInformationByHandle|IFileOperation|SHFileOperation/,
+  },
+  {
+    id: 'phase-three-batch-attempt-creation',
+    include: ['.rs'],
+    pathPrefixes: ['src-tauri/src/'],
+    pattern: /INSERT\s+INTO\s+(?:deletion_batch|deletion_attempt)/i,
   },
 ];
 
@@ -93,7 +110,7 @@ async function walk(directory) {
     }
 
     const path = relative(root, absolute).replaceAll('\\', '/');
-    if (path.endsWith('_tests.rs')) {
+    if (path.endsWith('_tests.rs') || path.endsWith('/tests.rs')) {
       continue;
     }
     const extension = extname(entry.name);
@@ -158,7 +175,7 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 2,
+  phase: 3,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
@@ -175,7 +192,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 2 read-only browsing boundaries and cache-only handle deletion passed the static safety audit.\n'
+    ? 'PASS: phase 3 keeps photo-file writes, Windows Shell calls, deletion execution and batch creation outside the implemented boundary.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

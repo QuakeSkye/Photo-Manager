@@ -12,6 +12,7 @@ interface VirtualFilmstripProps {
   readonly selectedIndex: number;
   readonly onSelectIndex: (index: number) => void;
   readonly onWheel: (event: WheelEvent) => void;
+  readonly reviewMode?: boolean;
 }
 
 export function VirtualFilmstrip({
@@ -20,6 +21,7 @@ export function VirtualFilmstrip({
   selectedIndex,
   onSelectIndex,
   onWheel,
+  reviewMode = false,
 }: VirtualFilmstripProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -59,7 +61,10 @@ export function VirtualFilmstrip({
   const visible = photos.slice(start, end);
 
   return (
-    <aside className="filmstrip" aria-label="照片缩略图">
+    <aside
+      className={reviewMode ? 'filmstrip review-filmstrip' : 'filmstrip'}
+      aria-label={reviewMode ? '待删除照片缩略图' : '照片缩略图'}
+    >
       <div
         ref={viewportRef}
         className="filmstrip-viewport"
@@ -89,7 +94,23 @@ export function VirtualFilmstrip({
                 onClick={() => onSelectIndex(index)}
               >
                 <PreviewImage reference={photo.preview} alt="" thumbnail />
-                <span>{index + 1}</span>
+                <span className="filmstrip-index">{index + 1}</span>
+                {photo.deletionState !== null && (
+                  <span
+                    className={
+                      photo.deletionState === 'Problem'
+                        ? 'deletion-badge is-problem'
+                        : 'deletion-badge'
+                    }
+                    aria-label={
+                      photo.deletionState === 'Problem'
+                        ? '待删除标记需要处理'
+                        : '已标记待删除'
+                    }
+                  >
+                    D
+                  </span>
+                )}
               </button>
             );
           })}

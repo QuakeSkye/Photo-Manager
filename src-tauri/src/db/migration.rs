@@ -8,14 +8,19 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 2;
+pub const LATEST_SCHEMA_VERSION: u32 = 3;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
 pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
+pub const PHASE_THREE_MIGRATION_SQL: &str = include_str!("../../migrations/0003_phase_three.sql");
 
-const MIGRATIONS: &[(u32, &str)] = &[(1, MIGRATION_SQL), (2, PHASE_ONE_MIGRATION_SQL)];
+const MIGRATIONS: &[(u32, &str)] = &[
+    (1, MIGRATION_SQL),
+    (2, PHASE_ONE_MIGRATION_SQL),
+    (3, PHASE_THREE_MIGRATION_SQL),
+];
 
 pub fn migration_checksum() -> String {
-    migration_file_checksum(PHASE_ONE_MIGRATION_SQL)
+    migration_file_checksum(PHASE_THREE_MIGRATION_SQL)
 }
 
 fn migration_file_checksum(sql: &str) -> String {

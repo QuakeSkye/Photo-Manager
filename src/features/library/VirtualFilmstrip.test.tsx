@@ -11,6 +11,7 @@ function photos(count: number): PhotoSummary[] {
     fileName: `DSCF${String(index + 1).padStart(5, '0')}.JPG`,
     captureLocalKey: `2026-07-30T12:${String(index % 60).padStart(2, '0')}:00`,
     preview: null,
+    deletionState: null,
   }));
 }
 

@@ -4,30 +4,40 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
+import {
+  resetDemoDeletionState,
+  simulateDemoRestart,
+} from '../shared/commands/library';
 import { App } from './App';
 
 beforeEach(() => {
+  resetDemoDeletionState();
   window.history.replaceState(null, '', '/');
 });
 
 afterEach(() => cleanup());
 
-describe('阶段 2 只读图库', () => {
-  test('renders the white immersive library without future-stage controls', async () => {
+describe('阶段 3 图库与既有只读能力', () => {
+  test('renders marking controls while keeping the conditional entry hidden at zero', async () => {
     render(<App />);
 
     expect(
       await screen.findByRole('navigation', { name: '照片视图' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '图库' })).toBeInTheDocument();
-    expect(screen.queryByText(/待删除/)).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /导入|Photoshop|文件位置|标记/ }),
+      screen.queryByRole('button', { name: /^待删除 \d+$/ }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText('只读浏览')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /导入|Photoshop|文件位置/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /标记待删除/ }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
       'captureDesc',
     );
@@ -36,7 +46,7 @@ describe('阶段 2 只读图库', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 
-  test('uses one selection state for arrow keys and ignores D in read-only phase', async () => {
+  test('uses one selection state for arrow keys', async () => {
     render(<App />);
     expect(
       await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
@@ -46,12 +56,6 @@ describe('阶段 2 只读图库', () => {
     expect(
       await screen.findByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
-
-    fireEvent.keyDown(window, { key: 'd' });
-    expect(
-      screen.getByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
-    ).toHaveAttribute('aria-current', 'true');
-    expect(screen.queryByText(/待删除/)).not.toBeInTheDocument();
   });
 
   test('uses the same bounded selection for wheel and keyboard navigation', async () => {
@@ -95,20 +99,14 @@ describe('阶段 2 只读图库', () => {
     fireEvent.change(sort, { target: { value: 'captureAsc' } });
 
     await waitFor(() => expect(sort).toHaveValue('captureAsc'));
+    for (let index = 0; index < 20; index += 1)
+      fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(
       await screen.findByRole('button', { name: '第 1 张：DSCF0942.RAF' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '第 11 张：DSCF1042.JPG' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', {
-        name: /第 12 张：一段很长的文件名/,
-      }),
-    ).toBeInTheDocument();
+    ).toHaveAttribute('aria-current', 'true');
   });
 
-  test('does not steal arrow keys from focused controls', async () => {
+  test('does not steal navigation or D/R from focused controls', async () => {
     render(<App />);
     expect(
       await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
@@ -117,11 +115,16 @@ describe('阶段 2 只读图库', () => {
     settings.focus();
 
     fireEvent.keyDown(settings, { key: 'ArrowRight' });
+    fireEvent.keyDown(settings, { key: 'D' });
+    fireEvent.keyDown(settings, { key: 'R' });
 
     expect(settings).toHaveFocus();
     expect(
       screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
+    expect(
+      screen.queryByRole('button', { name: /^待删除 \d+$/ }),
+    ).not.toBeInTheDocument();
   });
 
   test('traps modal focus, supports Escape, and restores the trigger', async () => {
@@ -134,6 +137,9 @@ describe('阶段 2 只读图库', () => {
     const confirm = screen.getByRole('button', { name: '确认取消扫描' });
     const cancel = screen.getByRole('button', { name: '取消' });
     expect(confirm).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'D' });
+    fireEvent.keyDown(dialog, { key: 'R' });
+    expect(dialog).toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Tab' });
     expect(cancel).toHaveFocus();
     fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
@@ -237,6 +243,200 @@ describe('阶段 2 只读图库', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /设置/ })).toHaveFocus(),
     );
+  });
+});
+
+describe('阶段 3 待删除复核闭环', () => {
+  test('D creates the 0→1 entry, advances once, and ignores repeat input', async () => {
+    render(<App />);
+    expect(
+      await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(window, { key: 'd' });
+    fireEvent.keyDown(window, { key: 'd', repeat: true });
+    fireEvent.click(
+      screen.getByRole('button', { name: '第 6 张：DSCF1009.JPG' }),
+    );
+
+    expect(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /^待删除 1$/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    expect(window.location.hash).toBe('#/library');
+  });
+
+  test('R undoes multiple current-session marks in reverse order', async () => {
+    render(<App />);
+    await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' });
+
+    fireEvent.keyDown(window, { key: 'D' });
+    await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    fireEvent.keyDown(window, { key: 'D' });
+    await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 2$/ });
+
+    fireEvent.keyDown(window, { key: 'R' });
+    fireEvent.keyDown(window, { key: 'R', repeat: true });
+    await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    expect(
+      screen.getByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(window, { key: 'R' });
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByRole('navigation', { name: '照片视图' }),
+        ).queryByRole('button', { name: /^待删除 \d+$/ }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
+  test('cancelling a non-final review item selects the next item at the same index', async () => {
+    render(<App />);
+    await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' });
+    fireEvent.keyDown(window, { key: 'D' });
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
+          'button',
+          { name: /^待删除 1$/ },
+        ),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.keyDown(window, { key: 'D' });
+    const pending = await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 2$/ });
+    fireEvent.click(pending);
+    await screen.findByText('待删除 · 第 1 / 2 张');
+
+    fireEvent.click(screen.getByRole('button', { name: /取消当前待删除/ }));
+
+    expect(await screen.findByText('待删除 · 第 1 / 1 张')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    expect(window.location.hash).toBe('#/pending-delete');
+  });
+
+  test('failed and offline additions keep the photo and zero summary unchanged', async () => {
+    window.history.replaceState(null, '', '/?scenario=mark-failure');
+    const failed = render(<App />);
+    await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' });
+    fireEvent.keyDown(window, { key: 'D' });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '待删除标记未能可靠保存',
+    );
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).queryByRole(
+        'button',
+        { name: /^待删除 \d+$/ },
+      ),
+    ).not.toBeInTheDocument();
+
+    failed.unmount();
+    resetDemoDeletionState();
+    window.history.replaceState(null, '', '/?scenario=offline');
+    render(<App />);
+    await screen.findByText('图库当前离线');
+    fireEvent.keyDown(window, { key: 'D' });
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '照片文件夹离线时不能新增或恢复待删除标记',
+    );
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).queryByRole(
+        'button',
+        { name: /^待删除 \d+$/ },
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  test('last cancellation applies the 1→0 route and returns to the cancelled photo', async () => {
+    window.history.replaceState(null, '', '/?scenario=pending');
+    render(<App />);
+    fireEvent.click(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /^待删除 1$/ }),
+    );
+
+    expect(await screen.findByText('待删除 · 第 1 / 1 张')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /取消当前待删除/ }));
+
+    await waitFor(() => expect(window.location.hash).toBe('#/library'));
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1042.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).queryByRole(
+        'button',
+        { name: /^待删除 \d+$/ },
+      ),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/待删除 · 第/)).not.toBeInTheDocument();
+  });
+
+  test('derives problem review actions while execute-delete stays gated', async () => {
+    window.history.replaceState(null, '', '/?scenario=problem');
+    render(<App />);
+    fireEvent.click(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /待删除 1/ }),
+    );
+
+    expect(await screen.findByText('需要重新确认')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /取消失效标记/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '重新扫描确认' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '执行删除…' })).toBeDisabled();
+    expect(screen.getByText(/本阶段不会移动任何照片/)).toBeInTheDocument();
+    expect(screen.queryByText(/Photoshop|文件位置/)).not.toBeInTheDocument();
+  });
+
+  test('restart restores the entry but intentionally clears R history', async () => {
+    window.history.replaceState(null, '', '/?scenario=recovery');
+    const first = render(<App />);
+    expect(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /^待删除 1$/ }),
+    ).toBeInTheDocument();
+
+    first.unmount();
+    simulateDemoRestart();
+    render(<App />);
+    await within(
+      await screen.findByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    fireEvent.keyDown(window, { key: 'R' });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '当前会话没有可撤销的待删除标记操作',
+    );
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
+        'button',
+        { name: /^待删除 1$/ },
+      ),
+    ).toBeInTheDocument();
+    expect(window.location.hash).toBe('#/library');
   });
 });
 

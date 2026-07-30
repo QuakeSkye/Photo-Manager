@@ -1,4 +1,5 @@
 pub(crate) mod library;
+pub(crate) mod pending_delete;
 
 use crate::safety::{SafetyState, SafetyStatus};
 

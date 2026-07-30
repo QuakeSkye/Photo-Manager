@@ -1,26 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { LibraryView } from '../features/library/LibraryView';
+import { PendingDeleteView } from '../features/pending-delete/PendingDeleteView';
 import { ScanView } from '../features/scanning/ScanView';
 import { SettingsView } from '../features/settings/SettingsView';
 import {
   getLibrarySnapshot,
+  getPendingDeleteSnapshot,
   getScanStatus,
+  retryLibraryScan,
   saveViewingCursor,
+  toggleDeletionMark,
+  undoDeletionMark,
   type BindResult,
   type LibrarySnapshot,
+  type PendingDeleteSnapshot,
   type SortMode,
 } from '../shared/commands/library';
 
-type Route = 'library' | 'settings' | 'scan';
+type Route = 'library' | 'pending-delete' | 'settings' | 'scan';
 
 export function App() {
   const [sortMode, setSortMode] = useState<SortMode>('captureDesc');
   const [snapshot, setSnapshot] = useState<LibrarySnapshot | null>(null);
+  const [pendingSnapshot, setPendingSnapshot] =
+    useState<PendingDeleteSnapshot | null>(null);
   const [selectedPhotoId, setSelectedPhotoId] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>('library');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mutationPending, setMutationPending] = useState(false);
+  const mutationInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const restoreAfterSettings = useRef<{
     photoId: string | null;
@@ -55,10 +65,9 @@ export function App() {
   );
 
   useEffect(() => {
-    void load(sortMode).then((next) => {
+    void load('captureDesc').then((next) => {
       if (next === null) return;
-      const stalePendingRoute = window.location.hash.includes('pending-delete');
-      if (stalePendingRoute) window.history.replaceState(null, '', '#/library');
+      window.history.replaceState(null, '', '#/library');
       if (next.binding === null) {
         setRoute('settings');
       } else if (next.scan?.kind === 'full') {
@@ -67,7 +76,7 @@ export function App() {
         setRoute('library');
       }
     });
-  }, [load, sortMode]);
+  }, [load]);
 
   useEffect(() => {
     if (
@@ -87,21 +96,25 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [snapshot?.scan?.phase]);
 
-  const selectedIndex =
-    snapshot?.photos.findIndex((photo) => photo.photoId === selectedPhotoId) ??
-    -1;
-  const selectIndex = useCallback((index: number) => {
-    setSnapshot((current) => {
-      if (current === null || current.photos.length === 0) return current;
-      const bounded = Math.max(0, Math.min(current.photos.length - 1, index));
-      setSelectedPhotoId(current.photos[bounded]?.photoId ?? null);
-      return current;
-    });
-  }, []);
+  const activePhotos =
+    route === 'pending-delete'
+      ? (pendingSnapshot?.items ?? [])
+      : (snapshot?.photos ?? []);
+  const selectedIndex = activePhotos.findIndex(
+    (photo) => photo.photoId === selectedPhotoId,
+  );
+  const selectIndex = useCallback(
+    (index: number) => {
+      if (mutationInFlight.current || activePhotos.length === 0) return;
+      const bounded = Math.max(0, Math.min(activePhotos.length - 1, index));
+      setSelectedPhotoId(activePhotos[bounded]?.photoId ?? null);
+    },
+    [activePhotos],
+  );
 
   const navigate = useCallback(
     (delta: number) => {
-      if (selectedIndex < 0) return;
+      if (mutationInFlight.current || selectedIndex < 0) return;
       selectIndex(selectedIndex + delta);
     },
     [selectIndex, selectedIndex],
@@ -117,7 +130,8 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (
-        route !== 'library' ||
+        (route !== 'library' && route !== 'pending-delete') ||
+        mutationInFlight.current ||
         event.repeat ||
         event.ctrlKey ||
         event.altKey ||
@@ -137,13 +151,20 @@ export function App() {
       } else if (event.key === 'ArrowRight') {
         event.preventDefault();
         navigate(1);
+      } else if (event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        void performToggle();
+      } else if (event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        void performUndo();
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [navigate, route]);
+  });
 
   const openSettings = () => {
+    if (mutationInFlight.current) return;
     restoreAfterSettings.current = { photoId: selectedPhotoId, route };
     setRoute('settings');
   };
@@ -151,7 +172,12 @@ export function App() {
   const closeSettings = () => {
     const restore = restoreAfterSettings.current;
     const target =
-      restore?.route === 'scan' && snapshot?.scan !== null ? 'scan' : 'library';
+      restore?.route === 'scan' && snapshot?.scan !== null
+        ? 'scan'
+        : restore?.route === 'pending-delete' &&
+            (snapshot?.pendingDeleteSummary.totalCount ?? 0) > 0
+          ? 'pending-delete'
+          : 'library';
     if (
       restore !== null &&
       restore.photoId !== null &&
@@ -164,8 +190,183 @@ export function App() {
   };
 
   const changeSort = (mode: SortMode) => {
-    setSortMode(mode);
+    if (mutationInFlight.current || mode === sortMode) return;
+    void changeSortMode(mode);
+  };
+
+  const changeSortMode = async (mode: SortMode) => {
     setLoading(true);
+    setError(null);
+    try {
+      const [nextLibrary, nextPending] = await Promise.all([
+        getLibrarySnapshot(mode),
+        getPendingDeleteSnapshot(mode),
+      ]);
+      setSortMode(mode);
+      setSnapshot(nextLibrary);
+      setPendingSnapshot(nextPending);
+      const list =
+        route === 'pending-delete' ? nextPending.items : nextLibrary.photos;
+      setSelectedPhotoId((current) =>
+        current !== null && list.some((photo) => photo.photoId === current)
+          ? current
+          : (list[0]?.photoId ?? null),
+      );
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openLibrary = () => {
+    if (mutationInFlight.current || snapshot === null) return;
+    setRoute('library');
+    window.history.replaceState(null, '', '#/library');
+    if (
+      selectedPhotoId === null ||
+      !snapshot.photos.some((photo) => photo.photoId === selectedPhotoId)
+    ) {
+      setSelectedPhotoId(
+        snapshot.restoredPhotoId ?? snapshot.photos[0]?.photoId ?? null,
+      );
+    }
+  };
+
+  const openPendingDelete = async () => {
+    if (mutationInFlight.current || snapshot === null) return;
+    if (snapshot.pendingDeleteSummary.totalCount === 0) {
+      openLibrary();
+      return;
+    }
+    try {
+      const next = await getPendingDeleteSnapshot(sortMode);
+      if (next.summary.totalCount === 0) {
+        setSnapshot((current) =>
+          current === null
+            ? current
+            : {
+                ...current,
+                pendingDeleteSummary: next.summary,
+                pendingReviewCount: 0,
+              },
+        );
+        openLibrary();
+        return;
+      }
+      setPendingSnapshot(next);
+      setSelectedPhotoId((current) =>
+        current !== null &&
+        next.items.some((photo) => photo.photoId === current)
+          ? current
+          : (next.items[0]?.photoId ?? null),
+      );
+      setRoute('pending-delete');
+      window.history.replaceState(null, '', '#/pending-delete');
+    } catch (reason) {
+      setError(readError(reason));
+    }
+  };
+
+  const refreshDeletionState = async () => {
+    const [nextLibrary, nextPending] = await Promise.all([
+      getLibrarySnapshot(sortMode),
+      getPendingDeleteSnapshot(sortMode),
+    ]);
+    setSnapshot(nextLibrary);
+    setPendingSnapshot(nextPending);
+    return { nextLibrary, nextPending };
+  };
+
+  const performToggle = async () => {
+    if (mutationInFlight.current || selectedIndex < 0) return;
+    const current = activePhotos[selectedIndex];
+    if (current === undefined) return;
+    const sourceRoute = route;
+    const sourceIndex = selectedIndex;
+    mutationInFlight.current = true;
+    setMutationPending(true);
+    setError(null);
+    try {
+      const result = await toggleDeletionMark(
+        current.photoId,
+        current.photoVersion,
+        crypto.randomUUID(),
+      );
+      const { nextLibrary, nextPending } = await refreshDeletionState();
+      if (sourceRoute === 'pending-delete') {
+        if (result.summary.totalCount === 0) {
+          setRoute('library');
+          window.history.replaceState(null, '', '#/library');
+          setSelectedPhotoId(
+            nextLibrary.photos.some((photo) => photo.photoId === result.photoId)
+              ? result.photoId
+              : (nextLibrary.restoredPhotoId ??
+                  nextLibrary.photos[0]?.photoId ??
+                  null),
+          );
+        } else {
+          const nextIndex = Math.min(sourceIndex, nextPending.items.length - 1);
+          setSelectedPhotoId(nextPending.items[nextIndex]?.photoId ?? null);
+        }
+      } else {
+        const nextIndex = Math.min(
+          sourceIndex + 1,
+          nextLibrary.photos.length - 1,
+        );
+        setSelectedPhotoId(
+          nextLibrary.photos[nextIndex]?.photoId ?? result.photoId,
+        );
+      }
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      mutationInFlight.current = false;
+      setMutationPending(false);
+    }
+  };
+
+  const performUndo = async () => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setMutationPending(true);
+    setError(null);
+    try {
+      const result = await undoDeletionMark(crypto.randomUUID());
+      const { nextLibrary, nextPending } = await refreshDeletionState();
+      if (
+        route === 'pending-delete' &&
+        result.marked &&
+        nextPending.items.some((photo) => photo.photoId === result.photoId)
+      ) {
+        setSelectedPhotoId(result.photoId);
+      } else {
+        setRoute('library');
+        window.history.replaceState(null, '', '#/library');
+        setSelectedPhotoId(
+          nextLibrary.photos.some((photo) => photo.photoId === result.photoId)
+            ? result.photoId
+            : (nextLibrary.restoredPhotoId ??
+                nextLibrary.photos[0]?.photoId ??
+                null),
+        );
+      }
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      mutationInFlight.current = false;
+      setMutationPending(false);
+    }
+  };
+
+  const startRescan = async () => {
+    try {
+      await retryLibraryScan();
+      const next = await load(sortMode, true);
+      if (next !== null && next.scan !== null) setRoute('scan');
+    } catch (reason) {
+      setError(readError(reason));
+    }
   };
 
   const bindingStarted = async (result: BindResult) => {
@@ -235,6 +436,28 @@ export function App() {
           onSortChange={changeSort}
           onOpenSettings={openSettings}
           onOpenScan={() => setRoute('scan')}
+          mutationPending={mutationPending}
+          onToggleDeletion={() => void performToggle()}
+          onUndoDeletion={() => void performUndo()}
+          onOpenPendingDelete={() => void openPendingDelete()}
+        />
+      )}
+      {route === 'pending-delete' && pendingSnapshot !== null && (
+        <PendingDeleteView
+          snapshot={pendingSnapshot}
+          selectedPhotoId={selectedPhotoId}
+          selectedIndex={selectedIndex}
+          sortMode={sortMode}
+          settingsButtonRef={settingsButtonRef}
+          mutationPending={mutationPending}
+          onSelectIndex={selectIndex}
+          onNavigate={navigate}
+          onSortChange={changeSort}
+          onOpenLibrary={openLibrary}
+          onOpenSettings={openSettings}
+          onCancelCurrent={() => void performToggle()}
+          onUndoDeletion={() => void performUndo()}
+          onRescan={() => void startRescan()}
         />
       )}
       {route === 'settings' && (

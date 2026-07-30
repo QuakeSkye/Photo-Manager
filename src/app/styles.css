@@ -147,6 +147,20 @@ p {
   background: #f0f2f5;
   font-weight: 650;
 }
+.danger-tab {
+  color: var(--danger);
+}
+.tab-warning {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  margin-left: 5px;
+  place-items: center;
+  border: 1px solid currentcolor;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 800;
+}
 .tool-context {
   margin-left: 18px;
   padding-left: 18px;
@@ -231,7 +245,7 @@ p {
   background: #fff;
   box-shadow: 0 2px 8px rgb(61 109 216 / 18%);
 }
-.filmstrip-item > span:last-child {
+.filmstrip-index {
   position: absolute;
   right: 5px;
   bottom: 4px;
@@ -242,6 +256,30 @@ p {
   background: rgb(22 29 38 / 72%);
   font-size: 9px;
   font-variant-numeric: tabular-nums;
+}
+.deletion-badge {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--danger);
+  font-size: 10px;
+  font-weight: 800;
+  box-shadow: 0 1px 5px rgb(59 20 28 / 25%);
+}
+.deletion-badge.is-problem {
+  color: #6a2d14;
+  background: #f5b54b;
+}
+.review-filmstrip .filmstrip-item.is-selected {
+  border-color: var(--danger);
+  box-shadow: 0 2px 8px rgb(189 59 76 / 20%);
 }
 
 .preview-image {
@@ -464,17 +502,104 @@ p {
   font-size: 10px;
   line-height: 1.5;
 }
-.readonly-actions {
+.readonly-actions,
+.library-actions,
+.pending-actions {
   flex: 0 0 auto;
   padding: 14px 18px 16px;
   border-top: 1px solid var(--border);
   background: #fff;
 }
-.readonly-actions p {
+.readonly-actions p,
+.library-actions p,
+.pending-actions p {
   margin: 8px 0 0;
   color: var(--text-secondary);
   font-size: 10px;
   line-height: 1.5;
+}
+.library-actions,
+.pending-actions {
+  display: grid;
+  gap: 9px;
+}
+.delete-outline-button,
+.neutral-button,
+.secondary-button,
+.execute-delete-button {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 650;
+}
+.delete-outline-button {
+  color: var(--danger);
+  border-color: #dcaab1;
+  background: #fff;
+}
+.neutral-button,
+.secondary-button {
+  color: #3f4957;
+  border-color: #d9dde4;
+  background: #f7f8fa;
+}
+.execute-delete-button {
+  color: #fff;
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.execute-delete-button:disabled {
+  color: #84666b;
+  border-color: #e8d8db;
+  background: #f3e9eb;
+}
+.pending-canvas-wrap {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+.pending-canvas-wrap > .photo-canvas {
+  min-width: 0;
+  min-height: 0;
+}
+.pending-position {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  left: 16px;
+  padding: 5px 9px;
+  border-radius: 16px;
+  color: #fff;
+  background: rgb(122 31 45 / 88%);
+  font-size: 11px;
+  font-weight: 700;
+}
+.problem-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 11px;
+  border: 1px solid #edd29e;
+  border-radius: 8px;
+  color: #6b4a12;
+  background: #fff9ec;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.batch-summary {
+  display: grid;
+  gap: 3px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+  color: #56606e;
+  font-size: 10px;
+}
+.batch-summary strong {
+  color: var(--text-primary);
+  font-size: 12px;
 }
 .readonly-pill {
   display: inline-flex;
@@ -529,6 +654,20 @@ p {
   display: flex;
   align-items: center;
   gap: 5px;
+}
+.status-link,
+.pending-status {
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+}
+.pending-status {
+  justify-self: end;
+  color: var(--danger);
+  font-weight: 700;
 }
 kbd {
   display: inline-grid;

@@ -4,12 +4,18 @@ interface PhotoInspectorProps {
   readonly detail: PhotoDetail | null;
   readonly loading: boolean;
   readonly error: string | null;
+  readonly marked: boolean;
+  readonly mutationPending: boolean;
+  readonly onToggleDeletion: () => void;
 }
 
 export function PhotoInspector({
   detail,
   loading,
   error,
+  marked,
+  mutationPending,
+  onToggleDeletion,
 }: PhotoInspectorProps) {
   return (
     <aside className="photo-inspector" aria-label="照片详情">
@@ -103,11 +109,17 @@ export function PhotoInspector({
         )}
       </div>
       <div className="inspector-spacer" />
-      <section className="readonly-actions" aria-label="只读阶段动作区">
-        <div className="readonly-pill">
-          <span aria-hidden="true">✓</span> 完全只读
-        </div>
-        <p>此阶段仅浏览照片。不会标记、导入、打开外部工具或删除文件。</p>
+      <section className="library-actions" aria-label="图库动作区">
+        <button
+          className="delete-outline-button"
+          type="button"
+          disabled={detail === null || mutationPending}
+          onClick={onToggleDeletion}
+        >
+          {mutationPending ? '正在提交…' : marked ? '取消待删除' : '标记待删除'}
+          <kbd>D</kbd>
+        </button>
+        <p>D 只保存复核标记，不会移动或修改照片。</p>
       </section>
     </aside>
   );

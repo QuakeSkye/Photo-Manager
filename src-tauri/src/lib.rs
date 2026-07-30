@@ -4,6 +4,7 @@ mod commands;
 pub mod db;
 pub mod domain;
 pub mod media;
+pub mod pending_delete;
 pub mod roots;
 pub mod safety;
 
@@ -41,11 +42,14 @@ pub fn run() {
             ));
             let preview_service =
                 std::sync::Arc::new(cache::PreviewService::new(database.clone(), cache_service));
+            let pending_delete_service =
+                std::sync::Arc::new(pending_delete::PendingDeleteService::new(database.clone()));
             let _ = scan_coordinator.start_background_if_bound();
             application.manage(database);
             application.manage(catalog);
             application.manage(library_service);
             application.manage(preview_service);
+            application.manage(pending_delete_service);
             application.manage(scan_coordinator);
             application.manage(safety_state);
             Ok(())
@@ -61,6 +65,9 @@ pub fn run() {
             commands::library::get_scan_status,
             commands::library::cancel_library_scan,
             commands::library::retry_library_scan,
+            commands::pending_delete::get_pending_delete_snapshot,
+            commands::pending_delete::toggle_deletion_mark,
+            commands::pending_delete::undo_deletion_mark,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application");

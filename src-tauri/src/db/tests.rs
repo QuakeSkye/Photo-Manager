@@ -814,7 +814,9 @@ fn newer_schema_and_unfinished_attempts_reopen_in_read_only_safe_mode() {
     let second_parent = tempfile::tempdir().unwrap();
     let second_root = TestRoot::create_in(second_parent.path()).unwrap();
     let connection = Connection::open(second_root.path().join("catalog.sqlite3")).unwrap();
-    connection.pragma_update(None, "user_version", 2).unwrap();
+    connection
+        .pragma_update(None, "user_version", LATEST_SCHEMA_VERSION + 1)
+        .unwrap();
     drop(connection);
 
     let newer = Database::open(second_root.path()).unwrap();

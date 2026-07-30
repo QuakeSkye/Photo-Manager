@@ -62,6 +62,8 @@ strong_id!(CacheEntryId);
 strong_id!(CacheEvictionIntentId);
 strong_id!(CacheRootCreateIntentId);
 strong_id!(DirectorySnapshotId);
+strong_id!(DeletionMarkId);
+strong_id!(FileSnapshotId);
 strong_id!(JobId);
 strong_id!(LibraryId);
 strong_id!(OperationId);
