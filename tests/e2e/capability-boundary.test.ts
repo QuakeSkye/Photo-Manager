@@ -57,3 +57,18 @@ test('the frontend exposes narrow id-based photo and external-tool commands', as
     /open_raf_in_photoshop[^\n]+(?:path|executable)/i,
   );
 });
+
+test('the filmstrip is vertically scrollable without fixed-width horizontal overflow', async () => {
+  const styles = await readFile(
+    new URL('../../src/app/styles.css', import.meta.url),
+    'utf8',
+  );
+  const viewport = styles.match(/\.filmstrip-viewport\s*\{([^}]*)\}/)?.[1];
+  const item = styles.match(/\.filmstrip-item\s*\{([^}]*)\}/)?.[1];
+
+  expect(viewport).toMatch(/overflow-x:\s*(?:hidden|clip)/);
+  expect(item).toMatch(/width:\s*calc\(/);
+  expect(styles).not.toMatch(
+    /@media\s*\(max-width:\s*1200px\)[\s\S]*?\.filmstrip-item\s*\{[^}]*width:\s*\d+px/,
+  );
+});

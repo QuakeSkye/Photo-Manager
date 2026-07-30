@@ -141,8 +141,9 @@ export function App() {
       const target = event.target as HTMLElement | null;
       if (
         target instanceof Element &&
-        target.closest('input, select, textarea, button, [role="dialog"]') !==
-          null
+        target.closest(
+          'input, select, textarea, button:not(.filmstrip-item), [role="dialog"]',
+        ) !== null
       )
         return;
       if (event.key === 'ArrowLeft') {

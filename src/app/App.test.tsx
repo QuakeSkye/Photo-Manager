@@ -132,6 +132,41 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('keeps D/R and arrow navigation active after a filmstrip click', async () => {
+    render(<App />);
+    const first = await screen.findByRole('button', {
+      name: '第 1 张：DSCF1042.JPG',
+    });
+    fireEvent.click(first);
+    first.focus();
+    expect(first).toHaveFocus();
+
+    fireEvent.keyDown(first, { key: 'ArrowRight' });
+    expect(
+      screen.getByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
+    ).toHaveAttribute('aria-current', 'true');
+    fireEvent.keyDown(first, { key: 'ArrowLeft' });
+    expect(first).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(first, { key: 'D' });
+    await within(
+      await screen.findByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    expect(
+      screen.getByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(first, { key: 'R' });
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByRole('navigation', { name: '照片视图' }),
+        ).queryByRole('button', { name: /^待删除 \d+$/ }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(first).toHaveAttribute('aria-current', 'true');
+  });
+
   test('traps modal focus, supports Escape, and restores the trigger', async () => {
     window.history.replaceState(null, '', '/?scenario=scan-running');
     render(<App />);
