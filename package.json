@@ -19,6 +19,7 @@
     "test:phase1": "node scripts/run-cargo.mjs test --manifest-path src-tauri/Cargo.toml --all-targets && node scripts/phase-one-report.mjs",
     "test:phase2": "npm run format:check && npm run lint && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && node scripts/phase-two-report.mjs",
     "test:phase3": "npm run format:check && npm run lint && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && node scripts/phase-three-report.mjs",
+    "test:phase4": "npm run format:check && npm run lint && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && node scripts/phase-four-report.mjs",
     "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1",
     "clippy": "node scripts/run-cargo.mjs clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "safety:audit": "node scripts/safety-audit.mjs",

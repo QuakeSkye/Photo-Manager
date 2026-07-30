@@ -1,3 +1,5 @@
+pub(crate) mod cache;
+pub(crate) mod external_tools;
 pub(crate) mod library;
 pub(crate) mod pending_delete;
 

@@ -8,6 +8,7 @@ use std::{
 };
 
 use rusqlite::{OptionalExtension, Transaction};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -62,6 +63,24 @@ pub struct CacheEntryHandle {
     pub entry_ordinal: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheSettings {
+    pub parent_display_path: String,
+    pub capacity_bytes: i64,
+    pub used_bytes: i64,
+    pub available_bytes: Option<u64>,
+    pub active_available: bool,
+    pub draining_root_count: i64,
+    pub draining_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheLocationCandidate {
+    pub display_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CacheService {
     database: Arc<Database>,
@@ -87,6 +106,28 @@ impl CacheService {
         parent: &Path,
         operation_id: OperationId,
     ) -> Result<CacheRootPlan, DomainError> {
+        self.prepare_root_internal(parent, operation_id, false)
+    }
+
+    pub fn ensure_default_root(&self) -> Result<(), DomainError> {
+        let configured: bool = self
+            .database
+            .open_read_connection()?
+            .query_row(
+                "SELECT active_cache_root_id IS NOT NULL FROM cache_policy WHERE slot=1",
+                (),
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if configured {
+            return Ok(());
+        }
+        let plan =
+            self.prepare_root_internal(&self.app_data_directory, OperationId::new(), true)?;
+        self.execute_root_create(plan.intent_id).map(|_| ())
+    }
+
+    pub fn inspect_location(&self, parent: &Path) -> Result<CacheLocationCandidate, DomainError> {
         let probe = probe_directory(parent)?;
         if !probe.strong_identity || probe.directory_file_id.is_none() {
             return Err(DomainError::new(
@@ -95,6 +136,69 @@ impl CacheService {
             ));
         }
         if paths_overlap(&probe.absolute_path, &self.app_data_directory) {
+            return Err(DomainError::new(
+                ErrorCode::RootConflict,
+                "自选缓存位置不能与应用数据目录重叠。",
+            ));
+        }
+        let connection = self.database.open_read_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT binding.absolute_path_display FROM root
+             JOIN root_binding binding ON binding.binding_id=root.current_binding_id
+             WHERE root.lifecycle!='Tombstoned'",
+            )
+            .map_err(map_sqlite_error)?;
+        let roots = statement
+            .query_map((), |row| row.get::<_, String>(0))
+            .map_err(map_sqlite_error)?;
+        for root in roots {
+            if paths_overlap(
+                &probe.absolute_path,
+                Path::new(&root.map_err(map_sqlite_error)?),
+            ) {
+                return Err(DomainError::new(
+                    ErrorCode::RootConflict,
+                    "缓存父目录与现有图库或应用 Root 重叠。",
+                ));
+            }
+        }
+        let denied: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM volume_identity volume
+                JOIN volume_policy policy ON policy.volume_id=volume.volume_id
+                WHERE volume.strong_identity_key=?1
+             )",
+                [&probe.volume_identity_key],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if denied {
+            return Err(DomainError::new(
+                ErrorCode::VolumeWriteDenied,
+                "该卷曾作为内存卡来源，不能承载缓存。",
+            ));
+        }
+        Ok(CacheLocationCandidate {
+            display_path: probe.absolute_path.to_string_lossy().to_string(),
+        })
+    }
+
+    fn prepare_root_internal(
+        &self,
+        parent: &Path,
+        operation_id: OperationId,
+        allow_app_data_parent: bool,
+    ) -> Result<CacheRootPlan, DomainError> {
+        let probe = probe_directory(parent)?;
+        if !probe.strong_identity || probe.directory_file_id.is_none() {
+            return Err(DomainError::new(
+                ErrorCode::CacheOwnership,
+                "缓存父目录缺少可靠目录身份。",
+            ));
+        }
+        if !allow_app_data_parent && paths_overlap(&probe.absolute_path, &self.app_data_directory) {
             return Err(DomainError::new(
                 ErrorCode::RootConflict,
                 "自选缓存位置不能与应用数据目录重叠。",
@@ -202,6 +306,172 @@ impl CacheService {
             intent_id,
             cache_root_id: root_id,
             child_path: result_path,
+        })
+    }
+
+    pub fn settings(&self) -> Result<CacheSettings, DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let row = connection
+            .query_row(
+                "SELECT snapshot.absolute_path_display, policy.capacity_bytes,
+                    binding.absolute_path_display,
+                    COALESCE((SELECT SUM(entry.size_bytes) FROM cache_entry entry
+                              WHERE entry.cache_root_id=policy.active_cache_root_id
+                                AND entry.entry_state IN ('Live','NeedsAttention')), 0)
+             FROM cache_policy policy
+             JOIN cache_root_ownership ownership
+               ON ownership.cache_root_id=policy.active_cache_root_id
+             JOIN directory_identity_snapshot snapshot
+               ON snapshot.directory_snapshot_id=ownership.parent_directory_snapshot_id
+             JOIN root root ON root.root_id=policy.active_cache_root_id
+             JOIN root_binding binding ON binding.binding_id=root.current_binding_id
+             WHERE policy.slot=1",
+                (),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(map_sqlite_error)?;
+        let (parent, capacity, active_path, active_used) = row.unwrap_or_else(|| {
+            (
+                self.app_data_directory.to_string_lossy().to_string(),
+                CACHE_DEFAULT_BYTES,
+                self.app_data_directory.to_string_lossy().to_string(),
+                0,
+            )
+        });
+        let (draining_count, draining_bytes): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT ownership.cache_root_id),
+                    COALESCE(SUM(CASE WHEN entry.entry_state IN ('Live','NeedsAttention')
+                                      THEN entry.size_bytes ELSE 0 END), 0)
+             FROM cache_root_ownership ownership
+             LEFT JOIN cache_entry entry ON entry.cache_root_id=ownership.cache_root_id
+             WHERE ownership.ownership_state IN ('Draining','Offline','IdentityMismatch')",
+                (),
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(map_sqlite_error)?;
+        let active_available = self.active_root().is_ok();
+        let available = active_available
+            .then(|| {
+                disk_space(Path::new(&active_path))
+                    .ok()
+                    .map(|value| value.0)
+            })
+            .flatten();
+        Ok(CacheSettings {
+            parent_display_path: parent,
+            capacity_bytes: capacity,
+            used_bytes: active_used.saturating_add(draining_bytes),
+            available_bytes: available,
+            active_available,
+            draining_root_count: draining_count,
+            draining_bytes,
+        })
+    }
+
+    pub fn update_capacity(
+        &self,
+        capacity_bytes: i64,
+        operation_id: OperationId,
+    ) -> Result<(), DomainError> {
+        if !(1..=CACHE_MAX_BYTES).contains(&capacity_bytes) {
+            return Err(DomainError::new(
+                ErrorCode::CacheOwnership,
+                "缓存上限必须大于 0 且不超过 64 GB。",
+            ));
+        }
+        let request_hash = Sha256::digest(capacity_bytes.to_le_bytes()).to_vec();
+        self.database.writer()?.transaction(move |transaction| {
+            reject_root_change_while_busy(transaction)?;
+            let existing = transaction.query_row(
+                "SELECT operation_kind, request_hash FROM operation_event WHERE operation_id=?1",
+                [operation_id.as_bytes().as_slice()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            ).optional().map_err(map_sqlite_error)?;
+            if let Some((kind, hash)) = existing {
+                if kind == "CacheCapacityChange" && hash == request_hash {
+                    return Ok(());
+                }
+                return Err(DomainError::new(
+                    ErrorCode::DuplicateOperation,
+                    "OperationId 已用于不同设置变更。",
+                ));
+            }
+            record_operation(
+                transaction,
+                operation_id,
+                "CacheCapacityChange",
+                &request_hash,
+            )?;
+            transaction
+                .execute(
+                    "UPDATE cache_policy SET capacity_bytes=?1, confirmed_at=?2,
+                    row_version=row_version+1 WHERE slot=1",
+                    (capacity_bytes, now_micros()),
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+    }
+
+    pub fn drain_progressively(&self) -> Result<usize, DomainError> {
+        self.reconcile_evictions()?;
+        let mut evicted = 0;
+        loop {
+            let connection = self.database.open_read_connection()?;
+            let root = connection
+                .query_row(
+                    "SELECT ownership.cache_root_id FROM cache_root_ownership ownership
+                 WHERE ownership.ownership_state='Draining'
+                   AND EXISTS(SELECT 1 FROM cache_entry entry
+                              WHERE entry.cache_root_id=ownership.cache_root_id
+                                AND entry.entry_state='Live')
+                 ORDER BY ownership.created_at LIMIT 1",
+                    (),
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?;
+            drop(connection);
+            let Some(bytes) = root else {
+                self.retire_empty_draining_roots()?;
+                return Ok(evicted);
+            };
+            let root_id =
+                RootId::from_uuid(uuid::Uuid::from_slice(&bytes).map_err(|_| corrupt_id())?);
+            let Some(entry) = self.oldest_live_entry(root_id)? else {
+                self.retire_empty_draining_roots()?;
+                continue;
+            };
+            if !self.evict_entry(entry)? {
+                return Ok(evicted);
+            }
+            evicted += 1;
+            std::thread::yield_now();
+        }
+    }
+
+    fn retire_empty_draining_roots(&self) -> Result<(), DomainError> {
+        self.database.writer()?.transaction(|transaction| {
+            transaction
+                .execute(
+                    "UPDATE cache_root_ownership SET ownership_state='Retired'
+                 WHERE ownership_state='Draining'
+                   AND NOT EXISTS(SELECT 1 FROM cache_entry entry
+                                  WHERE entry.cache_root_id=cache_root_ownership.cache_root_id
+                                    AND entry.entry_state IN ('Live','NeedsAttention'))",
+                    (),
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
         })
     }
 
@@ -474,7 +744,9 @@ impl CacheService {
                     "缓存空间不足，且没有可安全淘汰的 Entry。",
                 )
             })?;
-            self.evict_entry(entry)?;
+            if !self.evict_entry(entry)? {
+                return Ok(evicted);
+            }
             evicted += 1;
         }
     }
@@ -550,12 +822,14 @@ impl CacheService {
                     "缓存空间不足，且没有可安全淘汰的 Entry。",
                 )
             })?;
-            self.evict_entry(entry)?;
+            if !self.evict_entry(entry)? {
+                return Ok(evicted);
+            }
             evicted += 1;
         }
     }
 
-    fn evict_entry(&self, entry: StoredEntry) -> Result<(), DomainError> {
+    fn evict_entry(&self, entry: StoredEntry) -> Result<bool, DomainError> {
         let intent_id = CacheEvictionIntentId::new();
         let reservation_id = ReservationId::new();
         let operation_id = OperationId::new();
@@ -630,7 +904,7 @@ impl CacheService {
                 .map_err(map_sqlite_error)?;
             Ok(())
         })?;
-        self.resume_eviction(intent_id).map(|_| ())
+        self.resume_eviction(intent_id)
     }
 
     fn resume_eviction(&self, intent_id: CacheEvictionIntentId) -> Result<bool, DomainError> {
@@ -1071,6 +1345,8 @@ impl CacheService {
              FROM cache_entry entry JOIN root ON root.root_id=entry.cache_root_id
              JOIN root_binding binding ON binding.binding_id=root.current_binding_id
              WHERE entry.cache_root_id=?1 AND entry.entry_state='Live'
+               AND NOT EXISTS(SELECT 1 FROM cache_eviction_intent intent
+                              WHERE intent.cache_entry_id=entry.cache_entry_id)
              ORDER BY entry.last_accessed_at ASC, entry.cache_entry_id ASC LIMIT 1",
                 [root.as_bytes().as_slice()],
                 |row| {
@@ -1232,6 +1508,7 @@ fn reject_root_change_while_busy(transaction: &Transaction<'_>) -> Result<(), Do
         .query_row(
             "SELECT EXISTS(
             SELECT 1 FROM task_intent WHERE lifecycle NOT IN ('Completed','Cancelled')
+            UNION ALL SELECT 1 FROM scan_run WHERE run_state='Running'
             UNION ALL SELECT 1 FROM cache_eviction_intent
               WHERE intent_state IN ('Prepared','Deleting','AwaitingRoot')
          )",
@@ -1571,6 +1848,24 @@ mod tests {
     fn reserve_percentage_uses_checked_ceiling() {
         assert_eq!(ceil_ten_percent(11).unwrap(), 2);
         assert_eq!(ceil_ten_percent(20).unwrap(), 2);
+    }
+
+    #[test]
+    fn settings_are_available_before_first_root_and_detect_replaced_active_root() {
+        let faults = FaultInjector::default();
+        let fixture = cache_fixture(faults.clone());
+        let service =
+            CacheService::new(fixture.database.clone(), &fixture.app_root, faults.clone());
+        let unconfigured = service.settings().unwrap();
+        assert_eq!(unconfigured.capacity_bytes, CACHE_DEFAULT_BYTES);
+        assert!(!unconfigured.active_available);
+
+        let (service, plan) = activate_cache(&fixture, faults);
+        assert!(service.settings().unwrap().active_available);
+        let moved = plan.child_path.with_extension("replaced-generated-root");
+        fs::rename(&plan.child_path, &moved).unwrap();
+        fs::create_dir(&plan.child_path).unwrap();
+        assert!(!service.settings().unwrap().active_available);
     }
 
     #[test]

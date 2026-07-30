@@ -12,10 +12,12 @@ import {
   resetDemoDeletionState,
   simulateDemoRestart,
 } from '../shared/commands/library';
+import { resetDemoSettings } from '../shared/commands/settings';
 import { App } from './App';
 
 beforeEach(() => {
   resetDemoDeletionState();
+  resetDemoSettings();
   window.history.replaceState(null, '', '/');
 });
 
@@ -33,8 +35,11 @@ describe('阶段 3 图库与既有只读能力', () => {
       screen.queryByRole('button', { name: /^待删除 \d+$/ }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: /导入|Photoshop|文件位置/ }),
-    ).not.toBeInTheDocument();
+      screen.getByRole('button', { name: /用 Photoshop 打开 RAF/ }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: /打开当前文件位置/ }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /标记待删除/ }),
     ).toBeInTheDocument();
@@ -437,6 +442,131 @@ describe('阶段 3 待删除复核闭环', () => {
       ),
     ).toBeInTheDocument();
     expect(window.location.hash).toBe('#/library');
+  });
+});
+
+describe('阶段 4 Photoshop、文件位置与设置完善', () => {
+  test('applies paired, RAF-only and JPG-only external action rules', async () => {
+    render(<App />);
+    await screen.findByText('DSCF1031.JPG');
+
+    const photoshop = screen.getByRole('button', {
+      name: '用 Photoshop 打开 RAF',
+    });
+    const location = screen.getByRole('button', {
+      name: '打开当前文件位置',
+    });
+    expect(photoshop).toBeDisabled();
+    expect(location).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
+    );
+    await waitFor(() => expect(photoshop).toBeEnabled());
+    expect(location).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: '第 1 张：DSCF1042.JPG' }),
+    );
+    await waitFor(() => expect(screen.getByText('JPG ✓')).toBeInTheDocument());
+    expect(screen.getByText('RAF ✓')).toBeInTheDocument();
+    expect(photoshop).toBeEnabled();
+    fireEvent.click(photoshop);
+    expect(
+      await screen.findByRole('dialog', { name: '把 RAF 交给 Photoshop？' }),
+    ).toHaveTextContent('不受本应用控制');
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  });
+
+  test('first RAF click configures through the picker while invalid tools require settings', async () => {
+    window.history.replaceState(null, '', '/?scenario=photoshop-unconfigured');
+    const first = render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
+    );
+    const photoshop = screen.getByRole('button', {
+      name: '用 Photoshop 打开 RAF',
+    });
+    await waitFor(() => expect(photoshop).toBeEnabled());
+    fireEvent.click(photoshop);
+    expect(
+      await screen.findByRole('dialog', { name: '把 RAF 交给 Photoshop？' }),
+    ).toBeInTheDocument();
+
+    first.unmount();
+    resetDemoSettings();
+    window.history.replaceState(null, '', '/?scenario=photoshop-invalid');
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '用 Photoshop 打开 RAF' }),
+      ).toBeDisabled(),
+    );
+    expect(screen.getByText(/Photoshop 需要重新选择/)).toBeInTheDocument();
+  });
+
+  test('renders all four settings groups without exposing ToolId or manual cleanup', async () => {
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: /设置/ }));
+
+    const sidebar = screen.getByRole('navigation', { name: '设置分组' });
+    expect(
+      within(sidebar).getByRole('button', { name: /照片文件夹/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(sidebar).getByRole('button', { name: /预览缓存/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(sidebar).getByRole('button', { name: /Photoshop/ }),
+    ).toBeInTheDocument();
+    expect(
+      within(sidebar).getByRole('button', { name: /操作记录/ }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(sidebar).getByRole('button', { name: /预览缓存/ }));
+    expect(await screen.findByText('实际占用')).toBeInTheDocument();
+    expect(screen.getByText('磁盘可用')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /清理缓存/ }),
+    ).not.toBeInTheDocument();
+
+    const capacity = screen.getByRole('combobox', {
+      name: '预览缓存容量上限',
+    });
+    expect(capacity).toHaveValue(String(32 * 1_073_741_824));
+    fireEvent.change(capacity, {
+      target: { value: String(16 * 1_073_741_824) },
+    });
+    expect(
+      screen.getByRole('dialog', { name: '更改预览缓存上限？' }),
+    ).toHaveTextContent('后台渐进淘汰');
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(capacity).toHaveValue(String(32 * 1_073_741_824));
+
+    fireEvent.click(within(sidebar).getByRole('button', { name: /Photoshop/ }));
+    expect(
+      await screen.findByText('Photoshop.exe · 已验证'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/20000000-0000/)).not.toBeInTheDocument();
+    expect(screen.getByText(/不控制 Photoshop 后续写入/)).toBeInTheDocument();
+  });
+
+  test('pending-delete DOM contains neither external action nor placeholder', async () => {
+    window.history.replaceState(null, '', '/?scenario=pending');
+    render(<App />);
+    fireEvent.click(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /^待删除 1$/ }),
+    );
+    await screen.findByText('待删除 · 第 1 / 1 张');
+    expect(
+      screen.queryByRole('button', { name: /Photoshop|文件位置/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Photoshop|文件位置/)).not.toBeInTheDocument();
   });
 });
 

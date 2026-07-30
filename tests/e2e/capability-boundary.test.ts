@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 
 import { expect, test } from 'vitest';
 
-test('the default Tauri capability grants only core UI and the native folder picker', async () => {
+test('the default Tauri capability grants only core UI and native configuration pickers', async () => {
   const text = await readFile(
     new URL('../../src-tauri/capabilities/default.json', import.meta.url),
     'utf8',
@@ -13,7 +13,7 @@ test('the default Tauri capability grants only core UI and the native folder pic
   expect(capability.permissions.join(' ')).not.toMatch(/(?:fs|shell|upload)/i);
 });
 
-test('the frontend exposes id-based marks but no file mutation or external-tool command', async () => {
+test('the frontend exposes narrow id-based photo and external-tool commands', async () => {
   const text = await readFile(
     new URL('../../src/shared/commands/safety.ts', import.meta.url),
     'utf8',
@@ -37,5 +37,23 @@ test('the frontend exposes id-based marks but no file mutation or external-tool 
   );
   expect(libraryClient).toMatch(
     /invoke<\{ dataUrl: string \}>\('get_photo_preview', \{[\s\S]*?assetId: reference\.assetId,[\s\S]*?assetVersion: reference\.assetVersion/,
+  );
+
+  const settingsClient = await readFile(
+    new URL('../../src/shared/commands/settings.ts', import.meta.url),
+    'utf8',
+  );
+  expect(settingsClient).not.toMatch(/plugin-(fs|shell)/i);
+  expect(settingsClient).toMatch(
+    /invoke\('open_raf_in_photoshop', \{ toolId, photoId, photoVersion \}\)/,
+  );
+  expect(settingsClient).toMatch(
+    /invoke\('open_photo_file_location', \{ photoId, photoVersion \}\)/,
+  );
+  expect(settingsClient).toMatch(
+    /invoke<PhotoshopStatus \| null>\('choose_photoshop'\)/,
+  );
+  expect(settingsClient).not.toMatch(
+    /open_raf_in_photoshop[^\n]+(?:path|executable)/i,
   );
 });

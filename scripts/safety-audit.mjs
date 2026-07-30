@@ -18,12 +18,26 @@ const reviewedAllowlist = [
     reason:
       'Phase 1 cache eviction deletes only a registered CacheEntry through the same verified, write/delete-share-denying handle.',
   },
+  {
+    rule: 'rust-general-shell',
+    path: 'src-tauri/src/external_tools/mod.rs',
+    excerpt: 'Command::new(executable)',
+    reason:
+      'Phase 4 launches only the currently registered and identity-revalidated Photoshop ToolId, with the revalidated RAF path as one direct argument and no shell command string.',
+  },
+  {
+    rule: 'rust-general-shell',
+    path: 'src-tauri/src/external_tools/mod.rs',
+    excerpt: 'Command::new("explorer.exe")',
+    reason:
+      'Phase 4 invokes the fixed Windows Explorer executable only to select an identity-revalidated JPG/RAF resolved from PhotoId and version; no caller path or shell string is accepted.',
+  },
 ];
 
 const reviewedPermissions = new Map([
   [
     'dialog:allow-open',
-    'Phase 3 uses only the native folder picker; the selected path is revalidated by the Rust Root service before binding.',
+    'Phase 4 uses native folder pickers for library/cache configuration; selected paths are revalidated by the narrow Rust Root/cache services before any confirmed change.',
   ],
 ]);
 
@@ -175,7 +189,7 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 3,
+  phase: 4,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
@@ -192,7 +206,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 3 keeps photo-file writes, Windows Shell calls, deletion execution and batch creation outside the implemented boundary.\n'
+    ? 'PASS: phase 4 limits external launches to registered Photoshop and fixed Explorer arguments, preserves cache ownership deletion, and keeps photo import/recycle execution closed.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

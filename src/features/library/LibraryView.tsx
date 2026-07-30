@@ -12,6 +12,14 @@ import {
   type PhotoDetail,
   type SortMode,
 } from '../../shared/commands/library';
+import {
+  choosePhotoshop,
+  getPhotoshopStatus,
+  openPhotoFileLocation,
+  openRafInPhotoshop,
+  type PhotoshopStatus,
+} from '../../shared/commands/settings';
+import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
 import { VirtualFilmstrip } from './VirtualFilmstrip';
 import { PhotoCanvas } from './PhotoCanvas';
@@ -53,8 +61,18 @@ export function LibraryView({
   const current = snapshot.photos[selectedIndex] ?? null;
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [toolStatus, setToolStatus] = useState<PhotoshopStatus | null>(null);
+  const [externalPending, setExternalPending] = useState(false);
+  const [externalError, setExternalError] = useState<string | null>(null);
+  const [confirmPhotoshop, setConfirmPhotoshop] = useState(false);
   const wheelAccumulator = useRef(0);
   const wheelLocked = useRef(false);
+
+  useEffect(() => {
+    void getPhotoshopStatus()
+      .then(setToolStatus)
+      .catch((reason) => setExternalError(readError(reason)));
+  }, []);
 
   useEffect(() => {
     if (current === null) {
@@ -93,6 +111,70 @@ export function LibraryView({
   const dateContext =
     current?.captureLocalKey?.slice(0, 10).replaceAll('-', ' / ') ?? '日期未知';
   const rootOffline = snapshot.binding?.status !== 'Online';
+
+  const requestPhotoshop = async () => {
+    if (detail?.raf === null || detail === null || externalPending) return;
+    setExternalPending(true);
+    setExternalError(null);
+    try {
+      let status = toolStatus ?? (await getPhotoshopStatus());
+      setToolStatus(status);
+      if (!status.configured) {
+        const selected = await choosePhotoshop();
+        if (selected === null) return;
+        status = selected;
+        setToolStatus(selected);
+      }
+      if (!status.available || status.toolId === null) {
+        setExternalError('Photoshop 需要重新选择，请在设置中完成验证。');
+        return;
+      }
+      setConfirmPhotoshop(true);
+    } catch (reason) {
+      setExternalError(readError(reason));
+      void getPhotoshopStatus()
+        .then(setToolStatus)
+        .catch(() => undefined);
+    } finally {
+      setExternalPending(false);
+    }
+  };
+
+  const confirmOpenPhotoshop = async () => {
+    if (detail === null || toolStatus?.toolId === null || toolStatus === null)
+      return;
+    setExternalPending(true);
+    setExternalError(null);
+    try {
+      await openRafInPhotoshop(
+        toolStatus.toolId,
+        detail.photoId,
+        detail.photoVersion,
+      );
+      setConfirmPhotoshop(false);
+    } catch (reason) {
+      setConfirmPhotoshop(false);
+      setExternalError(readError(reason));
+      void getPhotoshopStatus()
+        .then(setToolStatus)
+        .catch(() => undefined);
+    } finally {
+      setExternalPending(false);
+    }
+  };
+
+  const revealCurrent = async () => {
+    if (detail === null || externalPending) return;
+    setExternalPending(true);
+    setExternalError(null);
+    try {
+      await openPhotoFileLocation(detail.photoId, detail.photoVersion);
+    } catch (reason) {
+      setExternalError(readError(reason));
+    } finally {
+      setExternalPending(false);
+    }
+  };
 
   return (
     <div className="screen library-screen">
@@ -147,6 +229,12 @@ export function LibraryView({
           error={detailError}
           marked={current?.deletionState !== null}
           mutationPending={mutationPending}
+          toolStatus={toolStatus}
+          externalActionPending={externalPending}
+          externalError={externalError}
+          onOpenPhotoshop={() => void requestPhotoshop()}
+          onOpenFileLocation={() => void revealCurrent()}
+          onOpenSettings={onOpenSettings}
           onToggleDeletion={onToggleDeletion}
         />
       </main>
@@ -182,6 +270,24 @@ export function LibraryView({
           <div />
         )}
       </footer>
+      {confirmPhotoshop && detail !== null && (
+        <Modal
+          title="把 RAF 交给 Photoshop？"
+          confirmLabel="用 Photoshop 打开 RAF"
+          busy={externalPending}
+          onConfirm={() => void confirmOpenPhotoshop()}
+          onCancel={() => setConfirmPhotoshop(false)}
+        >
+          <p>{detail.fileName}</p>
+          <p>
+            文件交给 Photoshop 后，其修改、保存和附属文件行为由 Photoshop
+            管理，不受本应用控制。本应用不会监控或替代 Photoshop 的保存行为。
+          </p>
+          <p className="safe-note">
+            本应用在启动外部程序前只读取并验证照片，不会修改照片。
+          </p>
+        </Modal>
+      )}
     </div>
   );
 }

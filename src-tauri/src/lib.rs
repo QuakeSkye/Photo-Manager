@@ -3,6 +3,7 @@ pub mod catalog;
 mod commands;
 pub mod db;
 pub mod domain;
+pub mod external_tools;
 pub mod media;
 pub mod pending_delete;
 pub mod roots;
@@ -40,18 +41,26 @@ pub fn run() {
                 app_data_directory,
                 safety::FaultInjector::default(),
             ));
-            let preview_service =
-                std::sync::Arc::new(cache::PreviewService::new(database.clone(), cache_service));
+            let _ = cache_service.ensure_default_root();
+            let preview_service = std::sync::Arc::new(cache::PreviewService::new(
+                database.clone(),
+                cache_service.clone(),
+            ));
             let pending_delete_service =
                 std::sync::Arc::new(pending_delete::PendingDeleteService::new(database.clone()));
+            let external_tool_service =
+                std::sync::Arc::new(external_tools::ExternalToolService::new(database.clone()));
             let _ = scan_coordinator.start_background_if_bound();
             application.manage(database);
             application.manage(catalog);
             application.manage(library_service);
             application.manage(preview_service);
+            application.manage(cache_service.clone());
             application.manage(pending_delete_service);
+            application.manage(external_tool_service);
             application.manage(scan_coordinator);
             application.manage(safety_state);
+            commands::cache::start_cache_maintenance(cache_service);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -65,6 +74,14 @@ pub fn run() {
             commands::library::get_scan_status,
             commands::library::cancel_library_scan,
             commands::library::retry_library_scan,
+            commands::external_tools::get_photoshop_status,
+            commands::external_tools::choose_photoshop,
+            commands::external_tools::open_raf_in_photoshop,
+            commands::external_tools::open_photo_file_location,
+            commands::cache::get_cache_settings,
+            commands::cache::validate_cache_location,
+            commands::cache::update_cache_location,
+            commands::cache::update_cache_capacity,
             commands::pending_delete::get_pending_delete_snapshot,
             commands::pending_delete::toggle_deletion_mark,
             commands::pending_delete::undo_deletion_mark,

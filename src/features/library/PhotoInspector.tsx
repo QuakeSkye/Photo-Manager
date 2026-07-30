@@ -1,4 +1,5 @@
 import type { PhotoDetail } from '../../shared/commands/library';
+import type { PhotoshopStatus } from '../../shared/commands/settings';
 
 interface PhotoInspectorProps {
   readonly detail: PhotoDetail | null;
@@ -6,6 +7,12 @@ interface PhotoInspectorProps {
   readonly error: string | null;
   readonly marked: boolean;
   readonly mutationPending: boolean;
+  readonly toolStatus: PhotoshopStatus | null;
+  readonly externalActionPending: boolean;
+  readonly externalError: string | null;
+  readonly onOpenPhotoshop: () => void;
+  readonly onOpenFileLocation: () => void;
+  readonly onOpenSettings: () => void;
   readonly onToggleDeletion: () => void;
 }
 
@@ -15,6 +22,12 @@ export function PhotoInspector({
   error,
   marked,
   mutationPending,
+  toolStatus,
+  externalActionPending,
+  externalError,
+  onOpenPhotoshop,
+  onOpenFileLocation,
+  onOpenSettings,
   onToggleDeletion,
 }: PhotoInspectorProps) {
   return (
@@ -110,6 +123,50 @@ export function PhotoInspector({
       </div>
       <div className="inspector-spacer" />
       <section className="library-actions" aria-label="图库动作区">
+        {externalError !== null && (
+          <div className="inline-error compact-error" role="alert">
+            <strong>外部工具操作未完成</strong>
+            <span>{externalError}</span>
+          </div>
+        )}
+        <button
+          className="button-primary"
+          type="button"
+          disabled={
+            detail?.raf === null ||
+            detail === null ||
+            externalActionPending ||
+            (toolStatus?.configured === true && !toolStatus.available)
+          }
+          onClick={onOpenPhotoshop}
+        >
+          {externalActionPending ? '正在准备…' : '用 Photoshop 打开 RAF'}
+        </button>
+        {detail?.raf === null && (
+          <p>当前照片没有 RAF，Photoshop 操作不可用。</p>
+        )}
+        {detail?.raf !== null &&
+          toolStatus?.configured === true &&
+          !toolStatus.available && (
+            <p>
+              Photoshop 需要重新选择。{' '}
+              <button
+                className="inline-link"
+                type="button"
+                onClick={onOpenSettings}
+              >
+                打开设置
+              </button>
+            </p>
+          )}
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={detail === null || externalActionPending}
+          onClick={onOpenFileLocation}
+        >
+          打开当前文件位置
+        </button>
         <button
           className="delete-outline-button"
           type="button"
