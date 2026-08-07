@@ -1,3 +1,5 @@
+import { useId, useState, type ReactNode } from 'react';
+
 import type { PhotoDetail } from '../../shared/commands/library';
 import type { PhotoshopStatus } from '../../shared/commands/settings';
 
@@ -30,6 +32,9 @@ export function PhotoInspector({
   onOpenSettings,
   onToggleDeletion,
 }: PhotoInspectorProps) {
+  const [timeExpanded, setTimeExpanded] = useState(true);
+  const [parametersExpanded, setParametersExpanded] = useState(true);
+
   return (
     <aside className="photo-inspector" aria-label="照片详情">
       <div className="inspector-scroll">
@@ -66,8 +71,11 @@ export function PhotoInspector({
                 </span>
               </div>
             </section>
-            <section className="metadata-section">
-              <h3>时间</h3>
+            <MetadataAccordion
+              title="时间与文件"
+              expanded={timeExpanded}
+              onToggle={() => setTimeExpanded((current) => !current)}
+            >
               <dl>
                 {detail.captureLocalKey === null ? (
                   <>
@@ -94,13 +102,25 @@ export function PhotoInspector({
                       label="相机本地时间"
                       value={detail.captureLocalKey.slice(11, 19)}
                     />
+                    <MetadataRow
+                      label="文件时间"
+                      value={formatFileTime(detail.fileTimeMs)}
+                    />
                     <p className="metadata-note">按相机记录的本地时间显示</p>
                   </>
                 )}
+                <MetadataRow
+                  label="容量"
+                  value={formatBytes(detail.totalSizeBytes)}
+                />
               </dl>
-            </section>
-            <section className="metadata-section">
-              <h3>照片参数</h3>
+            </MetadataAccordion>
+            <MetadataAccordion
+              title="照片参数"
+              summary={detail.cameraModel ?? '未记录'}
+              expanded={parametersExpanded}
+              onToggle={() => setParametersExpanded((current) => !current)}
+            >
               <dl>
                 <MetadataRow
                   label="相机"
@@ -112,12 +132,8 @@ export function PhotoInspector({
                 <MetadataRow label="ISO" value="未记录" />
                 <MetadataRow label="焦距" value="未记录" />
                 <MetadataRow label="尺寸" value="未记录" />
-                <MetadataRow
-                  label="容量"
-                  value={formatBytes(detail.totalSizeBytes)}
-                />
               </dl>
-            </section>
+            </MetadataAccordion>
           </>
         )}
       </div>
@@ -179,6 +195,51 @@ export function PhotoInspector({
         <p>D 只保存复核标记，不会移动或修改照片。</p>
       </section>
     </aside>
+  );
+}
+
+function MetadataAccordion({
+  title,
+  summary,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  expanded: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const contentId = useId();
+
+  return (
+    <section className="metadata-section metadata-accordion">
+      <h3 className="metadata-accordion-heading">
+        <button
+          className="metadata-accordion-toggle"
+          type="button"
+          aria-controls={contentId}
+          aria-expanded={expanded}
+          onClick={onToggle}
+        >
+          <span>{title}</span>
+          {summary !== undefined && (
+            <span className="metadata-accordion-summary">{summary}</span>
+          )}
+          <span className="metadata-accordion-chevron" aria-hidden="true">
+            {expanded ? '−' : '+'}
+          </span>
+        </button>
+      </h3>
+      <div
+        id={contentId}
+        className="metadata-accordion-content"
+        hidden={!expanded}
+      >
+        {children}
+      </div>
+    </section>
   );
 }
 

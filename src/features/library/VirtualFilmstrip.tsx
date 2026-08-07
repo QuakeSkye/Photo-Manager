@@ -1,10 +1,22 @@
-import { useEffect, useRef, useState, type WheelEvent } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type WheelEvent,
+} from 'react';
 
 import type { PhotoSummary } from '../../shared/commands/library';
 import { PreviewImage } from './preview';
 
-const ITEM_HEIGHT = 82;
+const FILMSTRIP_ITEM_HEIGHT = 106;
+const FILMSTRIP_ROW_HEIGHT = 112;
 const OVERSCAN = 3;
+
+const filmstripSizing = {
+  '--filmstrip-item-height': `${FILMSTRIP_ITEM_HEIGHT}px`,
+  '--filmstrip-row-height': `${FILMSTRIP_ROW_HEIGHT}px`,
+} as CSSProperties;
 
 interface VirtualFilmstripProps {
   readonly photos: readonly PhotoSummary[];
@@ -41,8 +53,8 @@ export function VirtualFilmstrip({
   useEffect(() => {
     const viewport = viewportRef.current;
     if (viewport === null || selectedIndex < 0) return;
-    const top = selectedIndex * ITEM_HEIGHT;
-    const bottom = top + ITEM_HEIGHT;
+    const top = selectedIndex * FILMSTRIP_ROW_HEIGHT;
+    const bottom = top + FILMSTRIP_ROW_HEIGHT;
     let nextScrollTop = viewport.scrollTop;
     if (top < viewport.scrollTop) nextScrollTop = top;
     else if (bottom > viewport.scrollTop + viewport.clientHeight)
@@ -53,10 +65,13 @@ export function VirtualFilmstrip({
     }
   }, [selectedIndex]);
 
-  const start = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
+  const start = Math.max(
+    0,
+    Math.floor(scrollTop / FILMSTRIP_ROW_HEIGHT) - OVERSCAN,
+  );
   const end = Math.min(
     photos.length,
-    Math.ceil((scrollTop + height) / ITEM_HEIGHT) + OVERSCAN,
+    Math.ceil((scrollTop + height) / FILMSTRIP_ROW_HEIGHT) + OVERSCAN,
   );
   const visible = photos.slice(start, end);
 
@@ -64,6 +79,7 @@ export function VirtualFilmstrip({
     <aside
       className={reviewMode ? 'filmstrip review-filmstrip' : 'filmstrip'}
       aria-label={reviewMode ? '待删除照片缩略图' : '照片缩略图'}
+      style={filmstripSizing}
     >
       <div
         ref={viewportRef}
@@ -73,7 +89,7 @@ export function VirtualFilmstrip({
       >
         <div
           className="filmstrip-track"
-          style={{ height: photos.length * ITEM_HEIGHT }}
+          style={{ height: photos.length * FILMSTRIP_ROW_HEIGHT }}
         >
           {visible.map((photo, offset) => {
             const index = start + offset;
@@ -85,7 +101,9 @@ export function VirtualFilmstrip({
                     ? 'filmstrip-item is-selected'
                     : 'filmstrip-item'
                 }
-                style={{ transform: `translateY(${index * ITEM_HEIGHT}px)` }}
+                style={{
+                  transform: `translateY(${index * FILMSTRIP_ROW_HEIGHT}px)`,
+                }}
                 type="button"
                 aria-label={`第 ${index + 1} 张：${photo.fileName}`}
                 aria-current={

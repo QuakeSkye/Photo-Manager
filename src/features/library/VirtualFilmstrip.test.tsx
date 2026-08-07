@@ -30,8 +30,14 @@ describe('VirtualFilmstrip', () => {
     );
 
     expect(screen.getAllByRole('button').length).toBeLessThan(20);
+    expect(
+      screen.getByRole('complementary', { name: '照片缩略图' }),
+    ).toHaveStyle({
+      '--filmstrip-item-height': '106px',
+      '--filmstrip-row-height': '112px',
+    });
     expect(container.querySelector('.filmstrip-track')).toHaveStyle({
-      height: '82000px',
+      height: '112000px',
     });
 
     const viewport = container.querySelector('.filmstrip-viewport');
@@ -39,7 +45,7 @@ describe('VirtualFilmstrip', () => {
     if (viewport === null) return;
     Object.defineProperty(viewport, 'scrollTop', {
       configurable: true,
-      value: 8_200,
+      value: 11_200,
       writable: true,
     });
     fireEvent.scroll(viewport);
