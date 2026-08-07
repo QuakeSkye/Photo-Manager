@@ -77,6 +77,7 @@ const rules = [
       'src-tauri/src/catalog/',
       'src-tauri/src/media/',
       'src-tauri/src/roots/',
+      'src-tauri/src/import_preflight/',
     ],
     pattern:
       /\.write\s*\(\s*true\s*\)|\.append\s*\(\s*true\s*\)|\.truncate\s*\(\s*true\s*\)|\.create_new\s*\(\s*true\s*\)|fs::create_dir|fs::write|SetFileInformationByHandle/,
@@ -96,6 +97,16 @@ const rules = [
     include: ['.rs'],
     pathPrefixes: ['src-tauri/src/'],
     pattern: /INSERT\s+INTO\s+(?:deletion_batch|deletion_attempt)/i,
+  },
+  {
+    id: 'phase-five-import-execution-creation',
+    include: ['.rs'],
+    pathPrefixes: [
+      'src-tauri/src/import_preflight/',
+      'src-tauri/src/commands/import_preflight.rs',
+    ],
+    pattern:
+      /INSERT\s+INTO\s+(?:task_intent|import_job|import_plan_generation|import_plan_validation|import_space_check|import_attempt|import_partial_ownership)|create_dir|create_new|\bpublish\b|\bpartial\b|copy\s*\(/i,
   },
 ];
 
@@ -189,7 +200,7 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 4,
+  phase: 5,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
@@ -206,7 +217,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 4 limits external launches to registered Photoshop and fixed Explorer arguments, preserves cache ownership deletion, and keeps photo import/recycle execution closed.\n'
+    ? 'PASS: phase 5 import preflight uses only audited read handles for source/target media, creates no ImportJob/Generation/directory/partial/photo, and keeps import/recycle execution closed.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

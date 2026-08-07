@@ -20,6 +20,7 @@ interface PendingDeleteViewProps {
   readonly onSortChange: (mode: SortMode) => void;
   readonly onOpenLibrary: () => void;
   readonly onOpenSettings: () => void;
+  readonly onOpenImport: () => void;
   readonly onCancelCurrent: () => void;
   readonly onUndoDeletion: () => void;
   readonly onRescan: () => void;
@@ -37,6 +38,7 @@ export function PendingDeleteView({
   onSortChange,
   onOpenLibrary,
   onOpenSettings,
+  onOpenImport,
   onCancelCurrent,
   onUndoDeletion,
   onRescan,
@@ -74,6 +76,7 @@ export function PendingDeleteView({
         onOpenPendingDelete={() => undefined}
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
+        onOpenImport={onOpenImport}
       />
       <main className="photo-workspace">
         <VirtualFilmstrip

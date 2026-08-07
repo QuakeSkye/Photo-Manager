@@ -64,6 +64,7 @@ impl FujiLibraryService {
                 "图库与应用数据目录不能重叠。",
             ));
         }
+        self.reject_permanently_protected_volume(&probe)?;
         self.bind_probed(probe)
     }
 
@@ -78,6 +79,7 @@ impl FujiLibraryService {
                 "图库与应用数据目录不能重叠。",
             ));
         }
+        self.reject_permanently_protected_volume(&probe)?;
         let reconnects_existing_library = if probe.strong_identity {
             match &probe.directory_file_id {
                 Some(directory_id) => self
@@ -108,6 +110,34 @@ impl FujiLibraryService {
             display_path: probe.absolute_path.to_string_lossy().into_owned(),
             reconnects_existing_library,
         })
+    }
+
+    fn reject_permanently_protected_volume(
+        &self,
+        probe: &DirectoryProbe,
+    ) -> Result<(), DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let denied = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM volume_identity AS volume
+                    JOIN volume_policy AS policy ON policy.volume_id=volume.volume_id
+                    WHERE volume.identity_format_version=1
+                      AND volume.strong_identity_key=?1
+                      AND policy.deny_write=1
+                 )",
+                [&probe.volume_identity_key],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if denied {
+            return Err(DomainError::new(
+                ErrorCode::VolumeWriteDenied,
+                "该卷曾作为内存卡来源，应用永久拒绝把它用作 Fuji 图库。",
+            ));
+        }
+        Ok(())
     }
 
     pub fn verify_current(&self) -> Result<FujiLibraryBinding, DomainError> {

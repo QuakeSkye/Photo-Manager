@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { LibraryView } from '../features/library/LibraryView';
+import { ImportView } from '../features/import/ImportView';
 import { PendingDeleteView } from '../features/pending-delete/PendingDeleteView';
 import { ScanView } from '../features/scanning/ScanView';
 import { SettingsView } from '../features/settings/SettingsView';
 import {
+  bindLibraryFolder,
   getLibrarySnapshot,
   getPendingDeleteSnapshot,
   getScanStatus,
@@ -18,7 +20,7 @@ import {
   type SortMode,
 } from '../shared/commands/library';
 
-type Route = 'library' | 'pending-delete' | 'settings' | 'scan';
+type Route = 'library' | 'pending-delete' | 'settings' | 'scan' | 'import';
 
 export function App() {
   const [sortMode, setSortMode] = useState<SortMode>('captureDesc');
@@ -36,6 +38,7 @@ export function App() {
     photoId: string | null;
     route: Route;
   } | null>(null);
+  const scanReturnRoute = useRef<'library' | 'import'>('library');
 
   const load = useCallback(
     async (mode: SortMode, preserveSelection = false) => {
@@ -175,10 +178,12 @@ export function App() {
     const target =
       restore?.route === 'scan' && snapshot?.scan !== null
         ? 'scan'
-        : restore?.route === 'pending-delete' &&
-            (snapshot?.pendingDeleteSummary.totalCount ?? 0) > 0
-          ? 'pending-delete'
-          : 'library';
+        : restore?.route === 'import'
+          ? 'import'
+          : restore?.route === 'pending-delete' &&
+              (snapshot?.pendingDeleteSummary.totalCount ?? 0) > 0
+            ? 'pending-delete'
+            : 'library';
     if (
       restore !== null &&
       restore.photoId !== null &&
@@ -232,6 +237,12 @@ export function App() {
         snapshot.restoredPhotoId ?? snapshot.photos[0]?.photoId ?? null,
       );
     }
+  };
+
+  const openImport = () => {
+    if (mutationInFlight.current || snapshot === null) return;
+    setRoute('import');
+    window.history.replaceState(null, '', '#/import');
   };
 
   const openPendingDelete = async () => {
@@ -370,7 +381,11 @@ export function App() {
     }
   };
 
-  const bindingStarted = async (result: BindResult) => {
+  const bindingStarted = async (
+    result: BindResult,
+    returnRoute: 'library' | 'import' = 'library',
+  ) => {
+    scanReturnRoute.current = returnRoute;
     const next = await load(sortMode);
     if (next !== null) {
       setSnapshot({
@@ -388,7 +403,7 @@ export function App() {
           errorMessage: null,
         },
       });
-      setRoute(result.scanKind === 'full' ? 'scan' : 'library');
+      setRoute(result.scanKind === 'full' ? 'scan' : returnRoute);
     }
   };
 
@@ -436,6 +451,7 @@ export function App() {
           onNavigate={navigate}
           onSortChange={changeSort}
           onOpenSettings={openSettings}
+          onOpenImport={openImport}
           onOpenScan={() => setRoute('scan')}
           mutationPending={mutationPending}
           onToggleDeletion={() => void performToggle()}
@@ -456,6 +472,7 @@ export function App() {
           onSortChange={changeSort}
           onOpenLibrary={openLibrary}
           onOpenSettings={openSettings}
+          onOpenImport={openImport}
           onCancelCurrent={() => void performToggle()}
           onUndoDeletion={() => void performUndo()}
           onRescan={() => void startRescan()}
@@ -470,6 +487,19 @@ export function App() {
           onBindingStarted={(result) => void bindingStarted(result)}
         />
       )}
+      {route === 'import' && (
+        <ImportView
+          pendingDeleteSummary={snapshot.pendingDeleteSummary}
+          settingsButtonRef={settingsButtonRef}
+          onOpenLibrary={openLibrary}
+          onOpenPendingDelete={() => void openPendingDelete()}
+          onOpenSettings={openSettings}
+          onBindTarget={async (path) => {
+            const result = await bindLibraryFolder(path);
+            await bindingStarted(result, 'import');
+          }}
+        />
+      )}
       {route === 'scan' && snapshot.scan !== null && (
         <ScanView
           scan={snapshot.scan}
@@ -482,7 +512,15 @@ export function App() {
                 : 'library',
             )
           }
-          onEnterLibrary={() => void enterLibrary()}
+          onEnterLibrary={() => {
+            if (scanReturnRoute.current === 'import') {
+              void load(sortMode).then((next) => {
+                if (next !== null) setRoute('import');
+              });
+            } else {
+              void enterLibrary();
+            }
+          }}
           onOpenSettings={openSettings}
           onStatusChange={(scan) =>
             setSnapshot((current) =>

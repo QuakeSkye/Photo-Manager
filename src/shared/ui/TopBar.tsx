@@ -14,6 +14,7 @@ interface TopBarProps {
   readonly onOpenPendingDelete?: () => void;
   readonly onSortChange?: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
+  readonly onOpenImport?: () => void;
   readonly onBack?: () => void;
 }
 
@@ -29,6 +30,7 @@ export function TopBar({
   onOpenPendingDelete,
   onSortChange,
   onOpenSettings,
+  onOpenImport,
   onBack,
 }: TopBarProps) {
   return (
@@ -90,6 +92,11 @@ export function TopBar({
         </>
       )}
       <div className="tool-actions">
+        {onOpenImport !== undefined && (
+          <button className="tool-button" type="button" onClick={onOpenImport}>
+            导入照片
+          </button>
+        )}
         <button
           ref={settingsButtonRef}
           className="tool-button"
