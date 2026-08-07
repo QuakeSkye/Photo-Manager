@@ -81,6 +81,52 @@ export interface ImportPreflightDraft {
   readonly ioAudit: ProcessIoAuditReport;
 }
 
+export type ImportExecutionPhase =
+  | 'idle'
+  | 'validatingPlan'
+  | 'awaitingPlanConfirmation'
+  | 'awaitingSpace'
+  | 'running'
+  | 'awaitingSource'
+  | 'needsAttention'
+  | 'completed'
+  | 'completedWithErrors'
+  | 'cancelled';
+
+export interface ImportSpaceView {
+  readonly plannedNewBytes: number;
+  readonly availableBytes: number;
+  readonly reserveBytes: number;
+  readonly missingBytes: number;
+}
+
+export interface ImportExecutionStatus {
+  readonly phase: ImportExecutionPhase;
+  readonly jobId: string | null;
+  readonly attemptOrdinal: number | null;
+  readonly completedFiles: number;
+  readonly publishedFiles: number;
+  readonly skippedFiles: number;
+  readonly failedFiles: number;
+  readonly notStartedFiles: number;
+  readonly currentFile: string | null;
+  readonly currentAction: string | null;
+  readonly message: string | null;
+  readonly updatedPlan: ImportPreflightDraft | null;
+  readonly space: ImportSpaceView | null;
+  readonly sourceWriteRequests: number;
+}
+
+export interface ImportRecoverySummary {
+  readonly hasUnfinishedImport: boolean;
+  readonly jobId: string | null;
+  readonly phase: ImportExecutionPhase;
+  readonly completedFiles: number;
+  readonly publishedFiles: number;
+  readonly unresolvedFiles: number;
+  readonly message: string | null;
+}
+
 export async function chooseImportSourceFolder(): Promise<string | null> {
   if (useDemoBackend()) return 'E:\\DCIM\\100_FUJI';
   const selected = await open({ directory: true, multiple: false });
@@ -122,8 +168,86 @@ export async function cancelImportPreflight(): Promise<void> {
   await invoke('cancel_import_preflight');
 }
 
+export async function startImport(
+  draftDigest: string,
+): Promise<ImportExecutionStatus> {
+  if (useDemoBackend()) {
+    demoExecution = {
+      ...emptyExecution(),
+      phase: 'completed',
+      jobId: 'demo-import-job',
+      attemptOrdinal: 1,
+      completedFiles: 5,
+      publishedFiles: 3,
+      skippedFiles: 1,
+      message: '导入完成。',
+    };
+    return demoExecution;
+  }
+  return invoke<ImportExecutionStatus>('start_import', { draftDigest });
+}
+
+export async function retryImport(): Promise<ImportExecutionStatus> {
+  if (useDemoBackend()) return demoExecution;
+  return invoke<ImportExecutionStatus>('retry_import');
+}
+
+export async function getImportExecutionStatus(): Promise<ImportExecutionStatus> {
+  if (useDemoBackend()) return demoExecution;
+  return invoke<ImportExecutionStatus>('get_import_execution_status');
+}
+
+export async function cancelRemainingImport(): Promise<void> {
+  if (useDemoBackend()) return;
+  await invoke('cancel_remaining_import');
+}
+
+export async function cancelImportBeforeStart(): Promise<ImportExecutionStatus> {
+  if (useDemoBackend()) {
+    demoExecution = { ...emptyExecution(), phase: 'cancelled' };
+    return demoExecution;
+  }
+  return invoke<ImportExecutionStatus>('cancel_import_before_start');
+}
+
+export async function getImportRecoverySummary(): Promise<ImportRecoverySummary> {
+  if (useDemoBackend()) {
+    return {
+      hasUnfinishedImport: false,
+      jobId: null,
+      phase: 'idle',
+      completedFiles: 0,
+      publishedFiles: 0,
+      unresolvedFiles: 0,
+      message: null,
+    };
+  }
+  return invoke<ImportRecoverySummary>('get_import_recovery_summary');
+}
+
 function useDemoBackend(): boolean {
   return typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
+}
+
+let demoExecution: ImportExecutionStatus = emptyExecution();
+
+function emptyExecution(): ImportExecutionStatus {
+  return {
+    phase: 'idle',
+    jobId: null,
+    attemptOrdinal: null,
+    completedFiles: 0,
+    publishedFiles: 0,
+    skippedFiles: 0,
+    failedFiles: 0,
+    notStartedFiles: 0,
+    currentFile: null,
+    currentAction: null,
+    message: null,
+    updatedPlan: null,
+    space: null,
+    sourceWriteRequests: 0,
+  };
 }
 
 function demoSetup(): ImportSetupSnapshot {

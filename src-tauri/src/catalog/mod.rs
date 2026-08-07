@@ -150,6 +150,52 @@ impl CatalogService {
         })
     }
 
+    pub fn observe_import_reserved_asset(
+        &self,
+        observation: CatalogObservation,
+        task_id: &[u8],
+        attempt_id: &[u8],
+        lease_generation: i64,
+    ) -> Result<ObserveAssetResult, DomainError> {
+        validate_observation(&observation)?;
+        let task_id = task_id.to_vec();
+        let attempt_id = attempt_id.to_vec();
+        self.database.writer()?.transaction(move |transaction| {
+            let authorized: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM operation_reservation AS reservation
+                        JOIN import_attempt AS attempt ON attempt.attempt_id=reservation.attempt_id
+                        JOIN file_write_lease AS lease ON lease.slot=1
+                        WHERE reservation.owner_kind='TaskAttempt'
+                          AND reservation.task_id=?1 AND reservation.attempt_id=?2
+                          AND reservation.lease_generation=?3
+                          AND reservation.reservation_kind='FinalPath'
+                          AND reservation.root_id=?4 AND reservation.path_key=?5
+                          AND reservation.released_at IS NULL
+                          AND attempt.attempt_state='Running'
+                          AND lease.task_id=?1 AND lease.lease_generation=?3
+                     )",
+                    rusqlite::params![
+                        &task_id,
+                        &attempt_id,
+                        lease_generation,
+                        observation.asset.root_id.as_bytes().as_slice(),
+                        &observation.asset.path_key,
+                    ],
+                    |row| row.get(0),
+                )
+                .map_err(map_sqlite_error)?;
+            if !authorized {
+                return Err(DomainError::new(
+                    ErrorCode::LeaseGenerationMismatch,
+                    "导入索引授权已失效。",
+                ));
+            }
+            observe_in_transaction(transaction, &observation)
+        })
+    }
+
     pub fn begin_scan(
         &self,
         library_id: LibraryId,

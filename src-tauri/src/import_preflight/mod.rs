@@ -1,5 +1,5 @@
 mod planner;
-mod proof;
+pub(crate) mod proof;
 
 use std::{
     collections::BTreeMap,
@@ -147,6 +147,7 @@ struct SelectedSource {
 struct RuntimeState {
     selected_source: Option<SelectedSource>,
     status: ImportPreflightStatus,
+    last_draft: Option<ExecutionDraftSeed>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +159,7 @@ pub struct ImportPreflightService {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct SourceContext {
+pub(crate) struct SourceContext {
     pub library_id: Vec<u8>,
     pub volume_id: Vec<u8>,
     pub root_id: Vec<u8>,
@@ -168,7 +169,7 @@ pub(super) struct SourceContext {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct TargetContext {
+pub(crate) struct TargetContext {
     pub library_id: Vec<u8>,
     pub root_id: Vec<u8>,
     pub binding_id: Vec<u8>,
@@ -177,7 +178,7 @@ pub(super) struct TargetContext {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct SourceFile {
+pub(crate) struct SourceFile {
     pub relative_path: PathBuf,
     pub file_name: String,
     pub stem: String,
@@ -190,18 +191,27 @@ pub(super) struct SourceFile {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct UnreadableSource {
+pub(crate) struct UnreadableSource {
     pub relative_path: PathBuf,
     pub file_name: String,
     pub kind: DraftMediaKind,
     pub reason: String,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct EnumeratedSource {
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EnumeratedSource {
     pub files: Vec<SourceFile>,
     pub unreadable: Vec<UnreadableSource>,
     pub ignored_suffixes: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExecutionDraftSeed {
+    pub profile_id: Vec<u8>,
+    pub source: SourceContext,
+    pub target: TargetContext,
+    pub enumerated: EnumeratedSource,
+    pub draft: ImportPreflightDraft,
 }
 
 #[derive(Debug)]
@@ -355,10 +365,14 @@ impl ImportPreflightService {
         let audit = ProcessIoAudit::default();
         let enumerated = self.enumerate_source(&source, &audit)?;
         self.check_cancelled()?;
-        let draft =
-            planner::build_draft(&self.database, &source, &target, enumerated, &audit, || {
-                self.check_cancelled()
-            })?;
+        let draft = planner::build_draft(
+            &self.database,
+            &source,
+            &target,
+            enumerated.clone(),
+            &audit,
+            || self.check_cancelled(),
+        )?;
         let report = audit.snapshot();
         if report.source_write_requests != 0 || report.target_write_requests != 0 {
             return Err(DomainError::new(
@@ -366,9 +380,96 @@ impl ImportPreflightService {
                 "只读预检审计发现写请求，结果已拒绝。",
             ));
         }
-        Ok(ImportPreflightDraft {
+        let draft = ImportPreflightDraft {
             io_audit: report,
             ..draft
+        };
+        self.state()?.last_draft = Some(ExecutionDraftSeed {
+            profile_id: profile.profile_id,
+            source,
+            target,
+            enumerated,
+            draft: draft.clone(),
+        });
+        Ok(draft)
+    }
+
+    pub(crate) fn confirmed_seed(
+        &self,
+        draft_digest: &str,
+    ) -> Result<ExecutionDraftSeed, DomainError> {
+        let seed = self.state()?.last_draft.clone().ok_or_else(|| {
+            DomainError::new(
+                ErrorCode::InvalidTransition,
+                "请先完成一次只读预检，再确认导入。",
+            )
+        })?;
+        if seed.draft.draft_digest != draft_digest {
+            return Err(DomainError::new(
+                ErrorCode::StaleVersion,
+                "只读计划已经变化，请重新预检并确认。",
+            ));
+        }
+        Ok(seed)
+    }
+
+    pub(crate) fn refresh_active_import(
+        &self,
+        job_id: &[u8],
+    ) -> Result<ExecutionDraftSeed, DomainError> {
+        let active_matches: bool = self
+            .database
+            .open_read_connection()?
+            .query_row(
+                "SELECT EXISTS(
+                SELECT 1 FROM task_intent
+                WHERE task_id=?1 AND task_kind='Import'
+                  AND lifecycle NOT IN ('Completed','Cancelled')
+             )",
+                [job_id],
+                |row| row.get(0),
+            )
+            .map_err(crate::db::migration::map_sqlite_error)?;
+        if !active_matches {
+            return Err(DomainError::new(
+                ErrorCode::InvalidTransition,
+                "当前没有可刷新的导入任务。",
+            ));
+        }
+        let selected = self.state()?.selected_source.clone().ok_or_else(|| {
+            DomainError::new(ErrorCode::RootOffline, "请重新选择原始内存卡来源文件夹。")
+        })?;
+        let profile = self.validate_selected_source(&selected)?;
+        let profile = self.refresh_source_binding_if_needed(profile, &selected.display_path)?;
+        let source = self.source_context(&profile, &selected.display_path)?;
+        let target = self.current_target()?;
+        self.reject_source_conflicts(&source.root_probe, &target)?;
+        let audit = ProcessIoAudit::default();
+        let enumerated = self.enumerate_source(&source, &audit)?;
+        let draft = planner::build_draft(
+            &self.database,
+            &source,
+            &target,
+            enumerated.clone(),
+            &audit,
+            || self.check_cancelled(),
+        )?;
+        let report = audit.snapshot();
+        if report.source_write_requests != 0 || report.target_write_requests != 0 {
+            return Err(DomainError::new(
+                ErrorCode::VolumeWriteDenied,
+                "导入执行前验证发现写请求，任务已停止。",
+            ));
+        }
+        Ok(ExecutionDraftSeed {
+            profile_id: profile.profile_id,
+            source,
+            target,
+            enumerated,
+            draft: ImportPreflightDraft {
+                io_audit: report,
+                ..draft
+            },
         })
     }
 

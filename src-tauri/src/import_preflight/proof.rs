@@ -17,13 +17,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AuditSide {
+pub(crate) enum AuditSide {
     Source,
     Target,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct ProcessIoAudit {
+pub(crate) struct ProcessIoAudit {
     source_read_opens: AtomicU64,
     source_directory_enumerations: AtomicU64,
     source_metadata_reads: AtomicU64,
@@ -61,7 +61,7 @@ pub struct ProcessIoAuditReport {
 }
 
 impl ProcessIoAudit {
-    pub(super) fn snapshot(&self) -> ProcessIoAuditReport {
+    pub(crate) fn snapshot(&self) -> ProcessIoAuditReport {
         let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
         ProcessIoAuditReport {
             scope: "application-process/import-preflight",
@@ -82,7 +82,7 @@ impl ProcessIoAudit {
         }
     }
 
-    pub(super) fn enumerate(&self, side: AuditSide) {
+    pub(crate) fn enumerate(&self, side: AuditSide) {
         match side {
             AuditSide::Source => &self.source_directory_enumerations,
             AuditSide::Target => &self.target_directory_enumerations,
@@ -130,13 +130,13 @@ impl ProcessIoAudit {
     }
 }
 
-pub(super) struct StableReadHandle {
+pub(crate) struct StableReadHandle {
     file: File,
     side: AuditSide,
 }
 
 impl StableReadHandle {
-    pub(super) fn open(
+    pub(crate) fn open(
         path: &Path,
         side: AuditSide,
         audit: &ProcessIoAudit,
@@ -156,23 +156,23 @@ impl StableReadHandle {
         })
     }
 
-    pub(super) fn file_mut(&mut self) -> &mut File {
+    pub(crate) fn file_mut(&mut self) -> &mut File {
         &mut self.file
     }
 
-    pub(super) fn probe(&self, audit: &ProcessIoAudit) -> Result<FileProbe, DomainError> {
+    pub(crate) fn probe(&self, audit: &ProcessIoAudit) -> Result<FileProbe, DomainError> {
         audit.metadata(self.side);
         probe_file(&self.file)
     }
 
-    pub(super) fn full_hash(&mut self, audit: &ProcessIoAudit) -> Result<[u8; 32], DomainError> {
+    pub(crate) fn full_hash(&mut self, audit: &ProcessIoAudit) -> Result<[u8; 32], DomainError> {
         let side = self.side;
         hash_file(self.file_mut(), side, audit)
     }
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct BoundPath {
+pub(crate) struct BoundPath {
     pub root_id: Vec<u8>,
     pub binding_id: Vec<u8>,
     pub root_path: PathBuf,
@@ -193,7 +193,7 @@ impl BoundPath {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct DuplicateProof {
+pub(crate) struct DuplicateProof {
     pub source_hash: [u8; 32],
     pub target_hash: [u8; 32],
     pub source_before: FileProbe,
@@ -202,22 +202,85 @@ pub(super) struct DuplicateProof {
     pub target_after: FileProbe,
 }
 
-pub(super) fn prove_duplicate(
+/// Keeps every handle used by a duplicate proof alive until the caller has
+/// committed the rows that consume the proof.
+pub(crate) struct DuplicateProofGuard {
+    pub proof: DuplicateProof,
+    _source_handle: StableReadHandle,
+    _target_handle: StableReadHandle,
+    _source_reopened: StableReadHandle,
+    _target_reopened: StableReadHandle,
+}
+
+pub(crate) fn prove_duplicate(
     source: &BoundPath,
     target: &BoundPath,
     audit: &ProcessIoAudit,
 ) -> Result<Option<DuplicateProof>, DomainError> {
-    prove_duplicate_with_hasher(source, target, audit, hash_file)
+    prove_duplicate_with_hasher_and_commit(source, target, audit, hash_file, |proof| {
+        Ok(proof.clone())
+    })
 }
 
+pub(crate) fn prove_duplicate_guard(
+    source: &BoundPath,
+    target: &BoundPath,
+    audit: &ProcessIoAudit,
+) -> Result<Option<DuplicateProofGuard>, DomainError> {
+    prove_duplicate_guard_with_hasher(source, target, audit, hash_file)
+}
+
+pub(crate) fn prove_duplicate_and_commit<T, F>(
+    source: &BoundPath,
+    target: &BoundPath,
+    audit: &ProcessIoAudit,
+    commit: F,
+) -> Result<Option<T>, DomainError>
+where
+    F: FnOnce(&DuplicateProof) -> Result<T, DomainError>,
+{
+    prove_duplicate_with_hasher_and_commit(source, target, audit, hash_file, commit)
+}
+
+#[cfg(test)]
 fn prove_duplicate_with_hasher<F>(
     source: &BoundPath,
     target: &BoundPath,
     audit: &ProcessIoAudit,
-    mut hasher: F,
+    hasher: F,
 ) -> Result<Option<DuplicateProof>, DomainError>
 where
     F: FnMut(&mut File, AuditSide, &ProcessIoAudit) -> Result<[u8; 32], DomainError>,
+{
+    prove_duplicate_with_hasher_and_commit(source, target, audit, hasher, |proof| Ok(proof.clone()))
+}
+
+fn prove_duplicate_with_hasher_and_commit<T, H, C>(
+    source: &BoundPath,
+    target: &BoundPath,
+    audit: &ProcessIoAudit,
+    hasher: H,
+    commit: C,
+) -> Result<Option<T>, DomainError>
+where
+    H: FnMut(&mut File, AuditSide, &ProcessIoAudit) -> Result<[u8; 32], DomainError>,
+    C: FnOnce(&DuplicateProof) -> Result<T, DomainError>,
+{
+    let guard = match prove_duplicate_guard_with_hasher(source, target, audit, hasher)? {
+        Some(guard) => guard,
+        None => return Ok(None),
+    };
+    commit(&guard.proof).map(Some)
+}
+
+fn prove_duplicate_guard_with_hasher<H>(
+    source: &BoundPath,
+    target: &BoundPath,
+    audit: &ProcessIoAudit,
+    mut hasher: H,
+) -> Result<Option<DuplicateProofGuard>, DomainError>
+where
+    H: FnMut(&mut File, AuditSide, &ProcessIoAudit) -> Result<[u8; 32], DomainError>,
 {
     verify_root_binding(&source.expected_root, &source.root_path)?;
     verify_root_binding(&target.expected_root, &target.root_path)?;
@@ -275,13 +338,20 @@ where
     verify_root_binding(&source.expected_root, &source.root_path)?;
     verify_root_binding(&target.expected_root, &target.root_path)?;
 
-    Ok(Some(DuplicateProof {
+    let proof = DuplicateProof {
         source_hash,
         target_hash,
         source_before,
         source_after,
         target_before,
         target_after,
+    };
+    Ok(Some(DuplicateProofGuard {
+        proof,
+        _source_handle: source_handle,
+        _target_handle: target_handle,
+        _source_reopened: source_reopened,
+        _target_reopened: target_reopened,
     }))
 }
 

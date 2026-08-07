@@ -13,8 +13,8 @@ const pendingDeleteSummary = {
   executableBytes: 0,
 };
 
-describe('phase five import preflight UI', () => {
-  test('requires an explicit click and renders the complete read-only draft categories', async () => {
+describe('phase six import execution UI', () => {
+  test('keeps the draft non-executing until the final Start Import confirmation', async () => {
     render(
       <ImportView
         pendingDeleteSummary={pendingDeleteSummary}
@@ -41,10 +41,17 @@ describe('phase five import preflight UI', () => {
     expect(screen.getAllByText('无法读取').length).toBeGreaterThan(0);
     expect(screen.getAllByText('DSCF2041.JPG').length).toBeGreaterThan(0);
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
-    expect(screen.getByRole('button', { name: '确认并导入…' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '确认并导入…' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('最终确认导入');
+    expect(screen.getByRole('dialog')).toHaveTextContent(
+      '点击“开始导入”后才会创建 TaskIntent',
+    );
+    expect(screen.queryByText('导入完成')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
     expect(
-      screen.getByText('当前阶段仅开放只读预检；导入执行保持关闭。'),
+      await screen.findByRole('heading', { name: '导入完成' }),
     ).toBeInTheDocument();
+    expect(screen.getByText('来源写请求：0（必须为 0）')).toBeInTheDocument();
     expect(
       screen.queryByText(/demo-only-not-rendered/),
     ).not.toBeInTheDocument();

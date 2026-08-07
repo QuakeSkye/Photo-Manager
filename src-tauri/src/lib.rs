@@ -4,6 +4,7 @@ mod commands;
 pub mod db;
 pub mod domain;
 pub mod external_tools;
+pub mod import_execution;
 pub mod import_preflight;
 pub mod media;
 pub mod pending_delete;
@@ -42,6 +43,12 @@ pub fn run() {
                     database.clone(),
                     app_data_directory.clone(),
                 ));
+            let import_execution_service =
+                std::sync::Arc::new(import_execution::ImportExecutionService::new(
+                    database.clone(),
+                    import_preflight_service.clone(),
+                    catalog.clone(),
+                ));
             let cache_service = std::sync::Arc::new(cache::CacheService::new(
                 database.clone(),
                 app_data_directory,
@@ -61,6 +68,7 @@ pub fn run() {
             application.manage(catalog);
             application.manage(library_service);
             application.manage(import_preflight_service);
+            application.manage(import_execution_service);
             application.manage(preview_service);
             application.manage(cache_service.clone());
             application.manage(pending_delete_service);
@@ -86,6 +94,12 @@ pub fn run() {
             commands::import_preflight::start_import_preflight,
             commands::import_preflight::get_import_preflight_status,
             commands::import_preflight::cancel_import_preflight,
+            commands::import_execution::start_import,
+            commands::import_execution::retry_import,
+            commands::import_execution::get_import_execution_status,
+            commands::import_execution::cancel_remaining_import,
+            commands::import_execution::cancel_import_before_start,
+            commands::import_execution::get_import_recovery_summary,
             commands::external_tools::get_photoshop_status,
             commands::external_tools::choose_photoshop,
             commands::external_tools::open_raf_in_photoshop,

@@ -19,6 +19,13 @@ const reviewedAllowlist = [
       'Phase 1 cache eviction deletes only a registered CacheEntry through the same verified, write/delete-share-denying handle.',
   },
   {
+    rule: 'rust-handle-delete',
+    path: 'src-tauri/src/import_execution/file_ops.rs',
+    excerpt: 'SetFileInformationByHandle(',
+    reason:
+      'Phase 6 deletes only a committed CleaningOwnedPartial incarnation through its identity-verified, write/delete-share-denying handle; formal files are never deleted.',
+  },
+  {
     rule: 'rust-general-shell',
     path: 'src-tauri/src/external_tools/mod.rs',
     excerpt: 'Command::new(executable)',
@@ -200,7 +207,7 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 5,
+  phase: 6,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
@@ -217,7 +224,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 5 import preflight uses only audited read handles for source/target media, creates no ImportJob/Generation/directory/partial/photo, and keeps import/recycle execution closed.\n'
+    ? 'PASS: phase 6 keeps source media deny-write, forbids overwrite rename, confines writes to the safe import executor, and leaves recycle execution closed.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

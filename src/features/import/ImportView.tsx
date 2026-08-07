@@ -2,14 +2,21 @@ import { useEffect, useRef, useState, type RefObject } from 'react';
 
 import {
   cancelImportPreflight,
+  cancelRemainingImport,
   chooseImportSourceFolder,
+  getImportExecutionStatus,
   getImportPreflightStatus,
+  getImportRecoverySummary,
   getImportSetup,
+  retryImport,
   selectImportSource,
+  startImport,
   startImportPreflight,
   type ImportDraftItem,
+  type ImportExecutionStatus,
   type ImportPreflightDraft,
   type ImportPreflightStatus,
+  type ImportRecoverySummary,
   type ImportSetupSnapshot,
 } from '../../shared/commands/import';
 import {
@@ -43,6 +50,12 @@ export function ImportView({
   const [status, setStatus] = useState<ImportPreflightStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [preflightRunning, setPreflightRunning] = useState(false);
+  const [execution, setExecution] = useState<ImportExecutionStatus | null>(
+    null,
+  );
+  const [recovery, setRecovery] = useState<ImportRecoverySummary | null>(null);
+  const [confirmImport, setConfirmImport] = useState(false);
+  const [startingImport, setStartingImport] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [targetCandidate, setTargetCandidate] = useState<{
     path: string;
@@ -65,6 +78,12 @@ export function ImportView({
   }, []);
 
   useEffect(() => {
+    void getImportRecoverySummary()
+      .then((value) => setRecovery(value.hasUnfinishedImport ? value : null))
+      .catch((reason) => setError(readError(reason)));
+  }, []);
+
+  useEffect(() => {
     if (!preflightRunning) return;
     const timer = window.setInterval(() => {
       void getImportPreflightStatus()
@@ -73,6 +92,17 @@ export function ImportView({
     }, 250);
     return () => window.clearInterval(timer);
   }, [preflightRunning]);
+
+  useEffect(() => {
+    if (execution?.phase !== 'running' && execution?.phase !== 'validatingPlan')
+      return;
+    const timer = window.setInterval(() => {
+      void getImportExecutionStatus()
+        .then(setExecution)
+        .catch((reason) => setError(readError(reason)));
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [execution?.phase]);
 
   const chooseSource = async () => {
     setError(null);
@@ -164,7 +194,52 @@ export function ImportView({
     window.requestAnimationFrame(() => sourceButtonRef.current?.focus());
   };
 
-  const step = draft !== null || preflightRunning ? 2 : 1;
+  const beginImport = async () => {
+    if (draft === null) return;
+    setStartingImport(true);
+    setError(null);
+    try {
+      const next = await startImport(draft.draftDigest);
+      setExecution(next);
+      setRecovery(null);
+      setConfirmImport(false);
+      if (next.updatedPlan !== null) setDraft(next.updatedPlan);
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      setStartingImport(false);
+    }
+  };
+
+  const resumeImport = async () => {
+    setError(null);
+    try {
+      const next = await retryImport();
+      setExecution(next);
+      setRecovery(null);
+      if (next.updatedPlan !== null) setDraft(next.updatedPlan);
+    } catch (reason) {
+      setError(readError(reason));
+    }
+  };
+
+  const cancelRemaining = async () => {
+    try {
+      await cancelRemainingImport();
+      setExecution(await getImportExecutionStatus());
+    } catch (reason) {
+      setError(readError(reason));
+    }
+  };
+
+  const reportVisible = execution !== null && terminalExecution(execution);
+  const step = reportVisible
+    ? 4
+    : execution !== null || recovery !== null
+      ? 3
+      : draft !== null || preflightRunning
+        ? 2
+        : 1;
   const targetPreview = setup?.target?.displayPath ?? 'FujiRoot';
 
   return (
@@ -193,7 +268,7 @@ export function ImportView({
                 <span>{index + 1}</span>
                 <div>
                   <strong>{label}</strong>
-                  {index >= 2 && <small>尚未开放</small>}
+                  {index + 1 < step && <small>已完成</small>}
                 </div>
               </div>
             ),
@@ -289,9 +364,16 @@ export function ImportView({
                 )}
             </>
           )}
-          {!loading && !preflightRunning && draft !== null && (
-            <DraftResults draft={draft} />
-          )}
+          {!loading &&
+            !preflightRunning &&
+            execution === null &&
+            recovery === null &&
+            draft !== null && <DraftResults draft={draft} />}
+          {!loading &&
+            !preflightRunning &&
+            (execution !== null || recovery !== null) && (
+              <ExecutionPanel execution={execution} recovery={recovery} />
+            )}
           {error !== null && (
             <p className="inline-error import-error" role="alert">
               {error}
@@ -300,7 +382,9 @@ export function ImportView({
         </section>
 
         <aside className="tool-summary">
-          {draft === null ? (
+          {execution !== null || recovery !== null ? (
+            <ExecutionSummary execution={execution} recovery={recovery} />
+          ) : draft === null ? (
             <div>
               <p className="section-label">只读预检</p>
               <strong>
@@ -325,7 +409,34 @@ export function ImportView({
           )}
           <div className="summary-spacer" />
           <div className="summary-actions">
-            {preflightRunning ? (
+            {execution?.phase === 'running' ? (
+              <button type="button" onClick={() => void cancelRemaining()}>
+                取消剩余导入
+              </button>
+            ) : execution?.phase === 'awaitingPlanConfirmation' ? (
+              <button
+                className="button-primary"
+                type="button"
+                onClick={() => setConfirmImport(true)}
+              >
+                重新确认并导入…
+              </button>
+            ) : recovery !== null ||
+              (execution !== null && retryableExecution(execution)) ? (
+              <button
+                className="button-primary"
+                type="button"
+                onClick={() => void resumeImport()}
+              >
+                {execution?.phase === 'awaitingSpace'
+                  ? '重新检查空间'
+                  : '确认并继续恢复'}
+              </button>
+            ) : execution !== null ? (
+              <button type="button" onClick={onOpenLibrary}>
+                返回图库
+              </button>
+            ) : preflightRunning ? (
               <button type="button" onClick={() => void cancelPreflight()}>
                 {status?.phase === 'cancelling' ? '正在取消…' : '取消预检'}
               </button>
@@ -348,21 +459,34 @@ export function ImportView({
                 <button type="button" onClick={() => void returnToSelection()}>
                   返回选择位置
                 </button>
-                <button className="button-primary" type="button" disabled>
+                <button
+                  className="button-primary"
+                  type="button"
+                  onClick={() => setConfirmImport(true)}
+                >
                   确认并导入…
                 </button>
-                <small className="phase-boundary-note">
-                  当前阶段仅开放只读预检；导入执行保持关闭。
-                </small>
               </>
             )}
           </div>
         </aside>
       </main>
       <footer className="status-bar tool-status">
-        <span>{draft !== null ? '只读计划草案已生成' : '内存卡只读'}</span>
+        <span>
+          {execution !== null
+            ? executionPhaseLabel(execution)
+            : draft !== null
+              ? '只读计划草案已生成'
+              : '内存卡只读'}
+        </span>
         <span>来源卷永久拒绝应用写入</span>
-        <span>{preflightRunning ? '正在只读检查' : '未执行复制'}</span>
+        <span>
+          {execution?.phase === 'running'
+            ? '正式文件仅 no-replace 发布'
+            : preflightRunning
+              ? '正在只读检查'
+              : '安全门已启用'}
+        </span>
       </footer>
 
       {targetCandidate !== null && (
@@ -389,8 +513,157 @@ export function ImportView({
           </p>
         </Modal>
       )}
+      {confirmImport && draft !== null && (
+        <Modal
+          title="最终确认导入"
+          confirmLabel="开始导入"
+          busy={startingImport}
+          onConfirm={() => void beginImport()}
+          onCancel={() => setConfirmImport(false)}
+        >
+          <p>
+            将新增 {draft.summary.newFiles} 个文件（
+            {formatBytes(draft.summary.newBytes)}），跳过{' '}
+            {draft.summary.skippedFiles} 个已完整证明的重复文件。
+          </p>
+          <p>
+            点击“开始导入”后才会创建 TaskIntent、ImportJob 和首个 Confirmed
+            Generation；执行前仍会全量验证计划并检查空间。
+          </p>
+          <p>来源卷保持零写入，正式目标使用 ReplaceIfExists=FALSE 发布。</p>
+        </Modal>
+      )}
     </div>
   );
+}
+
+function ExecutionPanel({
+  execution,
+  recovery,
+}: {
+  execution: ImportExecutionStatus | null;
+  recovery: ImportRecoverySummary | null;
+}) {
+  if (recovery !== null && execution === null) {
+    return (
+      <div className="content-heading" aria-live="polite">
+        <p className="eyebrow">导入 · 恢复</p>
+        <h1>检测到未终结导入</h1>
+        <p>{recovery.message}</p>
+        <p>
+          {recovery.completedFiles} 个已完成，{recovery.unresolvedFiles}{' '}
+          个待协调；不会自动恢复写入。
+        </p>
+      </div>
+    );
+  }
+  if (execution === null) return null;
+  if (
+    execution.phase === 'awaitingPlanConfirmation' &&
+    execution.updatedPlan !== null
+  ) {
+    return (
+      <>
+        <p className="inline-error" role="status">
+          磁盘现状改变了未完成计划。请检查更新后的名称、分类与新增字节，再次明确确认。
+        </p>
+        <DraftResults draft={execution.updatedPlan} />
+      </>
+    );
+  }
+  return (
+    <div className="content-heading" aria-live="polite">
+      <p className="eyebrow">
+        导入 · 第 {terminalExecution(execution) ? '4' : '3'} 步
+      </p>
+      <h1>{executionPhaseLabel(execution)}</h1>
+      {execution.message !== null && <p>{execution.message}</p>}
+      {execution.currentFile !== null && (
+        <p className="long-path">
+          {execution.currentAction}：{execution.currentFile}
+        </p>
+      )}
+      {execution.space !== null && (
+        <p className="inline-error" role="status">
+          还缺 {formatBytes(execution.space.missingBytes)}；本轮没有创建
+          Attempt，也没有写文件。
+        </p>
+      )}
+      <dl className="preflight-progress-metrics">
+        <div>
+          <dt>已完成</dt>
+          <dd>{execution.completedFiles}</dd>
+        </div>
+        <div>
+          <dt>已发布</dt>
+          <dd>{execution.publishedFiles}</dd>
+        </div>
+        <div>
+          <dt>已跳过</dt>
+          <dd>{execution.skippedFiles}</dd>
+        </div>
+        <div>
+          <dt>需处理</dt>
+          <dd>{execution.failedFiles}</dd>
+        </div>
+      </dl>
+      <p>来源写请求：{execution.sourceWriteRequests}（必须为 0）</p>
+    </div>
+  );
+}
+
+function ExecutionSummary({
+  execution,
+  recovery,
+}: {
+  execution: ImportExecutionStatus | null;
+  recovery: ImportRecoverySummary | null;
+}) {
+  return (
+    <div>
+      <p className="section-label">导入执行</p>
+      <strong>
+        {execution !== null ? executionPhaseLabel(execution) : '等待显式恢复'}
+      </strong>
+      <p>
+        {execution !== null
+          ? `${execution.completedFiles} 个完成 · ${execution.notStartedFiles} 个未开始`
+          : `${recovery?.unresolvedFiles ?? 0} 个待协调`}
+      </p>
+    </div>
+  );
+}
+
+function terminalExecution(status: ImportExecutionStatus): boolean {
+  return ['completed', 'completedWithErrors', 'cancelled'].includes(
+    status.phase,
+  );
+}
+
+function retryableExecution(status: ImportExecutionStatus): boolean {
+  return [
+    'awaitingPlanConfirmation',
+    'awaitingSpace',
+    'awaitingSource',
+    'needsAttention',
+    'completedWithErrors',
+  ].includes(status.phase);
+}
+
+function executionPhaseLabel(status: ImportExecutionStatus): string {
+  const labels: Record<ImportExecutionStatus['phase'], string> = {
+    idle: '等待开始',
+    validatingPlan: '正在全量验证计划',
+    awaitingPlanConfirmation: '计划已变化，等待重新确认',
+    awaitingSpace: '空间不足',
+    running: '正在安全导入',
+    awaitingSource: '等待原始内存卡',
+    needsAttention: '需要人工处理',
+    completed: '导入完成',
+    completedWithErrors: '导入部分完成',
+    cancelled: '导入已取消',
+  };
+  return labels[status.phase];
 }
 
 function PreflightProgress({
