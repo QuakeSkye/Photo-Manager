@@ -6,6 +6,28 @@ if (-not (Test-Path -LiteralPath $binary)) {
 }
 
 $testBase = Join-Path $PSScriptRoot '..\src-tauri\target\windows-tests'
+$resolvedTestBase = [System.IO.Path]::GetFullPath($testBase)
+New-Item -ItemType Directory -Path $resolvedTestBase -Force | Out-Null
+$previousRecycleParent = $env:FPM_RECYCLE_NTFS_TEST_PARENT
+$env:FPM_RECYCLE_NTFS_TEST_PARENT = $resolvedTestBase
+$repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$results = @()
+try {
+    & node (Join-Path $PSScriptRoot 'run-cargo.mjs') test --manifest-path (Join-Path $repoRoot 'src-tauri\Cargo.toml') real_sta_worker_recycles_pair_and_restores_identical_content -- --ignored --nocapture
+    if ($LASTEXITCODE -ne 0) {
+        throw "The real recycle/restore STA test failed with code $LASTEXITCODE."
+    }
+    $results += [pscustomobject]@{
+        test = 'real_sta_worker_recycles_pair_and_restores_identical_content'
+        result = 'passed'
+        root_scope = 'generated_disposable_ntfs_test_root'
+        permanent_delete_fallback = $false
+    }
+}
+finally {
+    $env:FPM_RECYCLE_NTFS_TEST_PARENT = $previousRecycleParent
+}
+
 $testParent = Join-Path $testBase ('fpm-windows-test-' + [guid]::NewGuid())
 $testRoot = Join-Path $testParent ('fpm-generated-test-root-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
@@ -38,11 +60,13 @@ try {
         throw "Expected exactly one running instance, found $($matching.Count)."
     }
 
-    [pscustomobject]@{
+    $singleInstance = [pscustomobject]@{
         test = 'windows_single_instance_lifecycle'
         result = 'passed'
         running_instances = $matching.Count
-    } | ConvertTo-Json -Compress
+    }
+    $results += $singleInstance
+    $singleInstance | ConvertTo-Json -Compress
 }
 finally {
     if (-not $first.HasExited) {
@@ -56,3 +80,14 @@ finally {
         Remove-Item -LiteralPath $testParent -Recurse -Force
     }
 }
+
+$artifacts = Join-Path $repoRoot 'artifacts'
+New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
+[pscustomobject]@{
+    report_version = 1
+    phase = 7
+    test_root_only = $true
+    filesystem = 'NTFS'
+    real_fuji_library_admission_created = $false
+    tests = $results
+} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $artifacts 'phase-seven-windows-results.json') -Encoding utf8

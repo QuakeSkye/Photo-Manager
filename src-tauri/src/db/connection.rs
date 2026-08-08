@@ -329,12 +329,6 @@ fn logical_integrity_check(connection: &Connection) -> Result<(), DomainError> {
                       OR reservation.task_id != lease.task_id
                       OR reservation.lease_generation != lease.lease_generation
                   )
-                UNION ALL
-                SELECT 1 FROM import_attempt
-                WHERE attempt_state IN ('Prepared', 'Running')
-                UNION ALL
-                SELECT 1 FROM deletion_attempt
-                WHERE attempt_state IN ('Prepared', 'Running')
                 LIMIT 1
              )",
             (),

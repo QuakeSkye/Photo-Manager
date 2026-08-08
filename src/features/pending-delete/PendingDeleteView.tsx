@@ -24,6 +24,10 @@ interface PendingDeleteViewProps {
   readonly onCancelCurrent: () => void;
   readonly onUndoDeletion: () => void;
   readonly onRescan: () => void;
+  readonly onExecute: () => void;
+  readonly onRetryRemaining: () => void;
+  readonly onCancelRemaining: () => void;
+  readonly recycleMessage: string | null;
 }
 
 export function PendingDeleteView({
@@ -42,6 +46,10 @@ export function PendingDeleteView({
   onCancelCurrent,
   onUndoDeletion,
   onRescan,
+  onExecute,
+  onRetryRemaining,
+  onCancelRemaining,
+  recycleMessage,
 }: PendingDeleteViewProps) {
   const current = snapshot.items[selectedIndex] ?? null;
   const wheelAccumulator = useRef(0);
@@ -177,6 +185,30 @@ export function PendingDeleteView({
                     前往照片文件夹设置
                   </button>
                 )}
+                {(current.problem?.kind === 'RetryableFailed' ||
+                  current.problem?.kind === 'Partial') && (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={mutationPending}
+                    onClick={onRetryRemaining}
+                  >
+                    重试剩余文件…
+                  </button>
+                )}
+                {current.problem !== null &&
+                  ['RetryableFailed', 'Partial', 'NeedsAttention'].includes(
+                    current.problem.kind,
+                  ) && (
+                    <button
+                      className="neutral-button"
+                      type="button"
+                      disabled={mutationPending}
+                      onClick={onCancelRemaining}
+                    >
+                      取消剩余删除
+                    </button>
+                  )}
                 <div className="batch-summary">
                   <strong>
                     {snapshot.summary.executableCount} 张可复核删除
@@ -192,12 +224,23 @@ export function PendingDeleteView({
                 <button
                   className="execute-delete-button"
                   type="button"
-                  disabled
-                  title="阶段 7 前执行删除功能门保持关闭"
+                  disabled={
+                    mutationPending || snapshot.summary.executableCount === 0
+                  }
+                  onClick={onExecute}
                 >
                   执行删除…
                 </button>
-                <p>执行删除功能门尚未开放；本阶段不会移动任何照片。</p>
+                <p>
+                  仅在应用生成的可丢弃 NTFS 测试 Root 上强制移入 Windows
+                  回收站；不提供永久删除或降级。
+                </p>
+                {recycleMessage !== null && (
+                  <div className="problem-panel" role="status">
+                    <strong>本次删除结果</strong>
+                    <span>{recycleMessage}</span>
+                  </div>
+                )}
               </section>
             </>
           )}

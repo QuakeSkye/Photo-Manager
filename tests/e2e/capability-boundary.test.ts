@@ -56,6 +56,17 @@ test('the frontend exposes narrow id-based photo and external-tool commands', as
   expect(settingsClient).not.toMatch(
     /open_raf_in_photoshop[^\n]+(?:path|executable)/i,
   );
+
+  const recycleClient = await readFile(
+    new URL('../../src/shared/commands/recycle.ts', import.meta.url),
+    'utf8',
+  );
+  expect(recycleClient).not.toMatch(/plugin-(fs|shell)/i);
+  expect(recycleClient).not.toMatch(/(?:absolute|relative)?path/i);
+  expect(recycleClient).toMatch(/invoke<RecycleStatus>\('start_recycle'/);
+  expect(recycleClient).toMatch(/logicalPhotoCount/);
+  expect(recycleClient).toMatch(/physicalFileCount/);
+  expect(recycleClient).toMatch(/totalBytes/);
 });
 
 test('the filmstrip is vertically scrollable without fixed-width horizontal overflow', async () => {

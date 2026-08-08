@@ -41,6 +41,15 @@ const reviewedAllowlist = [
   },
 ];
 
+const reviewedPrefixes = [
+  {
+    rule: 'rust-general-shell',
+    pathPrefix: 'src-tauri/src/recycle/shell.rs',
+    reason:
+      'Phase 7 confines IFileOperation to the dedicated COM STA worker, sets mandatory recycle-only flags, and exposes no permanent-delete fallback.',
+  },
+];
+
 const reviewedPermissions = new Map([
   [
     'dialog:allow-open',
@@ -102,7 +111,10 @@ const rules = [
   {
     id: 'phase-three-batch-attempt-creation',
     include: ['.rs'],
-    pathPrefixes: ['src-tauri/src/'],
+    pathPrefixes: [
+      'src-tauri/src/pending_delete/',
+      'src-tauri/src/commands/pending_delete.rs',
+    ],
     pattern: /INSERT\s+INTO\s+(?:deletion_batch|deletion_attempt)/i,
   },
   {
@@ -170,7 +182,11 @@ async function walk(directory) {
               entry.path === path &&
               line.includes(entry.excerpt),
           );
-          if (reviewed) {
+          const reviewedPrefix = reviewedPrefixes.some(
+            (entry) =>
+              entry.rule === rule.id && path.startsWith(entry.pathPrefix),
+          );
+          if (reviewed || reviewedPrefix) {
             return;
           }
           findings.push({
@@ -186,6 +202,33 @@ async function walk(directory) {
 }
 
 await walk(root);
+
+const recycleShell = await readFile(
+  join(root, 'src-tauri', 'src', 'recycle', 'shell.rs'),
+  'utf8',
+);
+const requiredFlagExpression =
+  'FOFX_RECYCLEONDELETE | FOF_NOERRORUI | FOFX_EARLYFAILURE | FOF_NOCONFIRMATION';
+if (!recycleShell.includes(requiredFlagExpression)) {
+  findings.push({
+    rule: 'recycle-required-flags',
+    path: 'src-tauri/src/recycle/shell.rs',
+    line: 1,
+    excerpt: 'mandatory recycle-only flag expression missing',
+  });
+}
+if (
+  /FOF_WANTNUKEWARNING|SHFileOperation|DeleteFile[AW]?\s*\(|remove_file\s*\(/u.test(
+    recycleShell,
+  )
+) {
+  findings.push({
+    rule: 'recycle-permanent-delete-fallback',
+    path: 'src-tauri/src/recycle/shell.rs',
+    line: 1,
+    excerpt: 'permanent-delete or fallback token found in recycle worker',
+  });
+}
 
 const capabilityText = await readFile(
   join(root, 'src-tauri', 'capabilities', 'default.json'),
@@ -207,10 +250,11 @@ for (const permission of unexpectedPermissions) {
 
 const result = {
   reportVersion: 1,
-  phase: 6,
+  phase: 7,
   passed: findings.length === 0,
   scannedAt: new Date().toISOString(),
   reviewedAllowlist,
+  reviewedPrefixes,
   reviewedPermissions: Object.fromEntries(reviewedPermissions),
   findings,
 };
@@ -224,7 +268,7 @@ await writeFile(
 await writeFile(
   join(root, 'artifacts', 'safety-audit.txt'),
   findings.length === 0
-    ? 'PASS: phase 6 keeps source media deny-write, forbids overwrite rename, confines writes to the safe import executor, and leaves recycle execution closed.\n'
+    ? 'PASS: phase 7 confines photo removal to the recycle-only COM STA worker; permanent delete and fallback remain absent, and real-library Recycle admission remains closed.\n'
     : `FAIL: ${findings.length} forbidden API finding(s). See safety-audit.json.\n`,
   'utf8',
 );

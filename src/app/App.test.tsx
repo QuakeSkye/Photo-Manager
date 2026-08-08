@@ -446,7 +446,7 @@ describe('阶段 3 待删除复核闭环', () => {
     expect(screen.getByRole('button', { name: /取消失效标记/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: '重新扫描确认' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '执行删除…' })).toBeDisabled();
-    expect(screen.getByText(/本阶段不会移动任何照片/)).toBeInTheDocument();
+    expect(screen.getByText(/可丢弃 NTFS 测试 Root/)).toBeInTheDocument();
     expect(screen.queryByText(/Photoshop|文件位置/)).not.toBeInTheDocument();
   });
 
@@ -477,6 +477,40 @@ describe('阶段 3 待删除复核闭环', () => {
       ),
     ).toBeInTheDocument();
     expect(window.location.hash).toBe('#/library');
+  });
+});
+
+describe('阶段 7 Windows 回收站确认与归零', () => {
+  test('shows logical, physical and capacity totals before recycle and returns to library after success', async () => {
+    window.history.replaceState(null, '', '/?scenario=pending');
+    render(<App />);
+    fireEvent.click(
+      await within(
+        await screen.findByRole('navigation', { name: '照片视图' }),
+      ).findByRole('button', { name: /^待删除 1$/ }),
+    );
+    await screen.findByText('待删除 · 第 1 / 1 张');
+
+    fireEvent.click(screen.getByRole('button', { name: '执行删除…' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: '确认移入 Windows 回收站',
+    });
+    expect(within(dialog).getByText('逻辑照片')).toBeInTheDocument();
+    expect(within(dialog).getByText('物理 JPG / RAF 文件')).toBeInTheDocument();
+    expect(within(dialog).getByText('合计容量')).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/只能通过 Windows 回收站恢复/),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/不会永久删除/)).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '移入回收站' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/library'));
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).queryByRole(
+        'button',
+        { name: /^待删除 \d+$/ },
+      ),
+    ).not.toBeInTheDocument();
   });
 });
 

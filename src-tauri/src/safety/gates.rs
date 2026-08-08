@@ -10,7 +10,7 @@ use crate::{
 
 const PACKAGE_LOCK: &[u8] = include_bytes!("../../../package-lock.json");
 const CARGO_LOCK: &[u8] = include_bytes!("../../Cargo.lock");
-pub const SAFETY_REPORT_VERSION: u32 = 1;
+pub const SAFETY_REPORT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

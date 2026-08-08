@@ -37,7 +37,10 @@ export type DeletionProblemKind =
   | 'MembersChanged'
   | 'FileMissing'
   | 'FileIdentityChanged'
-  | 'UnsupportedHardLink';
+  | 'UnsupportedHardLink'
+  | 'RetryableFailed'
+  | 'NeedsAttention'
+  | 'Partial';
 
 export interface DeletionProblem {
   readonly lifecycle: 'Open' | 'Resolved' | 'Superseded';
@@ -540,6 +543,14 @@ export function resetDemoDeletionState(): void {
 
 export function simulateDemoRestart(): void {
   demoDeletionState().undo.length = 0;
+}
+
+export function completeDemoRecycle(): void {
+  const state = demoDeletionState();
+  for (const photoId of [...state.marks]) {
+    if (!state.problems.has(photoId)) state.marks.delete(photoId);
+  }
+  state.undo.length = 0;
 }
 
 function demoError(userMessage: string): Error & { userMessage: string } {

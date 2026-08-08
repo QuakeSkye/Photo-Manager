@@ -8,13 +8,14 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 6;
+pub const LATEST_SCHEMA_VERSION: u32 = 7;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
 pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
 pub const PHASE_THREE_MIGRATION_SQL: &str = include_str!("../../migrations/0003_phase_three.sql");
 pub const PHASE_FOUR_MIGRATION_SQL: &str = include_str!("../../migrations/0004_phase_four.sql");
 pub const PHASE_FIVE_MIGRATION_SQL: &str = include_str!("../../migrations/0005_phase_five.sql");
 pub const PHASE_SIX_MIGRATION_SQL: &str = include_str!("../../migrations/0006_phase_six.sql");
+pub const PHASE_SEVEN_MIGRATION_SQL: &str = include_str!("../../migrations/0007_phase_seven.sql");
 
 const MIGRATIONS: &[(u32, &str)] = &[
     (1, MIGRATION_SQL),
@@ -23,10 +24,11 @@ const MIGRATIONS: &[(u32, &str)] = &[
     (4, PHASE_FOUR_MIGRATION_SQL),
     (5, PHASE_FIVE_MIGRATION_SQL),
     (6, PHASE_SIX_MIGRATION_SQL),
+    (7, PHASE_SEVEN_MIGRATION_SQL),
 ];
 
 pub fn migration_checksum() -> String {
-    migration_file_checksum(PHASE_SIX_MIGRATION_SQL)
+    migration_file_checksum(PHASE_SEVEN_MIGRATION_SQL)
 }
 
 fn migration_file_checksum(sql: &str) -> String {

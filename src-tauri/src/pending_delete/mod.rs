@@ -39,6 +39,9 @@ pub enum ProblemKind {
     FileMissing,
     FileIdentityChanged,
     UnsupportedHardLink,
+    RetryableFailed,
+    NeedsAttention,
+    Partial,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -140,6 +143,11 @@ impl PendingDeleteService {
 
     pub fn summary(&self) -> Result<PendingDeleteSummary, DomainError> {
         Ok(self.snapshot(SortMode::CaptureDesc)?.summary)
+    }
+
+    pub fn clear_session_history(&self) -> Result<(), DomainError> {
+        self.session_actions.lock().map_err(lock_error)?.clear();
+        Ok(())
     }
 
     pub fn toggle(
@@ -821,6 +829,10 @@ fn load_pending_snapshot(
          LEFT JOIN asset_media_metadata metadata
            ON metadata.asset_id=asset.asset_id AND metadata.asset_version=asset.current_version
          WHERE mark.released_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM deletion_batch_photo consumed
+             WHERE consumed.mark_id=mark.mark_id
+           )
          ORDER BY CASE photo.date_class WHEN 'Known' THEN 0 ELSE 1 END,
                   photo.capture_local_key {direction}, photo.natural_sort_key {direction},
                   photo.photo_id {direction}, snapshot.role"
@@ -898,7 +910,110 @@ fn load_pending_snapshot(
         }
         items.push(item);
     }
+    for item in load_batch_problem_items(&connection)? {
+        summary.total_count += 1;
+        summary.problem_count += 1;
+        if item.problem.as_ref().is_some_and(|problem| {
+            matches!(
+                problem.kind,
+                ProblemKind::NeedsAttention | ProblemKind::Partial
+            )
+        }) {
+            summary.needs_attention_count += 1;
+        }
+        items.push(item);
+    }
+    items.sort_by(|left, right| {
+        let left_key = (
+            left.capture_local_key.is_none(),
+            left.capture_local_key.as_deref(),
+            &left.photo_id,
+        );
+        let right_key = (
+            right.capture_local_key.is_none(),
+            right.capture_local_key.as_deref(),
+            &right.photo_id,
+        );
+        match sort_mode {
+            SortMode::CaptureDesc => right_key.cmp(&left_key),
+            SortMode::CaptureAsc => left_key.cmp(&right_key),
+        }
+    });
     Ok(PendingDeleteSnapshot { summary, items })
+}
+
+fn load_batch_problem_items(
+    connection: &rusqlite::Connection,
+) -> Result<Vec<PendingDeleteItem>, DomainError> {
+    let mut statement = connection.prepare(
+        "SELECT photo.photo_id, photo.photo_version, photo.natural_name_display,
+                photo.capture_local_key,
+                SUM(batch_asset.resolution_state IN ('Pending','RetryableFailed','NeedsAttention')),
+                SUM(CASE WHEN batch_asset.resolution_state IN ('Pending','RetryableFailed','NeedsAttention') THEN identity.size_bytes ELSE 0 END),
+                SUM(batch_asset.resolution_state='Recycled'),
+                SUM(batch_asset.resolution_state='RetryableFailed'),
+                SUM(batch_asset.resolution_state='NeedsAttention'),
+                MAX(CASE WHEN batch_asset.role='Jpg' AND asset.presence_state='Present' THEN 1 ELSE 0 END),
+                MAX(CASE WHEN batch_asset.role='Raf' AND asset.presence_state='Present' THEN 1 ELSE 0 END),
+                MIN(identity.relative_path)
+         FROM deletion_batch_photo batch_photo
+         JOIN deletion_batch batch ON batch.batch_id=batch_photo.batch_id
+         JOIN photo ON photo.photo_id=batch_photo.photo_id
+         JOIN deletion_batch_asset batch_asset ON batch_asset.batch_photo_id=batch_photo.batch_photo_id
+         JOIN deletion_mark_asset_snapshot mark_snapshot ON mark_snapshot.mark_asset_snapshot_id=batch_asset.mark_asset_snapshot_id
+         JOIN file_identity_snapshot identity ON identity.snapshot_id=mark_snapshot.file_identity_snapshot_id
+         JOIN asset ON asset.asset_id=batch_asset.asset_id
+         WHERE batch.batch_state IN ('Running','CancelRequested','CompletedWithErrors','NeedsAttention')
+         GROUP BY batch_photo.batch_photo_id
+         HAVING SUM(batch_asset.resolution_state IN ('Pending','RetryableFailed','NeedsAttention')) > 0",
+    ).map_err(map_sqlite_error)?;
+    statement
+        .query_map((), |row| {
+            let unresolved = row.get::<_, i64>(4)?;
+            let recycled = row.get::<_, i64>(6)?;
+            let retryable = row.get::<_, i64>(7)?;
+            let attention = row.get::<_, i64>(8)?;
+            let (kind, message, can_rescan) = if recycled > 0 {
+                (
+                    ProblemKind::Partial,
+                    "配对成员只有部分进入回收站；可重试原位剩余项或取消剩余删除。",
+                    attention > 0,
+                )
+            } else if attention > 0 {
+                (
+                    ProblemKind::NeedsAttention,
+                    "删除结果无法完整证明；必须先重新扫描并检查 Windows 回收站。",
+                    true,
+                )
+            } else if retryable > 0 || unresolved > 0 {
+                (
+                    ProblemKind::RetryableFailed,
+                    "文件仍在原位置；可重新确认剩余数量和容量后重试。",
+                    false,
+                )
+            } else {
+                (ProblemKind::NeedsAttention, "删除结果需要处理。", true)
+            };
+            let relative_path: String = row.get(11)?;
+            Ok(PendingDeleteItem {
+                photo_id: uuid::Uuid::from_slice(&row.get::<_, Vec<u8>>(0)?)
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
+                photo_version: row.get(1)?,
+                file_name: row.get(2)?,
+                capture_local_key: row.get(3)?,
+                preview: None,
+                jpeg_present: row.get::<_, bool>(9)?,
+                raf_present: row.get::<_, bool>(10)?,
+                relative_directory: relative_parent(&relative_path),
+                physical_file_count: usize::try_from(unresolved).unwrap_or(0),
+                total_size_bytes: row.get(5)?,
+                problem: Some(problem(kind, message, can_rescan, false)),
+            })
+        })
+        .map_err(map_sqlite_error)?
+        .map(|row| row.map_err(map_sqlite_error))
+        .collect()
 }
 
 fn review_item(rows: Vec<ReviewRow>) -> Result<PendingDeleteItem, DomainError> {

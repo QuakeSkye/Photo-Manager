@@ -8,6 +8,7 @@ pub mod import_execution;
 pub mod import_preflight;
 pub mod media;
 pub mod pending_delete;
+pub mod recycle;
 pub mod roots;
 pub mod safety;
 
@@ -61,6 +62,10 @@ pub fn run() {
             ));
             let pending_delete_service =
                 std::sync::Arc::new(pending_delete::PendingDeleteService::new(database.clone()));
+            let recycle_service = std::sync::Arc::new(recycle::RecycleService::new(
+                database.clone(),
+                pending_delete_service.clone(),
+            )?);
             let external_tool_service =
                 std::sync::Arc::new(external_tools::ExternalToolService::new(database.clone()));
             let _ = scan_coordinator.start_background_if_bound();
@@ -72,6 +77,7 @@ pub fn run() {
             application.manage(preview_service);
             application.manage(cache_service.clone());
             application.manage(pending_delete_service);
+            application.manage(recycle_service);
             application.manage(external_tool_service);
             application.manage(scan_coordinator);
             application.manage(safety_state);
@@ -111,6 +117,11 @@ pub fn run() {
             commands::pending_delete::get_pending_delete_snapshot,
             commands::pending_delete::toggle_deletion_mark,
             commands::pending_delete::undo_deletion_mark,
+            commands::recycle::get_recycle_confirmation,
+            commands::recycle::get_recycle_status,
+            commands::recycle::start_recycle,
+            commands::recycle::retry_recycle,
+            commands::recycle::cancel_remaining_recycle,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application");

@@ -4,6 +4,7 @@ pub(crate) mod import_execution;
 pub(crate) mod import_preflight;
 pub(crate) mod library;
 pub(crate) mod pending_delete;
+pub(crate) mod recycle;
 
 use crate::safety::{SafetyState, SafetyStatus};
 

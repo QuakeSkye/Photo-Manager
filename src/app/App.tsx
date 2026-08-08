@@ -5,6 +5,7 @@ import { ImportView } from '../features/import/ImportView';
 import { PendingDeleteView } from '../features/pending-delete/PendingDeleteView';
 import { ScanView } from '../features/scanning/ScanView';
 import { SettingsView } from '../features/settings/SettingsView';
+import { Modal } from '../shared/ui/Modal';
 import {
   bindLibraryFolder,
   getLibrarySnapshot,
@@ -19,6 +20,14 @@ import {
   type PendingDeleteSnapshot,
   type SortMode,
 } from '../shared/commands/library';
+import {
+  cancelRemainingRecycle,
+  getRecycleConfirmation,
+  retryRecycle,
+  startRecycle,
+  type RecycleConfirmation,
+  type RecycleStatus,
+} from '../shared/commands/recycle';
 
 type Route = 'library' | 'pending-delete' | 'settings' | 'scan' | 'import';
 
@@ -32,6 +41,12 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mutationPending, setMutationPending] = useState(false);
+  const [recycleConfirmation, setRecycleConfirmation] =
+    useState<RecycleConfirmation | null>(null);
+  const [recycleStatus, setRecycleStatus] = useState<RecycleStatus | null>(
+    null,
+  );
+  const [recycleExecuting, setRecycleExecuting] = useState(false);
   const mutationInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const restoreAfterSettings = useRef<{
@@ -381,6 +396,85 @@ export function App() {
     }
   };
 
+  const openRecycleConfirmation = async () => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setMutationPending(true);
+    setError(null);
+    try {
+      const confirmation = await getRecycleConfirmation();
+      if (!confirmation.canExecute) {
+        throw new Error('没有可执行的有效待删除照片。');
+      }
+      setRecycleConfirmation(confirmation);
+    } catch (reason) {
+      mutationInFlight.current = false;
+      setMutationPending(false);
+      setError(readError(reason));
+    }
+  };
+
+  const closeRecycleConfirmation = () => {
+    if (recycleExecuting) return;
+    setRecycleConfirmation(null);
+    mutationInFlight.current = false;
+    setMutationPending(false);
+  };
+
+  const confirmRecycle = async () => {
+    if (recycleConfirmation === null || recycleExecuting) return;
+    setRecycleExecuting(true);
+    setError(null);
+    try {
+      const result = recycleConfirmation.retry
+        ? await retryRecycle(recycleConfirmation)
+        : await startRecycle(recycleConfirmation);
+      setRecycleStatus(result);
+      setRecycleConfirmation(null);
+      const { nextLibrary, nextPending } = await refreshDeletionState();
+      if (nextPending.summary.totalCount === 0) {
+        setRoute('library');
+        window.history.replaceState(null, '', '#/library');
+        setSelectedPhotoId(
+          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
+        );
+      } else {
+        setPendingSnapshot(nextPending);
+        setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+      }
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      setRecycleExecuting(false);
+      mutationInFlight.current = false;
+      setMutationPending(false);
+    }
+  };
+
+  const cancelRecycleRemaining = async () => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    setMutationPending(true);
+    setError(null);
+    try {
+      const result = await cancelRemainingRecycle();
+      setRecycleStatus(result);
+      const { nextLibrary, nextPending } = await refreshDeletionState();
+      if (nextPending.summary.totalCount === 0) {
+        setRoute('library');
+        window.history.replaceState(null, '', '#/library');
+        setSelectedPhotoId(
+          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
+        );
+      }
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      mutationInFlight.current = false;
+      setMutationPending(false);
+    }
+  };
+
   const bindingStarted = async (
     result: BindResult,
     returnRoute: 'library' | 'import' = 'library',
@@ -476,6 +570,10 @@ export function App() {
           onCancelCurrent={() => void performToggle()}
           onUndoDeletion={() => void performUndo()}
           onRescan={() => void startRescan()}
+          onExecute={() => void openRecycleConfirmation()}
+          onRetryRemaining={() => void openRecycleConfirmation()}
+          onCancelRemaining={() => void cancelRecycleRemaining()}
+          recycleMessage={recycleStatus?.message ?? null}
         />
       )}
       {route === 'settings' && (
@@ -529,8 +627,54 @@ export function App() {
           }
         />
       )}
+      {recycleConfirmation !== null && (
+        <Modal
+          title={
+            recycleConfirmation.retry
+              ? '确认重试剩余文件'
+              : '确认移入 Windows 回收站'
+          }
+          confirmLabel={
+            recycleConfirmation.retry ? '重试剩余文件' : '移入回收站'
+          }
+          busy={recycleExecuting}
+          onConfirm={() => void confirmRecycle()}
+          onCancel={closeRecycleConfirmation}
+        >
+          <dl>
+            <div className="metadata-row">
+              <dt>逻辑照片</dt>
+              <dd>{recycleConfirmation.logicalPhotoCount}</dd>
+            </div>
+            <div className="metadata-row">
+              <dt>物理 JPG / RAF 文件</dt>
+              <dd>{recycleConfirmation.physicalFileCount}</dd>
+            </div>
+            <div className="metadata-row">
+              <dt>合计容量</dt>
+              <dd>{formatBytes(recycleConfirmation.totalBytes)}</dd>
+            </div>
+          </dl>
+          <p>
+            执行后应用内 R 无效，只能通过 Windows 回收站恢复。应用不会永久删除，
+            也不会在回收站不可用时降级。
+          </p>
+        </Modal>
+      )}
     </div>
   );
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
 }
 
 function BootState({

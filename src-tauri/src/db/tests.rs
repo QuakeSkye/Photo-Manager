@@ -792,7 +792,7 @@ fn corrupted_database_enters_read_only_safe_mode() {
 }
 
 #[test]
-fn newer_schema_and_unfinished_attempts_reopen_in_read_only_safe_mode() {
+fn unfinished_attempts_remain_reconcilable_but_newer_schema_is_read_only() {
     let parent = tempfile::tempdir().unwrap();
     let root = TestRoot::create_in(parent.path()).unwrap();
     let database = Database::open(root.path()).unwrap();
@@ -801,14 +801,17 @@ fn newer_schema_and_unfinished_attempts_reopen_in_read_only_safe_mode() {
     drop(database);
 
     let reopened = Database::open(root.path()).unwrap();
-    assert_eq!(reopened.mode(), DatabaseMode::ReadOnlySafe);
-    assert!(
-        reopened
-            .safe_mode_reason()
-            .unwrap()
-            .user_message
-            .contains("Attempt")
-    );
+    assert_eq!(reopened.mode(), DatabaseMode::ReadWrite);
+    let unfinished: bool = reopened
+        .open_read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM import_attempt WHERE attempt_state IN ('Prepared','Running'))",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(unfinished);
     drop(reopened);
 
     let second_parent = tempfile::tempdir().unwrap();
@@ -837,6 +840,9 @@ fn schema_installs_cross_entity_chain_and_immutability_guards() {
         "verified_partial_chain_consistent",
         "import_publish_chain_consistent",
         "deletion_batch_asset_snapshot_copy",
+        "deletion_batch_transition",
+        "deletion_attempt_asset_transition",
+        "deletion_recycled_fact_chain",
         "operation_report_task_kind",
         "operation_resolution_event_chain_consistent",
     ];
