@@ -1,4 +1,4 @@
-mod shell;
+pub(crate) mod shell;
 
 use std::{
     collections::HashMap,

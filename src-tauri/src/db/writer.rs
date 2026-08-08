@@ -1,5 +1,7 @@
 use std::{
     path::PathBuf,
+    sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     sync::mpsc::{self, Sender},
     thread::{self, JoinHandle},
 };
@@ -24,6 +26,7 @@ pub struct DbWriter {
     sender: Sender<WriterMessage>,
     thread: Option<JoinHandle<()>>,
     path: PathBuf,
+    healthy: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for DbWriter {
@@ -42,6 +45,7 @@ impl DbWriter {
         fault_injector: FaultInjector,
     ) -> Result<Self, DomainError> {
         let (sender, receiver) = mpsc::channel();
+        let healthy = Arc::new(AtomicBool::new(true));
         let thread = thread::Builder::new()
             .name("sqlite-single-writer".into())
             .spawn(move || {
@@ -62,6 +66,7 @@ impl DbWriter {
             sender,
             thread: Some(thread),
             path,
+            healthy,
         })
     }
 
@@ -70,6 +75,12 @@ impl DbWriter {
         T: Send + 'static,
         F: FnOnce(&mut Connection, &FaultInjector) -> Result<T, DomainError> + Send + 'static,
     {
+        if !self.healthy.load(Ordering::Acquire) {
+            return Err(DomainError::new(
+                ErrorCode::ReadOnlySafeMode,
+                "数据库耐久写入门已经关闭；请先恢复应用状态。",
+            ));
+        }
         let (result_sender, result_receiver) = mpsc::sync_channel(1);
         self.sender
             .send(WriterMessage::Run(Box::new(move |connection, injector| {
@@ -77,9 +88,13 @@ impl DbWriter {
             })))
             .map_err(|_| DomainError::new(ErrorCode::Internal, "数据库单写者已停止。"))?;
 
-        result_receiver
+        let result = result_receiver
             .recv()
-            .map_err(|_| DomainError::new(ErrorCode::Internal, "数据库写入结果丢失。"))?
+            .map_err(|_| DomainError::new(ErrorCode::Internal, "数据库写入结果丢失。"))?;
+        if result.as_ref().is_err_and(is_durability_failure) {
+            self.healthy.store(false, Ordering::Release);
+        }
+        result
     }
 
     pub fn transaction<T, F>(&self, operation: F) -> Result<T, DomainError>
@@ -98,6 +113,17 @@ impl DbWriter {
             Ok(result)
         })
     }
+
+    pub fn health_handle(&self) -> Arc<AtomicBool> {
+        self.healthy.clone()
+    }
+}
+
+fn is_durability_failure(error: &DomainError) -> bool {
+    matches!(
+        error.code,
+        ErrorCode::DatabaseDurability | ErrorCode::DatabaseCorrupt | ErrorCode::ReadOnlySafeMode
+    )
 }
 
 impl Drop for DbWriter {

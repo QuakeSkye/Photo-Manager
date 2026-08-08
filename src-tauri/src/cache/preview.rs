@@ -7,6 +7,7 @@ use crate::{
     catalog::MediaKind,
     db::{Database, migration::map_sqlite_error},
     domain::{AssetId, DomainError, ErrorCode},
+    io_scheduler::{IoPriority, IoScheduler},
     media::{PreviewState, read_preview_bytes},
     roots::{open_read_only, probe_directory, probe_file, resolve_contained_path},
 };
@@ -17,11 +18,24 @@ use super::{CacheEntryHandle, CacheKind, CacheService};
 pub struct PreviewService {
     database: Arc<Database>,
     cache: Arc<CacheService>,
+    scheduler: Arc<IoScheduler>,
 }
 
 impl PreviewService {
     pub fn new(database: Arc<Database>, cache: Arc<CacheService>) -> Self {
-        Self { database, cache }
+        Self::with_scheduler(database, cache, Arc::new(IoScheduler::for_rotational()))
+    }
+
+    pub fn with_scheduler(
+        database: Arc<Database>,
+        cache: Arc<CacheService>,
+        scheduler: Arc<IoScheduler>,
+    ) -> Self {
+        Self {
+            database,
+            cache,
+            scheduler,
+        }
     }
 
     pub fn materialize(
@@ -44,6 +58,10 @@ impl PreviewService {
         asset_id: AssetId,
         asset_version: i64,
     ) -> Result<Vec<u8>, DomainError> {
+        self.scheduler.note_browse_activity()?;
+        let _permit = self
+            .scheduler
+            .acquire(IoPriority::CurrentPreview, || false)?;
         let source = self.load_source(asset_id, asset_version)?;
         let root = probe_directory(&source.root_path)?;
         if root.directory_file_id != source.root_file_id

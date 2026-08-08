@@ -1,0 +1,29 @@
+{
+  "reportVersion": 2,
+  "feature": "recycle",
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "candidateManifestSha256": "ae7df348a9369f9bf21a82a5f78b0d53de944861d387ce2bd3309dc2c534db6b",
+  "generatedDataOnly": true,
+  "recycleOnlyFlags": true,
+  "permanentDeleteFlagPresent": false,
+  "perFileCallbacks": 2,
+  "restoredIdentical": true,
+  "evidence": [
+    {
+      "relativePath": "safety-report.json",
+      "sizeBytes": 549,
+      "sha256": "b2df84152ace77c90bbcafdd0ea3bf2542efcc9ed65bd1c11fd7cc9115afa2cf"
+    },
+    {
+      "relativePath": "source-quality-report.json",
+      "sizeBytes": 2550,
+      "sha256": "0aa380daf190cb72c12349709b44d0b91ee630cdb92c596ca2a248a03fbd9bd9"
+    },
+    {
+      "relativePath": "acceptance-matrix.json",
+      "sizeBytes": 14886,
+      "sha256": "b6472eb8931bb9dcae4b782e65e8274aa137a01d66cc8f3b3106c7caead25717"
+    }
+  ],
+  "passed": true
+}

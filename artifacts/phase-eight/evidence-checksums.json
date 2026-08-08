@@ -1,0 +1,28 @@
+{
+  "reportVersion": 1,
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "candidateManifestSha256": "ae7df348a9369f9bf21a82a5f78b0d53de944861d387ce2bd3309dc2c534db6b",
+  "artifacts": [
+    { "name": "acceptance-matrix.json", "sizeBytes": 14886, "sha256": "b6472eb8931bb9dcae4b782e65e8274aa137a01d66cc8f3b3106c7caead25717" },
+    { "name": "admission-verification.json", "sizeBytes": 254, "sha256": "d73d263e1a96b4cb1919613fa1cf58760f6802611610dccac4ccbd71a5fb7567" },
+    { "name": "cache-report.json", "sizeBytes": 406, "sha256": "fc827e2cc722d99ae2458d4cb9196348ed701c9c708d82f774b2424b9657748b" },
+    { "name": "candidate-manifest.json", "sizeBytes": 2743, "sha256": "51b8066979104c04dc1f8a5dce48012d7f8f9b94f61aaf068f4e4ab585e89176" },
+    { "name": "candidate-verification.json", "sizeBytes": 231, "sha256": "6d31c85091a0deb195066767f0625c80b40377afb4df9904b9bea46d2220c83f" },
+    { "name": "database-report.json", "sizeBytes": 653, "sha256": "3839c2db60ed3f6a3c385b8017993cd34f7eee63687cfed1d46b84272259c8eb" },
+    { "name": "defects-report.json", "sizeBytes": 609, "sha256": "1393fff673653e3f0a6826b49269957d71564731b9b7623c7d551cfd9de987a7" },
+    { "name": "dpi-100-1440x900.png", "sizeBytes": 57732, "sha256": "91197bfce4245373289725ee1fec1f6284b5b07cd3dc735893d62f5b24736c90" },
+    { "name": "dpi-125-1280x720.png", "sizeBytes": 73450, "sha256": "5c95f0f697564a1980f049efcc6eeb117f8b4e7342598f67661fd631b3637dc1" },
+    { "name": "dpi-150-1100x700.png", "sizeBytes": 89102, "sha256": "de2619ec7de721bb5a111292553c9e85bf93dd2f9c7850e4dce63c605eacdb17" },
+    { "name": "import-admission.json", "sizeBytes": 2937, "sha256": "d274be56cff25f303cacc03d7e2257b205a7cdc9e6e50904ef85da0727c61f40" },
+    { "name": "import-safety-report.json", "sizeBytes": 953, "sha256": "868f0512a35e4048b83ab6e4ac28acb5b990df1c6cb25d55e0009ac710622734" },
+    { "name": "io-report.json", "sizeBytes": 959, "sha256": "676c7e3260186f4a2d7d132526c278924fe297bac3e0f54d30c84f4c9ca88c5e" },
+    { "name": "performance-report.json", "sizeBytes": 1757, "sha256": "59edd0036028628ba495901ccc9db0eba3ea2aa4ddba5332e17d4f5088e09077" },
+    { "name": "phase-eight-final-summary.json", "sizeBytes": 3472, "sha256": "cc480d37c560a957702472da296385ac6f73c84774ec6abb65ead256b7c253ff" },
+    { "name": "recycle-admission.json", "sizeBytes": 2939, "sha256": "a347880360bc7d499ef0e6505e68ce898846ae5d502236ff58fd76393cbf06de" },
+    { "name": "recycle-safety-report.json", "sizeBytes": 892, "sha256": "642a38e8d33b959a67aa593561020171284a33c2e64a1355cba43d16289bbe30" },
+    { "name": "safety-report.json", "sizeBytes": 549, "sha256": "b2df84152ace77c90bbcafdd0ea3bf2542efcc9ed65bd1c11fd7cc9115afa2cf" },
+    { "name": "scale-report.json", "sizeBytes": 1510, "sha256": "a5044cd0a044a355dd37b3f52b88179cd4ffe455d6dd67346cd70628b737c91d" },
+    { "name": "source-quality-report.json", "sizeBytes": 2550, "sha256": "0aa380daf190cb72c12349709b44d0b91ee630cdb92c596ca2a248a03fbd9bd9" },
+    { "name": "ui-candidate-report.json", "sizeBytes": 2434, "sha256": "79ee8e49e2f240bda5b8260c03f22ad5c65f3bc14e6e408cdf91c1d847efd346" }
+  ]
+}

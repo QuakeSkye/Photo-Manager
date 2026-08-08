@@ -1,0 +1,69 @@
+{
+  "reportVersion": 1,
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "manifestSha256": "ae7df348a9369f9bf21a82a5f78b0d53de944861d387ce2bd3309dc2c534db6b",
+  "manifest": {
+    "reportVersion": 1,
+    "installer": {
+      "absolutePath": "\\\\?\\D:\\A\\MyProject\\ai\\Aifirtst\\src-tauri\\target\\release\\bundle\\nsis\\Fuji 照片管理器_1.0.0_x64-setup.exe",
+      "sizeBytes": 3569164,
+      "sha256": "571e7a7afa12cb1b53e8563b36369cfb42ef332bdc6898f7c754bccb2a20edd8"
+    },
+    "installedBinary": {
+      "absolutePath": "\\\\?\\C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "sizeBytes": 14589952,
+      "sha256": "cc773ddd590dd01acfc222afa8b2e48a5df3f726d4a2a81fe750a38edc716ce6"
+    },
+    "build": {
+      "binarySha256": "cc773ddd590dd01acfc222afa8b2e48a5df3f726d4a2a81fe750a38edc716ce6",
+      "packageLockSha256": "1544f8bffbaff8cf29739c0992bc174ba8e8d34f0ffb7da3aead10827c1caf50",
+      "cargoLockSha256": "36d64528b649b919ff9749abc5658e8ff8bcf97513c1973bd8ed8be08ff3d930",
+      "schemaVersion": 8,
+      "schemaChecksum": "e78fd625669f4b76629a25a210cbd5de70eaf35de54605430c2607c29d969ca2",
+      "migrationChainChecksum": "3d736ebf30cf68c566585e0ae659292e417e752b3464bf8c485e24d554566f11",
+      "migrations": [
+        {
+          "version": 1,
+          "filename": "0001_phase_zero.sql",
+          "sha256": "2c30d235893a7cab9c3fc2a2e4f49963b9b25bdd9c11431a0ab3671adacffb7a"
+        },
+        {
+          "version": 2,
+          "filename": "0002_phase_one.sql",
+          "sha256": "6a4f22a500d8715acd925e8cea17e1c7b0dc082adee20a36b99816352d6c0424"
+        },
+        {
+          "version": 3,
+          "filename": "0003_phase_three.sql",
+          "sha256": "4a34b4b5c3792ff10fed96743a43cdf94d0e60abc61bf6913eda9184b1d25058"
+        },
+        {
+          "version": 4,
+          "filename": "0004_phase_four.sql",
+          "sha256": "e85e1280011d4dbb1dcab4bb36d4c690654e6d51ada5e41e70544a212f96f5a1"
+        },
+        {
+          "version": 5,
+          "filename": "0005_phase_five.sql",
+          "sha256": "ef682d0223e2df99ff7d8fe411138d81904a885da547f3b51a2e57a9832aa2b0"
+        },
+        {
+          "version": 6,
+          "filename": "0006_phase_six.sql",
+          "sha256": "46251d356caebb66e7108cd13e207bbc412dccf2c985039e976e10e7cdd963ca"
+        },
+        {
+          "version": 7,
+          "filename": "0007_phase_seven.sql",
+          "sha256": "922aaecc7a8b1af0139048f5679e84a812a178e830536ee116d39b31312e39be"
+        },
+        {
+          "version": 8,
+          "filename": "0008_phase_eight.sql",
+          "sha256": "71c40f9a327e223a513ef5c594b49479faa17725638e275e6a35d952e931ac89"
+        }
+      ],
+      "safetyReportVersion": 2
+    }
+  }
+}

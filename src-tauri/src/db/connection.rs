@@ -2,6 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -30,6 +31,14 @@ pub struct ConnectionPragmas {
     pub busy_timeout_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointResult {
+    pub busy: bool,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseOpenOutcome {
     ReadWrite,
@@ -43,6 +52,7 @@ pub struct Database {
     writer: Option<Arc<DbWriter>>,
     mode: DatabaseMode,
     safe_mode_reason: Option<DomainError>,
+    write_health: Arc<AtomicBool>,
 }
 
 impl Database {
@@ -80,6 +90,7 @@ impl Database {
                     writer: None,
                     mode: DatabaseMode::ReadOnlySafe,
                     safe_mode_reason: Some(reason),
+                    write_health: Arc::new(AtomicBool::new(false)),
                 });
             }
         };
@@ -93,6 +104,7 @@ impl Database {
                 writer: None,
                 mode: DatabaseMode::ReadOnlySafe,
                 safe_mode_reason: Some(reason),
+                write_health: Arc::new(AtomicBool::new(false)),
             });
         }
 
@@ -109,6 +121,7 @@ impl Database {
                     writer: None,
                     mode: DatabaseMode::ReadOnlySafe,
                     safe_mode_reason: Some(reason),
+                    write_health: Arc::new(AtomicBool::new(false)),
                 });
             }
         }
@@ -122,17 +135,20 @@ impl Database {
                 writer: None,
                 mode: safe_mode_for_domain(&error),
                 safe_mode_reason: Some(error),
+                write_health: Arc::new(AtomicBool::new(false)),
             });
         }
-        if let Err(reason) =
-            integrity_check(&connection).and_then(|()| logical_integrity_check(&connection))
-        {
+        // The database was already physically checked before any migration. Migrations are
+        // transactional; running the same full quick/FK scan again makes 100k-photo startup
+        // scale with the catalog twice without adding a new failure boundary.
+        if let Err(reason) = logical_integrity_check(&connection) {
             return Ok(Self {
                 path,
                 backup_service,
                 writer: None,
                 mode: DatabaseMode::ReadOnlySafe,
                 safe_mode_reason: Some(reason),
+                write_health: Arc::new(AtomicBool::new(false)),
             });
         }
         if let Err(reason) = backup_service.create_consistent_snapshot(
@@ -146,16 +162,19 @@ impl Database {
                 writer: None,
                 mode: DatabaseMode::ReadOnlySafe,
                 safe_mode_reason: Some(reason),
+                write_health: Arc::new(AtomicBool::new(false)),
             });
         }
 
         let writer = DbWriter::spawn(connection, path.clone(), fault_injector)?;
+        let write_health = writer.health_handle();
         Ok(Self {
             path,
             backup_service,
             writer: Some(Arc::new(writer)),
             mode: DatabaseMode::ReadWrite,
             safe_mode_reason: None,
+            write_health,
         })
     }
 
@@ -196,10 +215,16 @@ impl Database {
         read_pragmas(&connection)
     }
 
-    pub fn controlled_checkpoint(&self) -> Result<(), DomainError> {
+    pub fn controlled_checkpoint(&self) -> Result<CheckpointResult, DomainError> {
         self.writer()?.execute(|connection, _| {
             connection
-                .execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+                .query_row("PRAGMA wal_checkpoint(PASSIVE)", (), |row| {
+                    Ok(CheckpointResult {
+                        busy: row.get::<_, i64>(0)? != 0,
+                        log_frames: row.get(1)?,
+                        checkpointed_frames: row.get(2)?,
+                    })
+                })
                 .map_err(map_sqlite_error)
         })
     }
@@ -214,6 +239,14 @@ impl Database {
 
     pub fn safe_mode_reason(&self) -> Option<&DomainError> {
         self.safe_mode_reason.as_ref()
+    }
+
+    pub fn write_health_handle(&self) -> Arc<AtomicBool> {
+        self.write_health.clone()
+    }
+
+    pub fn is_write_healthy(&self) -> bool {
+        self.write_health.load(Ordering::Acquire)
     }
 }
 

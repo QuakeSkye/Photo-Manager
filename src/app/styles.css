@@ -7,7 +7,7 @@
   --surface: #fff;
   --canvas: #f1f2f4;
   --text-primary: #202633;
-  --text-secondary: #717b89;
+  --text-secondary: #626d7b;
   --border: #e4e7ec;
   --selection: #3d6dd8;
   --danger: #bd3b4c;
@@ -310,7 +310,7 @@ p {
   width: 100%;
   height: 100%;
   place-items: center;
-  color: #778190;
+  color: #596574;
   background: #e9ecf0;
   font-size: 12px;
 }
@@ -470,7 +470,7 @@ p {
   font-weight: 700;
 }
 .format-badge.is-missing {
-  color: #717b89;
+  color: var(--text-secondary);
   border-color: #e0e3e8;
   background: #f8f9fa;
 }

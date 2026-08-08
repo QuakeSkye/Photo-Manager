@@ -3,11 +3,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use crate::{
     db::migration::{map_sqlite_error, now_micros},
     domain::{AssetId, DomainError, ErrorCode, LibraryId, RootBindingId, RootId},
+    io_scheduler::{IoPriority, IoScheduler},
     media::{ExifMetadata, PreviewState, inspect},
     roots::{
         FilesystemKind, open_read_only, path_is_reparse, path_key, probe_directory, probe_file,
@@ -54,11 +56,25 @@ pub struct ScanProgress {
 #[derive(Debug, Clone)]
 pub struct LibraryScanner {
     catalog: Arc<CatalogService>,
+    scheduler: Arc<IoScheduler>,
+    scheduler_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl LibraryScanner {
     pub fn new(catalog: Arc<CatalogService>) -> Self {
-        Self { catalog }
+        Self::with_scheduler(catalog, Arc::new(IoScheduler::for_rotational()), None)
+    }
+
+    pub fn with_scheduler(
+        catalog: Arc<CatalogService>,
+        scheduler: Arc<IoScheduler>,
+        scheduler_cancel: Option<Arc<AtomicBool>>,
+    ) -> Self {
+        Self {
+            catalog,
+            scheduler,
+            scheduler_cancel,
+        }
     }
 
     pub fn scan(&self, request: ScanRequest) -> Result<ScanReport, DomainError> {
@@ -191,10 +207,17 @@ impl LibraryScanner {
                 .map(|value| value.to_string_lossy().replace('/', "\\"))
                 .filter(|value| !value.is_empty());
             observe(state.progress());
-            let mut entries = fs::read_dir(&directory)
-                .map_err(scan_io_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(scan_io_error)?;
+            let mut entries = {
+                let _directory_permit = self.scheduler.acquire(IoPriority::ScanAndExif, || {
+                    self.scheduler_cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                })?;
+                fs::read_dir(&directory)
+                    .map_err(scan_io_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(scan_io_error)?
+            };
             entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
             for entry in entries.into_iter().rev() {
                 if cancelled() {
@@ -202,6 +225,11 @@ impl LibraryScanner {
                     break;
                 }
                 state.files_checked += 1;
+                let _file_permit = self.scheduler.acquire(IoPriority::ScanAndExif, || {
+                    self.scheduler_cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                })?;
                 let path = entry.path();
                 let relative = path.strip_prefix(&request.root_path).map_err(|_| {
                     DomainError::new(ErrorCode::UnsafePath, "扫描路径离开了图库 Root。")

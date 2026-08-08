@@ -1,0 +1,60 @@
+{
+  "reportVersion": 1,
+  "feature": "recycle",
+  "candidateManifestSha256": "ae7df348a9369f9bf21a82a5f78b0d53de944861d387ce2bd3309dc2c534db6b",
+  "safetyReport": {
+    "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\recycle-safety-report.json",
+    "sizeBytes": 892,
+    "sha256": "642a38e8d33b959a67aa593561020171284a33c2e64a1355cba43d16289bbe30"
+  },
+  "evidence": [
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\acceptance-matrix.json",
+      "sizeBytes": 14886,
+      "sha256": "b6472eb8931bb9dcae4b782e65e8274aa137a01d66cc8f3b3106c7caead25717"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\defects-report.json",
+      "sizeBytes": 609,
+      "sha256": "1393fff673653e3f0a6826b49269957d71564731b9b7623c7d551cfd9de987a7"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\scale-report.json",
+      "sizeBytes": 1510,
+      "sha256": "a5044cd0a044a355dd37b3f52b88179cd4ffe455d6dd67346cd70628b737c91d"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\io-report.json",
+      "sizeBytes": 959,
+      "sha256": "676c7e3260186f4a2d7d132526c278924fe297bac3e0f54d30c84f4c9ca88c5e"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\database-report.json",
+      "sizeBytes": 653,
+      "sha256": "3839c2db60ed3f6a3c385b8017993cd34f7eee63687cfed1d46b84272259c8eb"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\cache-report.json",
+      "sizeBytes": 406,
+      "sha256": "fc827e2cc722d99ae2458d4cb9196348ed701c9c708d82f774b2424b9657748b"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\performance-report.json",
+      "sizeBytes": 1757,
+      "sha256": "59edd0036028628ba495901ccc9db0eba3ea2aa4ddba5332e17d4f5088e09077"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\source-quality-report.json",
+      "sizeBytes": 2550,
+      "sha256": "0aa380daf190cb72c12349709b44d0b91ee630cdb92c596ca2a248a03fbd9bd9"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-f5a9b86f-1d2b-40df-9654-4a44a11dbc9b\\ui-candidate-1786204717138\\ui-candidate-report.json",
+      "sizeBytes": 2434,
+      "sha256": "79ee8e49e2f240bda5b8260c03f22ad5c65f3bc14e6e408cdf91c1d847efd346"
+    }
+  ],
+  "acceptanceConditionsPassed": 27,
+  "unresolvedCritical": 0,
+  "unresolvedHigh": 0
+}

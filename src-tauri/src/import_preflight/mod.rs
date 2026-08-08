@@ -19,6 +19,7 @@ use crate::{
     catalog::MediaKind,
     db::{Database, migration::now_micros},
     domain::{DomainError, ErrorCode, RootBindingId, RootId, VolumeId},
+    io_scheduler::{IoPriority, IoScheduler},
     media,
     roots::{DirectoryProbe, FileProbe, path_is_reparse, path_key, probe_directory},
 };
@@ -156,6 +157,7 @@ pub struct ImportPreflightService {
     app_data_directory: PathBuf,
     state: Arc<Mutex<RuntimeState>>,
     cancel_requested: Arc<AtomicBool>,
+    scheduler: Arc<IoScheduler>,
 }
 
 #[derive(Debug, Clone)]
@@ -231,11 +233,24 @@ struct ProfileRecord {
 
 impl ImportPreflightService {
     pub fn new(database: Arc<Database>, app_data_directory: impl Into<PathBuf>) -> Self {
+        Self::with_scheduler(
+            database,
+            app_data_directory,
+            Arc::new(IoScheduler::for_rotational()),
+        )
+    }
+
+    pub fn with_scheduler(
+        database: Arc<Database>,
+        app_data_directory: impl Into<PathBuf>,
+        scheduler: Arc<IoScheduler>,
+    ) -> Self {
         Self {
             database,
             app_data_directory: app_data_directory.into(),
             state: Arc::new(Mutex::new(RuntimeState::default())),
             cancel_requested: Arc::new(AtomicBool::new(false)),
+            scheduler,
         }
     }
 
@@ -483,10 +498,15 @@ impl ImportPreflightService {
         while let Some(directory) = stack.pop() {
             self.check_cancelled()?;
             audit.enumerate(AuditSide::Source);
-            let mut entries = fs::read_dir(&directory)
-                .map_err(source_io_error)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(source_io_error)?;
+            let mut entries = {
+                let _permit = self.scheduler.acquire(IoPriority::ScanAndExif, || {
+                    self.cancel_requested.load(Ordering::Acquire)
+                })?;
+                fs::read_dir(&directory)
+                    .map_err(source_io_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(source_io_error)?
+            };
             entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
             for entry in entries.into_iter().rev() {
                 self.check_cancelled()?;
@@ -544,6 +564,11 @@ impl ImportPreflightService {
                     });
                     continue;
                 }
+                let _permit = self
+                    .scheduler
+                    .acquire(IoPriority::BackgroundHashAndCache, || {
+                        self.cancel_requested.load(Ordering::Acquire)
+                    })?;
                 match inspect_source_file(&path, media_kind, audit) {
                     Ok((identity, full_hash, capture_local_key)) => {
                         result.files.push(SourceFile {

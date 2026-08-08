@@ -1,0 +1,51 @@
+{
+  "reportVersion": 1,
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "sampleBytesAllocated": 2147483648,
+  "sequentialWriteBytes": 2147483648,
+  "sequentialWriteMs": 14137,
+  "sequentialReadBytes": 2147483648,
+  "sequentialReadMs": 1337,
+  "randomReadBytes": 67108864,
+  "randomReadMs": 99557,
+  "randomReadUnbuffered": true,
+  "contentSha256": "127572d79ab81c1ae45100a0acdbd8bd2ebd2fed112d3e8f9409118886cc9666",
+  "randomReadChecksum": 2097592,
+  "allocatedBytesBefore": 203508883,
+  "allocatedBytesAfter": 2350992531,
+  "freeBytesBefore": 529361235968,
+  "scheduler": {
+    "rotational": true,
+    "concurrencyLimit": 2,
+    "waiting": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "acquired": [
+      1,
+      0,
+      1,
+      0,
+      1
+    ],
+    "completed": [
+      1,
+      0,
+      1,
+      0,
+      1
+    ],
+    "cancelledWaits": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "maxQueueDepth": 1,
+    "running": 0
+  }
+}

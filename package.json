@@ -1,6 +1,6 @@
 {
   "name": "local-photo-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -23,6 +23,8 @@
     "test:phase5": "npx prettier --check src package.json scripts/phase-five-report.mjs scripts/safety-audit.mjs && node scripts/run-cargo.mjs fmt --manifest-path src-tauri/Cargo.toml --check && npx eslint src --max-warnings 0 && tsc -b --pretty false && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && node scripts/phase-five-report.mjs",
     "test:phase6": "npx prettier --check src package.json scripts/phase-six-report.mjs scripts/safety-audit.mjs && node scripts/run-cargo.mjs fmt --manifest-path src-tauri/Cargo.toml --check && npx eslint src --max-warnings 0 && tsc -b --pretty false && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && node scripts/phase-six-report.mjs",
     "test:phase7": "npx prettier --check src package.json scripts/phase-seven-report.mjs scripts/safety-audit.mjs && node scripts/run-cargo.mjs fmt --manifest-path src-tauri/Cargo.toml --check && npx eslint src --max-warnings 0 && tsc -b --pretty false && npm test && npm run test:e2e && npm run test:rust && npm run clippy && npm run safety:audit && npm run tauri -- build && npm run test:windows && node scripts/phase-seven-report.mjs",
+    "test:phase8:preflight": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/phase-eight-preflight.ps1 -Parent G:\\test -DryRun",
+    "test:phase8:quality": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/phase-eight-quality-gate.ps1",
     "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1",
     "clippy": "node scripts/run-cargo.mjs clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "safety:audit": "node scripts/safety-audit.mjs",

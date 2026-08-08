@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::{
     db::migration::map_sqlite_error,
     domain::{DomainError, ErrorCode, LibraryId, RootBindingId, RootId},
+    io_scheduler::IoScheduler,
 };
 
 use super::{CatalogService, LibraryScanner, ScanProgress, ScanReport, ScanRequest};
@@ -93,6 +94,7 @@ pub struct ScanCoordinator {
     active: Arc<AtomicBool>,
     cancel_requested: Arc<AtomicBool>,
     status: Arc<Mutex<Option<ScanStatus>>>,
+    scheduler: Arc<IoScheduler>,
 }
 
 impl std::fmt::Debug for ScanCoordinator {
@@ -106,11 +108,16 @@ impl std::fmt::Debug for ScanCoordinator {
 
 impl ScanCoordinator {
     pub fn new(catalog: Arc<CatalogService>) -> Self {
+        Self::with_scheduler(catalog, Arc::new(IoScheduler::for_rotational()))
+    }
+
+    pub fn with_scheduler(catalog: Arc<CatalogService>, scheduler: Arc<IoScheduler>) -> Self {
         Self {
             catalog,
             active: Arc::new(AtomicBool::new(false)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             status: Arc::new(Mutex::new(None)),
+            scheduler,
         }
     }
 
@@ -192,6 +199,7 @@ impl ScanCoordinator {
         let active = self.active.clone();
         let cancel_requested = self.cancel_requested.clone();
         let shared_status = self.status.clone();
+        let scheduler = self.scheduler.clone();
         let root_id = request.root_id;
         let (sender, receiver) = mpsc::sync_channel(1);
         let spawn = thread::Builder::new()
@@ -199,7 +207,12 @@ impl ScanCoordinator {
             .spawn(move || {
                 let progress_status = shared_status.clone();
                 let cancellation = cancel_requested.clone();
-                let result = LibraryScanner::new(catalog.clone()).scan_with_observer(
+                let result = LibraryScanner::with_scheduler(
+                    catalog.clone(),
+                    scheduler,
+                    Some(cancel_requested.clone()),
+                )
+                .scan_with_observer(
                     request,
                     move || cancellation.load(Ordering::Acquire),
                     move |progress| {

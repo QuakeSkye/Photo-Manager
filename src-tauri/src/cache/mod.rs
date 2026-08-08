@@ -30,6 +30,157 @@ pub const CACHE_DEFAULT_BYTES: i64 = 34_359_738_368;
 pub const CACHE_MAX_BYTES: i64 = 68_719_476_736;
 pub const CACHE_MIN_RESERVE_BYTES: u64 = 21_474_836_480;
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PhaseEightCacheReport {
+    pub default_bytes: i64,
+    pub maximum_bytes: i64,
+    pub minimum_reserve_bytes: u64,
+    pub reserve_uses_max_of_20_gib_and_ten_percent: bool,
+    pub unknown_file_preserved: bool,
+    pub owned_entry_evicted: bool,
+    pub eviction_fact_count: i64,
+    pub rebuilt_with_new_ordinal: bool,
+    pub rebuilt_with_new_path: bool,
+}
+
+pub(crate) fn phase_eight_cache_suite(
+    suite_root: &Path,
+) -> Result<PhaseEightCacheReport, DomainError> {
+    use crate::{
+        catalog::{CatalogService, LibraryScanner, ScanRequest},
+        roots::FujiLibraryService,
+    };
+
+    fs::create_dir(suite_root).map_err(cache_io_error)?;
+    let app_root = suite_root.join("app-data");
+    let library_path = suite_root.join("generated-library");
+    let cache_parent = suite_root.join("cache-parent");
+    fs::create_dir(&app_root).map_err(cache_io_error)?;
+    fs::create_dir(&library_path).map_err(cache_io_error)?;
+    fs::create_dir(&cache_parent).map_err(cache_io_error)?;
+    create_new_cache_fixture(
+        &library_path.join("GENERATED.JPG"),
+        &[0xff, 0xd8, 0xff, 0xd9],
+    )?;
+
+    let database = Arc::new(Database::open(&app_root)?);
+    let binding = FujiLibraryService::new(database.clone(), &app_root).bind(&library_path)?;
+    let catalog = Arc::new(CatalogService::new(database.clone()));
+    LibraryScanner::new(catalog).scan(ScanRequest {
+        library_id: binding.library_id,
+        root_id: binding.root_id,
+        root_binding_id: binding.root_binding_id,
+        root_path: library_path,
+    })?;
+    let (asset, asset_version): (Vec<u8>, i64) = database
+        .open_read_connection()?
+        .query_row(
+            "SELECT asset_id,current_version FROM asset WHERE presence_state='Present'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(map_sqlite_error)?;
+    let asset_id =
+        AssetId::from_uuid(uuid::Uuid::from_slice(&asset).map_err(|_| {
+            DomainError::new(ErrorCode::DatabaseCorrupt, "缓存夹具 AssetId 损坏。")
+        })?);
+    let service = CacheService::new(database.clone(), &app_root, FaultInjector::default());
+    let plan = service.prepare_root(&cache_parent, OperationId::new())?;
+    service.execute_root_create(plan.intent_id)?;
+    let first = service.get_or_create(
+        asset_id,
+        asset_version,
+        CacheKind::Preview,
+        b"phase8-preview-v1",
+        &[0xff, 0xd8, 0xff, 0xd9],
+    )?;
+    let unknown = plan.child_path.join("unknown-user-owned.txt");
+    create_new_cache_fixture(&unknown, b"must remain unchanged")?;
+    database.writer()?.transaction(|transaction| {
+        transaction
+            .execute("UPDATE cache_policy SET capacity_bytes=1 WHERE slot=1", [])
+            .map_err(map_sqlite_error)?;
+        Ok(())
+    })?;
+    let evicted = service.evict_lru_until_within_limits()?;
+    let unknown_file_preserved =
+        fs::read(&unknown).map_err(cache_io_error)? == b"must remain unchanged";
+    let connection = database.open_read_connection()?;
+    let old_state: String = connection
+        .query_row(
+            "SELECT entry_state FROM cache_entry WHERE cache_entry_id=?1",
+            [first.cache_entry_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    let eviction_fact_count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM cache_eviction_fact WHERE cache_entry_id=?1",
+            [first.cache_entry_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    drop(connection);
+    database.writer()?.transaction(|transaction| {
+        transaction
+            .execute(
+                "UPDATE cache_policy SET capacity_bytes=?1 WHERE slot=1",
+                [CACHE_DEFAULT_BYTES],
+            )
+            .map_err(map_sqlite_error)?;
+        Ok(())
+    })?;
+    let rebuilt = service.get_or_create(
+        asset_id,
+        asset_version,
+        CacheKind::Preview,
+        b"phase8-preview-v1",
+        &[0xff, 0xd8, 0xff, 0xd9],
+    )?;
+    let reserve_rule =
+        CACHE_MIN_RESERVE_BYTES.max(ceil_ten_percent(1_000_000_000_000)?) == 100_000_000_000;
+    let report = PhaseEightCacheReport {
+        default_bytes: CACHE_DEFAULT_BYTES,
+        maximum_bytes: CACHE_MAX_BYTES,
+        minimum_reserve_bytes: CACHE_MIN_RESERVE_BYTES,
+        reserve_uses_max_of_20_gib_and_ten_percent: reserve_rule,
+        unknown_file_preserved,
+        owned_entry_evicted: evicted == 1
+            && old_state == "Evicted"
+            && !first.absolute_path.exists(),
+        eviction_fact_count,
+        rebuilt_with_new_ordinal: rebuilt.entry_ordinal == first.entry_ordinal + 1,
+        rebuilt_with_new_path: rebuilt.relative_path != first.relative_path,
+    };
+    if report.default_bytes != 32 * 1_073_741_824
+        || report.maximum_bytes != 64 * 1_073_741_824
+        || report.minimum_reserve_bytes != 20 * 1_073_741_824
+        || !report.reserve_uses_max_of_20_gib_and_ten_percent
+        || !report.unknown_file_preserved
+        || !report.owned_entry_evicted
+        || report.eviction_fact_count != 1
+        || !report.rebuilt_with_new_ordinal
+        || !report.rebuilt_with_new_path
+    {
+        return Err(DomainError::new(
+            ErrorCode::CacheOwnership,
+            "阶段 8 缓存所有权套件未通过。",
+        ));
+    }
+    Ok(report)
+}
+
+fn create_new_cache_fixture(path: &Path, bytes: &[u8]) -> Result<(), DomainError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(cache_io_error)?;
+    file.write_all(bytes).map_err(cache_io_error)?;
+    file.sync_all().map_err(cache_io_error)
+}
+
 const CACHE_CAPABILITIES: i64 = 0b1000_1111;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

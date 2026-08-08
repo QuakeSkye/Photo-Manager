@@ -54,7 +54,6 @@ enum WorkerCommand {
         callbacks: Arc<dyn RecycleCallbacks>,
         reply: mpsc::SyncSender<Result<ShellPhotoResult, DomainError>>,
     },
-    #[cfg(test)]
     RecycleAndRestore {
         photo: ShellPhoto,
         callbacks: Arc<dyn RecycleCallbacks>,
@@ -81,8 +80,7 @@ impl StaRecycleWorker {
         Ok(Self { sender })
     }
 
-    #[cfg(all(test, windows))]
-    fn recycle_and_restore_for_test(
+    pub(crate) fn recycle_and_restore_for_phase_eight(
         &self,
         photo: ShellPhoto,
         callbacks: Arc<dyn RecycleCallbacks>,
@@ -141,7 +139,6 @@ fn worker_loop(receiver: mpsc::Receiver<WorkerCommand>) {
                     .and_then(|()| perform_photo(photo, callbacks));
                 let _ = reply.send(result);
             }
-            #[cfg(test)]
             WorkerCommand::RecycleAndRestore {
                 photo,
                 callbacks,
@@ -170,7 +167,6 @@ fn worker_loop(receiver: mpsc::Receiver<WorkerCommand>) {
                     "Windows 回收站仅可在 Windows 上使用。",
                 )));
             }
-            #[cfg(test)]
             WorkerCommand::RecycleAndRestore { reply, .. } => {
                 let _ = reply.send(Err(DomainError::new(
                     ErrorCode::CapabilityDenied,
@@ -258,12 +254,9 @@ fn perform_photo_inner(
     {
         return Err(error);
     }
-    #[cfg(test)]
     if restore_for_test {
         restore_recycled_items(&original_assets, &recycled_items)?;
     }
-    #[cfg(not(test))]
-    let _ = (restore_for_test, original_assets, recycled_items);
     Ok(ShellPhotoResult {
         perform_operations_result,
         operations_aborted,
@@ -412,7 +405,7 @@ impl IFileOperationProgressSink_Impl for ProgressSink_Impl {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(windows)]
 fn restore_recycled_items(
     assets: &[ShellAsset],
     recycled_items: &[Arc<std::sync::Mutex<Option<IShellItem>>>],
@@ -598,7 +591,7 @@ mod tests {
         let worker = StaRecycleWorker::spawn().unwrap();
 
         let result = worker
-            .recycle_and_restore_for_test(
+            .recycle_and_restore_for_phase_eight(
                 ShellPhoto {
                     assets: vec![
                         ShellAsset {

@@ -4,8 +4,10 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::{
     catalog::{AssetObservation, CatalogService, MediaKind},
-    db::migration::{map_sqlite_error, migration_checksum, now_micros},
-    domain::{AttemptId, LibraryId, OperationId, RootBindingId, RootId, TaskId, VolumeId},
+    db::migration::{map_sqlite_error, now_micros},
+    domain::{
+        AttemptId, ErrorCode, LibraryId, OperationId, RootBindingId, RootId, TaskId, VolumeId,
+    },
     roots::VolumeIdentityKey,
     safety::{DatabaseMode, FaultInjector, FaultPoint, TestRoot},
 };
@@ -248,7 +250,10 @@ fn migration_opens_with_required_pragmas_and_checksum() {
         )
         .unwrap();
     assert_eq!(user_version, LATEST_SCHEMA_VERSION);
-    assert_eq!(stored_checksum, migration_checksum());
+    assert_eq!(
+        stored_checksum,
+        crate::db::migration_manifest().last().unwrap().sha256
+    );
 }
 
 #[test]
@@ -898,6 +903,134 @@ fn backup_uses_consistent_online_snapshot_and_enforces_retention() {
 }
 
 #[test]
+fn controlled_checkpoint_is_bounded_by_a_long_reader_and_completes_after_release() {
+    let test = open_test_database();
+    let writer = test.database.writer().unwrap();
+    writer
+        .execute(|connection, _| {
+            connection
+                .pragma_update(None, "wal_autocheckpoint", 0_i64)
+                .map_err(map_sqlite_error)
+        })
+        .unwrap();
+    let reader = test.database.open_read_connection().unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT COUNT(*) FROM operation_event", (), |row| row.get(0))
+        .unwrap();
+
+    writer
+        .transaction(|transaction| {
+            for ordinal in 0_u16..256 {
+                let mut operation_id = vec![0_u8; 16];
+                operation_id[0..2].copy_from_slice(&ordinal.to_le_bytes());
+                transaction
+                    .execute(
+                        "INSERT INTO operation_event(operation_id,operation_kind,request_hash,first_received_at)
+                         VALUES(?1,'CheckpointFixture',zeroblob(4096),?2)",
+                        rusqlite::params![operation_id, i64::from(ordinal)],
+                    )
+                    .map_err(map_sqlite_error)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let started = std::time::Instant::now();
+    let pinned = test.database.controlled_checkpoint().unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(pinned.log_frames > 0);
+    assert!(pinned.checkpointed_frames <= pinned.log_frames);
+
+    reader.execute_batch("COMMIT").unwrap();
+    let completed = test.database.controlled_checkpoint().unwrap();
+    assert_eq!(completed.checkpointed_frames, completed.log_frames);
+}
+
+#[test]
+fn backup_validation_and_restore_prepare_a_new_verified_database() {
+    let test = open_test_database();
+    let operation_id = vec![0xA5; 16];
+    test.database
+        .writer()
+        .unwrap()
+        .transaction(move |transaction| {
+            transaction
+                .execute(
+                    "INSERT INTO operation_event(operation_id,operation_kind,request_hash,first_received_at)
+                     VALUES(?1,'RestoreFixture',zeroblob(32),1)",
+                    [operation_id],
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .unwrap();
+    let connection = test.database.open_read_connection().unwrap();
+    let snapshot = test
+        .database
+        .backup_service()
+        .create_consistent_snapshot(&connection, BackupKind::PreUpgrade, LATEST_SCHEMA_VERSION)
+        .unwrap();
+    let validation = test
+        .database
+        .backup_service()
+        .validate_snapshot(&snapshot)
+        .unwrap();
+    assert_eq!(validation.schema_version, LATEST_SCHEMA_VERSION);
+    assert_eq!(
+        validation.schema_checksum,
+        crate::db::schema_checksum(&connection).unwrap()
+    );
+
+    let restored = test
+        .database
+        .backup_service()
+        .prepare_restore(&snapshot)
+        .unwrap();
+    assert_ne!(restored, test.database.path());
+    let restored_connection =
+        Connection::open_with_flags(restored, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let restored_events: i64 = restored_connection
+        .query_row(
+            "SELECT COUNT(*) FROM operation_event WHERE operation_kind='RestoreFixture'",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored_events, 1);
+}
+
+#[test]
+fn sqlite_full_poisons_the_shared_writer_and_rejects_later_actions() {
+    let test = open_test_database();
+    let writer = test.database.writer().unwrap();
+    let error = writer
+        .execute(|connection, _| {
+            let page_count: i64 = connection
+                .pragma_query_value(None, "page_count", |row| row.get(0))
+                .map_err(map_sqlite_error)?;
+            connection
+                .pragma_update(None, "max_page_count", page_count)
+                .map_err(map_sqlite_error)?;
+            connection
+                .execute(
+                    "INSERT INTO operation_event(operation_id,operation_kind,request_hash,first_received_at)
+                     VALUES(zeroblob(16),'DiskFullFixture',zeroblob(8388608),1)",
+                    (),
+                )
+                .map(|_| ())
+                .map_err(map_sqlite_error)
+        })
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::DatabaseDurability);
+    assert!(!test.database.is_write_healthy());
+    assert_eq!(
+        writer.execute(|_, _| Ok(())).unwrap_err().code,
+        ErrorCode::ReadOnlySafeMode
+    );
+}
+
+#[test]
 fn catalog_service_is_idempotent_and_propagates_versions_with_cas() {
     let test = open_test_database();
     let fixture = insert_catalog_fixture(&test.database);
@@ -967,9 +1100,64 @@ impl WithChanged for crate::catalog::ObserveAssetResult {
 }
 
 #[test]
-fn migration_checksum_is_a_stable_sha256() {
-    assert_eq!(migration_checksum().len(), 64);
-    assert_eq!(migration_checksum(), migration_checksum());
+fn migration_chain_checksum_is_a_stable_sha256() {
+    assert_eq!(crate::db::migration_chain_checksum().len(), 64);
+    assert_eq!(
+        crate::db::migration_chain_checksum(),
+        crate::db::migration_chain_checksum()
+    );
+}
+
+#[test]
+fn migration_manifest_and_schema_checksum_cover_the_complete_published_chain() {
+    let test = open_test_database();
+    let connection = test.database.open_read_connection().unwrap();
+    let manifest = crate::db::migration_manifest();
+
+    assert_eq!(manifest.len(), LATEST_SCHEMA_VERSION as usize);
+    assert_eq!(manifest.first().unwrap().filename, "0001_phase_zero.sql");
+    assert_eq!(manifest.last().unwrap().filename, "0008_phase_eight.sql");
+    assert!(manifest.iter().all(|entry| entry.sha256.len() == 64));
+    assert_eq!(crate::db::migration_chain_checksum().len(), 64);
+    assert_eq!(crate::db::schema_checksum(&connection).unwrap().len(), 64);
+}
+
+#[test]
+fn every_published_schema_version_migrates_forward_without_losing_history() {
+    let reference = open_test_database();
+    let expected_schema =
+        crate::db::schema_checksum(&reference.database.open_read_connection().unwrap()).unwrap();
+
+    for published_version in 1..=LATEST_SCHEMA_VERSION {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("catalog.sqlite3");
+        let mut connection = Connection::open(&database_path).unwrap();
+        super::connection::configure_connection(&connection).unwrap();
+        super::migration::install_schema_through(&mut connection, published_version).unwrap();
+        drop(connection);
+
+        let migrated = Database::open(directory.path()).unwrap();
+        assert_eq!(
+            migrated.mode(),
+            DatabaseMode::ReadWrite,
+            "published schema {published_version} did not migrate"
+        );
+        let connection = migrated.open_read_connection().unwrap();
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        let history_count: u32 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migration", (), |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+        assert_eq!(history_count, LATEST_SCHEMA_VERSION);
+        assert_eq!(
+            crate::db::schema_checksum(&connection).unwrap(),
+            expected_schema
+        );
+    }
 }
 
 #[test]

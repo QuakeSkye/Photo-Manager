@@ -6,8 +6,10 @@ pub mod domain;
 pub mod external_tools;
 pub mod import_execution;
 pub mod import_preflight;
+pub mod io_scheduler;
 pub mod media;
 pub mod pending_delete;
+pub mod phase_eight;
 pub mod recycle;
 pub mod roots;
 pub mod safety;
@@ -30,19 +32,22 @@ pub fn run() {
         .setup(|application| {
             let app_data_directory = resolve_app_data_directory(application)?;
             let database = db::Database::open(&app_data_directory)?;
-            let safety_state = safety::SafetyState::from_database_mode(database.mode());
+            let safety_state = safety::SafetyState::from_database(&database);
             let database = std::sync::Arc::new(database);
+            let io_scheduler = std::sync::Arc::new(io_scheduler::IoScheduler::for_rotational());
             let catalog = std::sync::Arc::new(catalog::CatalogService::new(database.clone()));
             catalog.recover_interrupted_scans()?;
-            let scan_coordinator = catalog::ScanCoordinator::new(catalog.clone());
+            let scan_coordinator =
+                catalog::ScanCoordinator::with_scheduler(catalog.clone(), io_scheduler.clone());
             let library_service = std::sync::Arc::new(roots::FujiLibraryService::new(
                 database.clone(),
                 app_data_directory.clone(),
             ));
             let import_preflight_service =
-                std::sync::Arc::new(import_preflight::ImportPreflightService::new(
+                std::sync::Arc::new(import_preflight::ImportPreflightService::with_scheduler(
                     database.clone(),
                     app_data_directory.clone(),
+                    io_scheduler.clone(),
                 ));
             let import_execution_service =
                 std::sync::Arc::new(import_execution::ImportExecutionService::new(
@@ -56,9 +61,10 @@ pub fn run() {
                 safety::FaultInjector::default(),
             ));
             let _ = cache_service.ensure_default_root();
-            let preview_service = std::sync::Arc::new(cache::PreviewService::new(
+            let preview_service = std::sync::Arc::new(cache::PreviewService::with_scheduler(
                 database.clone(),
                 cache_service.clone(),
+                io_scheduler.clone(),
             ));
             let pending_delete_service =
                 std::sync::Arc::new(pending_delete::PendingDeleteService::new(database.clone()));
@@ -68,7 +74,11 @@ pub fn run() {
             )?);
             let external_tool_service =
                 std::sync::Arc::new(external_tools::ExternalToolService::new(database.clone()));
-            let _ = scan_coordinator.start_background_if_bound();
+            let phase_eight_ui_fixture = std::env::var_os("FPM_TEST_ROOT").is_some()
+                && std::env::var_os("FPM_PHASE8_UI_NO_BACKGROUND_SCAN").is_some();
+            if !phase_eight_ui_fixture {
+                let _ = scan_coordinator.start_background_if_bound();
+            }
             application.manage(database);
             application.manage(catalog);
             application.manage(library_service);
@@ -80,6 +90,7 @@ pub fn run() {
             application.manage(recycle_service);
             application.manage(external_tool_service);
             application.manage(scan_coordinator);
+            application.manage(io_scheduler);
             application.manage(safety_state);
             commands::cache::start_cache_maintenance(cache_service);
             Ok(())

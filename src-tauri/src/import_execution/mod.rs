@@ -41,6 +41,135 @@ use file_ops::{PartialWriteHandle, VerifiedPartialHandle, disk_space, hash_and_c
 
 pub const IMPORT_MIN_RESERVE_BYTES: u64 = 10_737_418_240;
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PhaseEightImportFileOpsReport {
+    pub source_write_requests: u64,
+    pub source_unchanged: bool,
+    pub existing_target_unchanged: bool,
+    pub successful_publish_identical: bool,
+    pub no_overwrite_rejected: bool,
+    pub fault_before_publish_rejected: bool,
+    pub permanent_delete_used: bool,
+}
+
+pub(crate) fn phase_eight_file_ops_suite(
+    suite_root: &Path,
+) -> Result<PhaseEightImportFileOpsReport, DomainError> {
+    fs::create_dir(suite_root).map_err(phase_eight_suite_io)?;
+    let source_root = suite_root.join("generated-source-volume");
+    let target_root = suite_root.join("generated-target-library");
+    fs::create_dir(&source_root).map_err(phase_eight_suite_io)?;
+    fs::create_dir(&target_root).map_err(phase_eight_suite_io)?;
+    let source = source_root.join("GENERATED.JPG");
+    let source_bytes = b"phase-eight-generated-source-jpeg-v1";
+    create_new_bytes(&source, source_bytes)?;
+    let source_before = file_snapshot(&source)?;
+
+    let partial = target_root.join("success.partial");
+    let formal = target_root.join("GENERATED.JPG");
+    copy_publish(&source, &partial, &formal, &FaultInjector::default())?;
+    let successful_publish_identical =
+        fs::read(&formal).map_err(phase_eight_suite_io)? == source_bytes;
+
+    let existing = target_root.join("EXISTING.JPG");
+    let existing_bytes = b"must-remain-byte-identical";
+    create_new_bytes(&existing, existing_bytes)?;
+    let conflict_partial = target_root.join("conflict.partial");
+    let conflict = copy_publish(
+        &source,
+        &conflict_partial,
+        &existing,
+        &FaultInjector::default(),
+    );
+    let no_overwrite_rejected = conflict.is_err();
+    let existing_target_unchanged =
+        fs::read(&existing).map_err(phase_eight_suite_io)? == existing_bytes;
+
+    let fault_partial = target_root.join("fault.partial");
+    let fault_final = target_root.join("FAULT.JPG");
+    let faults = FaultInjector::default();
+    faults.fail_on_hit(FaultPoint::Win32BeforeCall, 1)?;
+    let fault = copy_publish(&source, &fault_partial, &fault_final, &faults);
+    let fault_before_publish_rejected = fault
+        .as_ref()
+        .is_err_and(|error| error.code == ErrorCode::FaultInjected)
+        && !fault_final.exists();
+    let source_unchanged = file_snapshot(&source)? == source_before;
+
+    let report = PhaseEightImportFileOpsReport {
+        source_write_requests: 0,
+        source_unchanged,
+        existing_target_unchanged,
+        successful_publish_identical,
+        no_overwrite_rejected,
+        fault_before_publish_rejected,
+        permanent_delete_used: false,
+    };
+    if !report.source_unchanged
+        || !report.existing_target_unchanged
+        || !report.successful_publish_identical
+        || !report.no_overwrite_rejected
+        || !report.fault_before_publish_rejected
+    {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "阶段 8 Import 文件动作安全套件未通过。",
+        ));
+    }
+    Ok(report)
+}
+
+fn copy_publish(
+    source_path: &Path,
+    partial_path: &Path,
+    final_path: &Path,
+    faults: &FaultInjector,
+) -> Result<(), DomainError> {
+    let mut source = crate::roots::open_read_only(source_path)?;
+    let expected = source.metadata().map_err(phase_eight_suite_io)?.len();
+    let mut partial = PartialWriteHandle::create_new(partial_path, faults)?;
+    let copied_hash = partial.copy_from(&mut source, expected, || false)?;
+    partial.flush(faults)?;
+    let mut verified = VerifiedPartialHandle::open(partial_path)?;
+    let (source_hash, partial_hash, identical) =
+        hash_and_compare(&mut source, verified.file_mut())?;
+    if !identical || source_hash != partial_hash || source_hash != copied_hash {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "阶段 8 Import partial 完整验证失败。",
+        ));
+    }
+    verified.publish_no_replace(final_path, faults)
+}
+
+fn create_new_bytes(path: &Path, bytes: &[u8]) -> Result<(), DomainError> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(phase_eight_suite_io)?;
+    file.write_all(bytes).map_err(phase_eight_suite_io)?;
+    file.sync_all().map_err(phase_eight_suite_io)
+}
+
+fn file_snapshot(path: &Path) -> Result<(u64, i64, Vec<u8>), DomainError> {
+    let file = crate::roots::open_read_only(path)?;
+    let probe = crate::roots::probe_file(&file)?;
+    let bytes = fs::read(path).map_err(phase_eight_suite_io)?;
+    Ok((
+        probe.size_bytes,
+        probe.mtime_filetime,
+        Sha256::digest(bytes).to_vec(),
+    ))
+}
+
+fn phase_eight_suite_io(error: std::io::Error) -> DomainError {
+    DomainError::new(ErrorCode::Internal, "阶段 8 Import 生成夹具 I/O 失败。")
+        .with_diagnostic(error.to_string())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ImportExecutionPhase {

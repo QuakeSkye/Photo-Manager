@@ -1,0 +1,21 @@
+{
+  "reportVersion": 1,
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "import": {
+    "sourceWriteRequests": 0,
+    "sourceUnchanged": true,
+    "existingTargetUnchanged": true,
+    "successfulPublishIdentical": true,
+    "noOverwriteRejected": true,
+    "faultBeforePublishRejected": true,
+    "permanentDeleteUsed": false
+  },
+  "recycle": {
+    "requiredFlags": 1573904,
+    "permanentDeleteFlagPresent": false,
+    "callbackCount": 2,
+    "recycleObjectsNonempty": true,
+    "restoredIdentical": true,
+    "operationsAborted": false
+  }
+}

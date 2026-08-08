@@ -1,0 +1,26 @@
+{
+  "reportVersion": 1,
+  "runId": "f5a9b86f-1d2b-40df-9654-4a44a11dbc9b",
+  "walEnabled": true,
+  "synchronousFull": true,
+  "foreignKeysEnabled": true,
+  "checkpointBounded": true,
+  "checkpointCompleted": true,
+  "backupValidated": true,
+  "restoreToNewFile": true,
+  "migrationsVerifiedFromVersions": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ],
+  "corruptDatabaseReadOnly": true,
+  "appDataFullPoisonedWriter": true,
+  "laterWriteRejected": true,
+  "schemaChecksum": "e78fd625669f4b76629a25a210cbd5de70eaf35de54605430c2607c29d969ca2",
+  "migrationChainChecksum": "3d736ebf30cf68c566585e0ae659292e417e752b3464bf8c485e24d554566f11"
+}

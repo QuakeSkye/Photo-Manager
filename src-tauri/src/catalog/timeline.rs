@@ -58,15 +58,13 @@ pub fn load_timeline(
         "SELECT photo.photo_id, photo.photo_version, photo.capture_local_key,
                 photo.natural_name_display, photo.natural_sort_key
          FROM photo
+         JOIN photo_asset relation
+           ON relation.photo_id=photo.photo_id AND relation.to_photo_version IS NULL
+         JOIN asset ON asset.asset_id=relation.asset_id AND asset.presence_state='Present'
+         JOIN root ON root.root_id=asset.root_id AND root.lifecycle='Online'
          WHERE photo.library_id=?1 AND photo.lifecycle='Active'
-           AND EXISTS (
-             SELECT 1 FROM photo_asset relation
-             JOIN asset ON asset.asset_id=relation.asset_id
-             JOIN root ON root.root_id=asset.root_id
-             WHERE relation.photo_id=photo.photo_id AND relation.to_photo_version IS NULL
-               AND asset.presence_state='Present' AND root.lifecycle='Online'
-           )
-         ORDER BY CASE photo.date_class WHEN 'Known' THEN 0 ELSE 1 END ASC,
+         GROUP BY photo.photo_id
+         ORDER BY photo.date_class ASC,
                   photo.capture_local_key {direction}, photo.natural_sort_key ASC,
                   photo.photo_id ASC"
     );

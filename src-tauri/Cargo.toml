@@ -1,6 +1,6 @@
 [package]
 name = "local-photo-manager"
-version = "0.1.0"
+version = "1.0.0"
 description = "Local Fuji photo manager safety foundation"
 authors = ["Local Photo Manager Contributors"]
 edition = "2024"
@@ -18,6 +18,7 @@ hex = "0.4"
 base64 = "0.22"
 rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2.11.5", features = [] }
 tauri-plugin-dialog = "2"
@@ -26,7 +27,7 @@ thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 windows-core = "0.61.2"
 

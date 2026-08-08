@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    db::{LATEST_SCHEMA_VERSION, migration::migration_checksum},
+    db::{
+        LATEST_SCHEMA_VERSION, MigrationFingerprint, migration_chain_checksum, migration_manifest,
+        schema_checksum,
+    },
     domain::{DomainError, ErrorCode},
 };
 
@@ -20,25 +23,31 @@ pub enum DatabaseMode {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FeatureGate {
     Import,
     Recycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BuildFingerprint {
     pub binary_sha256: String,
     pub package_lock_sha256: String,
     pub cargo_lock_sha256: String,
     pub schema_version: u32,
-    pub migration_checksum: String,
+    pub schema_checksum: String,
+    pub migration_chain_checksum: String,
+    pub migrations: Vec<MigrationFingerprint>,
     pub safety_report_version: u32,
 }
 
 impl BuildFingerprint {
-    pub fn for_binary(binary_path: &Path) -> Result<Self, DomainError> {
+    pub fn for_binary(
+        binary_path: &Path,
+        connection: &rusqlite::Connection,
+    ) -> Result<Self, DomainError> {
         let binary = std::fs::read(binary_path).map_err(|error| {
             DomainError::new(
                 ErrorCode::Internal,
@@ -52,7 +61,9 @@ impl BuildFingerprint {
             package_lock_sha256: sha256(PACKAGE_LOCK),
             cargo_lock_sha256: sha256(CARGO_LOCK),
             schema_version: LATEST_SCHEMA_VERSION,
-            migration_checksum: migration_checksum(),
+            schema_checksum: schema_checksum(connection)?,
+            migration_chain_checksum: migration_chain_checksum(),
+            migrations: migration_manifest(),
             safety_report_version: SAFETY_REPORT_VERSION,
         })
     }
@@ -166,7 +177,13 @@ mod tests {
             package_lock_sha256: "package".into(),
             cargo_lock_sha256: "cargo".into(),
             schema_version: 1,
-            migration_checksum: "migration".into(),
+            schema_checksum: "schema".into(),
+            migration_chain_checksum: "migration-chain".into(),
+            migrations: vec![MigrationFingerprint {
+                version: 1,
+                filename: "0001.sql".into(),
+                sha256: "migration".into(),
+            }],
             safety_report_version: 1,
         }
     }
@@ -265,13 +282,24 @@ mod tests {
     #[test]
     fn current_build_fingerprint_binds_binary_locks_schema_and_migration() {
         let executable = std::env::current_exe().unwrap();
-        let fingerprint = BuildFingerprint::for_binary(&executable).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let database = crate::db::Database::open(directory.path()).unwrap();
+        let connection = database.open_read_connection().unwrap();
+        let fingerprint = BuildFingerprint::for_binary(&executable, &connection).unwrap();
 
         assert_eq!(fingerprint.binary_sha256.len(), 64);
         assert_eq!(fingerprint.package_lock_sha256.len(), 64);
         assert_eq!(fingerprint.cargo_lock_sha256.len(), 64);
         assert_eq!(fingerprint.schema_version, LATEST_SCHEMA_VERSION);
-        assert_eq!(fingerprint.migration_checksum, migration_checksum());
+        assert_eq!(
+            fingerprint.schema_checksum,
+            schema_checksum(&connection).unwrap()
+        );
+        assert_eq!(
+            fingerprint.migration_chain_checksum,
+            migration_chain_checksum()
+        );
+        assert_eq!(fingerprint.migrations, migration_manifest());
         assert_eq!(fingerprint.safety_report_version, SAFETY_REPORT_VERSION);
     }
 
@@ -294,7 +322,13 @@ mod tests {
         changed.schema_version += 1;
         variants.push(changed);
         let mut changed = current.clone();
-        changed.migration_checksum.push('x');
+        changed.schema_checksum.push('x');
+        variants.push(changed);
+        let mut changed = current.clone();
+        changed.migration_chain_checksum.push('x');
+        variants.push(changed);
+        let mut changed = current.clone();
+        changed.migrations[0].sha256.push('x');
         variants.push(changed);
         let mut changed = current.clone();
         changed.safety_report_version += 1;
