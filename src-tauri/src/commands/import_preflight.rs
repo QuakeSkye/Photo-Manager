@@ -34,7 +34,7 @@ pub fn select_import_source(
 }
 
 #[tauri::command]
-pub fn start_import_preflight(
+pub async fn start_import_preflight(
     service: tauri::State<'_, Arc<ImportPreflightService>>,
     scans: tauri::State<'_, ScanCoordinator>,
     safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
@@ -46,7 +46,15 @@ pub fn start_import_preflight(
         ));
     }
     let permit = safety_gate.require_feature(FeatureGate::Import)?;
-    service.run_preflight(&permit)
+    let service = Arc::clone(service.inner());
+    tauri::async_runtime::spawn_blocking(move || service.run_preflight(&permit))
+        .await
+        .map_err(|_| {
+            DomainError::new(
+                ErrorCode::Internal,
+                "只读预检后台任务异常结束，请重新启动应用后重试。",
+            )
+        })?
 }
 
 #[tauri::command]

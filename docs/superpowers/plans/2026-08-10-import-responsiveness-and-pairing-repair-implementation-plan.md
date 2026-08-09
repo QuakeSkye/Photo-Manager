@@ -1,6 +1,6 @@
 # 导入响应性与 JPG/RAF 配对修复实施计划
 
-日期：2026-08-10  
+日期：2026-08-10
 依据：`docs/superpowers/specs/2026-08-10-import-responsiveness-and-pairing-repair-design.md`
 
 ## 1. 实施边界
