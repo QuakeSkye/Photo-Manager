@@ -97,6 +97,37 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 
+  test('routes wheel input to image scrolling at 100% and keeps filmstrip navigation', async () => {
+    render(<App />);
+    const canvas = await screen.findByLabelText('当前照片');
+    const image = await screen.findByRole('img', { name: 'DSCF1031.JPG' });
+    Object.defineProperties(image, {
+      naturalWidth: { configurable: true, value: 4000 },
+      naturalHeight: { configurable: true, value: 6000 },
+    });
+    fireEvent.load(image);
+    fireEvent.doubleClick(image);
+
+    expect(canvas).toHaveAttribute('data-zoom-mode', 'actual');
+    fireEvent.wheel(canvas, { deltaY: 40 });
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    fireEvent.wheel(screen.getByLabelText('照片详情'), { deltaY: 40 });
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    const filmstrip = screen
+      .getByLabelText('照片缩略图')
+      .querySelector('.filmstrip-viewport');
+    expect(filmstrip).not.toBeNull();
+    fireEvent.wheel(filmstrip as Element, { deltaY: 40 });
+    expect(
+      await screen.findByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
   test('switches oldest/newest order while keeping unknown dates last', async () => {
     render(<App />);
     const sort = await screen.findByRole('combobox', { name: '照片排序' });

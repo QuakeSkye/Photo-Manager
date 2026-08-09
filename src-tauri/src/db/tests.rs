@@ -257,6 +257,50 @@ fn migration_opens_with_required_pragmas_and_checksum() {
 }
 
 #[test]
+fn photo_capture_metadata_schema_is_versioned_constrained_and_immutable() {
+    let test = open_test_database();
+    let connection = test.database.open_read_connection().unwrap();
+    let table_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type='table' AND name='asset_capture_metadata'",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(table_sql.contains("PRIMARY KEY (asset_id, asset_version, parser_version)"));
+    assert!(table_sql.contains("parser_version INTEGER NOT NULL CHECK (parser_version >= 1)"));
+    assert!(
+        table_sql.contains("CHECK (f_number_denominator IS NULL OR f_number_denominator != 0)")
+    );
+    assert!(table_sql.contains("CHECK (pixel_width IS NULL OR pixel_width > 0)"));
+    assert!(table_sql.contains("CHECK (pixel_height IS NULL OR pixel_height > 0)"));
+
+    let foreign_key_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('asset_capture_metadata')
+             WHERE \"table\"='asset_revision' AND \"from\"='asset_id'",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(foreign_key_count, 1);
+
+    let trigger_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type='trigger' AND name IN (
+                 'asset_capture_metadata_no_update',
+                 'asset_capture_metadata_no_delete'
+             )",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(trigger_count, 2);
+}
+
+#[test]
 fn foreign_keys_and_core_uniqueness_are_enforced() {
     let test = open_test_database();
     let fixture = insert_catalog_fixture(&test.database);
@@ -1095,6 +1139,9 @@ trait WithChanged {
 impl WithChanged for crate::catalog::ObserveAssetResult {
     fn with_changed(mut self, changed: bool) -> Self {
         self.changed = changed;
+        if !changed {
+            self.capture_metadata_inserted = false;
+        }
         self
     }
 }
@@ -1116,7 +1163,10 @@ fn migration_manifest_and_schema_checksum_cover_the_complete_published_chain() {
 
     assert_eq!(manifest.len(), LATEST_SCHEMA_VERSION as usize);
     assert_eq!(manifest.first().unwrap().filename, "0001_phase_zero.sql");
-    assert_eq!(manifest.last().unwrap().filename, "0008_phase_eight.sql");
+    assert_eq!(
+        manifest.last().unwrap().filename,
+        "0009_photo_capture_metadata.sql"
+    );
     assert!(manifest.iter().all(|entry| entry.sha256.len() == 64));
     assert_eq!(crate::db::migration_chain_checksum().len(), 64);
     assert_eq!(crate::db::schema_checksum(&connection).unwrap().len(), 64);

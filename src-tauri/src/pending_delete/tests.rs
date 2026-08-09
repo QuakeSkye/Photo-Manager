@@ -471,6 +471,7 @@ fn hard_link_change_invalidates_the_mark_without_touching_the_file() {
             capture_local_key: None,
             camera_model: None,
             camera_serial: None,
+            capture_metadata: crate::media::CaptureMetadata::default(),
             preview: crate::media::PreviewState::JpegSource,
         })
         .unwrap();

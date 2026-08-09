@@ -15,7 +15,7 @@ use crate::{
     domain::{
         AssetId, DomainError, ErrorCode, LibraryId, PhotoId, RootBindingId, RootId, ScanRunId,
     },
-    media::{MEDIA_PARSER_VERSION, PreviewState},
+    media::{CaptureMetadata, MEDIA_PARSER_VERSION, PreviewState},
 };
 
 pub use coordinator::{BackgroundScan, ScanCoordinator, ScanKind, ScanPhase, ScanStatus};
@@ -60,6 +60,7 @@ pub struct CatalogObservation {
     pub capture_local_key: Option<String>,
     pub camera_model: Option<String>,
     pub camera_serial: Option<String>,
+    pub capture_metadata: CaptureMetadata,
     pub preview: PreviewState,
 }
 
@@ -77,6 +78,7 @@ impl From<AssetObservation> for CatalogObservation {
             capture_local_key: None,
             camera_model: None,
             camera_serial: None,
+            capture_metadata: CaptureMetadata::default(),
             preview,
         }
     }
@@ -89,6 +91,7 @@ pub struct ObserveAssetResult {
     pub photo_id: PhotoId,
     pub photo_version: i64,
     pub changed: bool,
+    pub capture_metadata_inserted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -681,6 +684,8 @@ fn update_existing(
         && current.deletion_supported == observation.deletion_supported;
     if unchanged {
         ensure_metadata(transaction, &id_bytes, current.version, observation)?;
+        let capture_metadata_inserted =
+            ensure_capture_metadata(transaction, &id_bytes, current.version, observation)?;
         let (photo_id, photo_version) = match current_photo {
             Some(value) => value,
             None => create_photo_for_asset(
@@ -696,6 +701,7 @@ fn update_existing(
             photo_id,
             photo_version,
             changed: false,
+            capture_metadata_inserted,
         });
     }
 
@@ -719,6 +725,8 @@ fn update_existing(
         .map_err(map_sqlite_error)?;
     require_one(changed, "Asset")?;
     insert_metadata(transaction, &id_bytes, next_version, observation)?;
+    let capture_metadata_inserted =
+        ensure_capture_metadata(transaction, &id_bytes, next_version, observation)?;
     let (photo_id, photo_version) = match current_photo {
         Some((photo_id, version)) => {
             let next_photo_version = bump_photo(transaction, photo_id, version)?;
@@ -738,6 +746,7 @@ fn update_existing(
         photo_id,
         photo_version,
         changed: true,
+        capture_metadata_inserted,
     })
 }
 
@@ -767,6 +776,8 @@ fn insert_new(
         .map_err(map_sqlite_error)?;
     insert_revision(transaction, asset_id.as_bytes(), 1, observation, "Present")?;
     insert_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
+    let capture_metadata_inserted =
+        ensure_capture_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
     let (photo_id, photo_version) = create_photo_for_asset(
         transaction,
         observation.asset.library_id,
@@ -779,6 +790,7 @@ fn insert_new(
         photo_id,
         photo_version,
         changed: true,
+        capture_metadata_inserted,
     })
 }
 
@@ -864,6 +876,50 @@ fn ensure_metadata(
         insert_metadata(transaction, asset_id, version, observation)?;
     }
     Ok(())
+}
+
+fn ensure_capture_metadata(
+    transaction: &Transaction<'_>,
+    asset_id: &[u8],
+    version: i64,
+    observation: &CatalogObservation,
+) -> Result<bool, DomainError> {
+    let capture = &observation.capture_metadata;
+    let inserted = transaction
+        .execute(
+            "INSERT OR IGNORE INTO asset_capture_metadata(
+                asset_id, asset_version, parser_version, lens_model,
+                f_number_numerator, f_number_denominator,
+                exposure_time_numerator, exposure_time_denominator,
+                iso_value, focal_length_numerator, focal_length_denominator,
+                pixel_width, pixel_height, film_simulation_key, film_simulation_code
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                asset_id,
+                version,
+                MEDIA_PARSER_VERSION,
+                &capture.lens_model,
+                capture.f_number.map(|value| value.numerator),
+                capture.f_number.map(|value| value.denominator),
+                capture.exposure_time.map(|value| value.numerator),
+                capture.exposure_time.map(|value| value.denominator),
+                capture.iso.map(i64::from),
+                capture.focal_length.map(|value| value.numerator),
+                capture.focal_length.map(|value| value.denominator),
+                capture.pixel_width.map(i64::from),
+                capture.pixel_height.map(i64::from),
+                capture
+                    .film_simulation
+                    .as_ref()
+                    .map(|value| value.key.as_str()),
+                capture
+                    .film_simulation
+                    .as_ref()
+                    .map(|value| i64::from(value.code)),
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(inserted == 1)
 }
 
 fn create_photo_for_asset(

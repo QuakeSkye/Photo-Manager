@@ -1,6 +1,10 @@
 import { useId, useState, type ReactNode } from 'react';
 
-import type { PhotoDetail } from '../../shared/commands/library';
+import type {
+  FilmSimulationValue,
+  PhotoDetail,
+  RationalValue,
+} from '../../shared/commands/library';
 import type { PhotoshopStatus } from '../../shared/commands/settings';
 
 interface PhotoInspectorProps {
@@ -126,12 +130,37 @@ export function PhotoInspector({
                   label="相机"
                   value={detail.cameraModel ?? '未记录'}
                 />
-                <MetadataRow label="镜头" value="未记录" />
-                <MetadataRow label="光圈" value="未记录" />
-                <MetadataRow label="快门" value="未记录" />
-                <MetadataRow label="ISO" value="未记录" />
-                <MetadataRow label="焦距" value="未记录" />
-                <MetadataRow label="尺寸" value="未记录" />
+                <MetadataRow
+                  label="镜头"
+                  value={detail.lensModel ?? '未记录'}
+                />
+                <MetadataRow
+                  label="光圈"
+                  value={formatFNumber(detail.fNumber)}
+                />
+                <MetadataRow
+                  label="快门"
+                  value={formatExposureTime(detail.exposureTime)}
+                />
+                <MetadataRow
+                  label="ISO"
+                  value={detail.iso === null ? '未记录' : `ISO ${detail.iso}`}
+                />
+                <MetadataRow
+                  label="焦距"
+                  value={formatFocalLength(detail.focalLength)}
+                />
+                <MetadataRow
+                  label="尺寸"
+                  value={formatDimensions(
+                    detail.pixelWidth,
+                    detail.pixelHeight,
+                  )}
+                />
+                <MetadataRow
+                  label="胶片模拟"
+                  value={formatFilmSimulation(detail.filmSimulation)}
+                />
               </dl>
             </MetadataAccordion>
           </>
@@ -291,4 +320,76 @@ function formatFileTime(value: number | null): string {
     timeStyle: 'medium',
     hour12: false,
   }).format(new Date(value));
+}
+
+function formatFNumber(value: RationalValue | null): string {
+  const decimal = rationalDecimal(value);
+  return decimal === null ? '未记录' : `F${formatDecimal(decimal, 2)}`;
+}
+
+function formatExposureTime(value: RationalValue | null): string {
+  const seconds = rationalDecimal(value);
+  if (seconds === null || seconds <= 0) return '未记录';
+  if (seconds < 1) {
+    const inverse = 1 / seconds;
+    const rounded = Math.round(inverse);
+    if (Math.abs(inverse - rounded) < 0.000_001) return `1/${rounded} 秒`;
+    return `${formatDecimal(seconds, 4)} 秒`;
+  }
+  return `${formatDecimal(seconds, 2)} 秒`;
+}
+
+function formatFocalLength(value: RationalValue | null): string {
+  const decimal = rationalDecimal(value);
+  return decimal === null ? '未记录' : `${formatDecimal(decimal, 1)} mm`;
+}
+
+function formatDimensions(width: number | null, height: number | null): string {
+  if (width === null || height === null || width <= 0 || height <= 0)
+    return '未记录';
+  return `${width} × ${height}`;
+}
+
+function rationalDecimal(value: RationalValue | null): number | null {
+  if (value === null || value.denominator === 0) return null;
+  const decimal = value.numerator / value.denominator;
+  return Number.isFinite(decimal) ? decimal : null;
+}
+
+function formatDecimal(value: number, maximumFractionDigits: number): string {
+  return new Intl.NumberFormat('en-US', {
+    useGrouping: false,
+    maximumFractionDigits,
+  }).format(value);
+}
+
+const FILM_SIMULATION_LABELS: Readonly<Record<string, string>> = {
+  provia: 'Provia',
+  velvia: 'Velvia',
+  astia: 'Astia',
+  'pro-neg-std': 'Pro Neg. Std',
+  'pro-neg-hi': 'Pro Neg. Hi',
+  'classic-chrome': 'Classic Chrome',
+  eterna: 'Eterna',
+  'classic-negative': 'Classic Negative',
+  'eterna-bleach-bypass': 'Eterna Bleach Bypass',
+  'nostalgic-neg': 'Nostalgic Neg',
+  'reala-ace': 'Reala ACE',
+  monochrome: 'Monochrome',
+  'monochrome-red': 'Monochrome + R',
+  'monochrome-yellow': 'Monochrome + Ye',
+  'monochrome-green': 'Monochrome + G',
+  sepia: 'Sepia',
+  acros: 'Acros',
+  'acros-red': 'Acros + R',
+  'acros-yellow': 'Acros + Ye',
+  'acros-green': 'Acros + G',
+};
+
+function formatFilmSimulation(value: FilmSimulationValue | null): string {
+  if (value === null) return '未记录';
+  const label = FILM_SIMULATION_LABELS[value.key];
+  if (label !== undefined) return label;
+  if (value.code === null) return '未知模式';
+  return `未知模式（0x${value.code.toString(16).toUpperCase()}）`;
 }

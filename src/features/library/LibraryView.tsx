@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -71,6 +72,21 @@ export function LibraryView({
   const [confirmPhotoshop, setConfirmPhotoshop] = useState(false);
   const wheelAccumulator = useRef(0);
   const wheelLocked = useRef(false);
+  const wheelUnlockTimer = useRef<number | null>(null);
+
+  const resetWheelNavigation = useCallback(() => {
+    wheelAccumulator.current = 0;
+    wheelLocked.current = false;
+    if (wheelUnlockTimer.current !== null) {
+      window.clearTimeout(wheelUnlockTimer.current);
+      wheelUnlockTimer.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    resetWheelNavigation();
+    return resetWheelNavigation;
+  }, [current?.photoId, current?.photoVersion, resetWheelNavigation]);
 
   useEffect(() => {
     void getPhotoshopStatus()
@@ -107,8 +123,9 @@ export function LibraryView({
     wheelAccumulator.current = 0;
     wheelLocked.current = true;
     onNavigate(direction);
-    window.setTimeout(() => {
+    wheelUnlockTimer.current = window.setTimeout(() => {
       wheelLocked.current = false;
+      wheelUnlockTimer.current = null;
     }, 90);
   };
 
@@ -228,7 +245,11 @@ export function LibraryView({
           onSelectIndex={onSelectIndex}
           onWheel={handleWheel}
         />
-        <PhotoCanvas photo={current} onWheel={handleWheel} />
+        <PhotoCanvas
+          photo={current}
+          onWheel={handleWheel}
+          onZoomModeChange={resetWheelNavigation}
+        />
         <PhotoInspector
           detail={detail}
           loading={current !== null && detail === null && detailError === null}

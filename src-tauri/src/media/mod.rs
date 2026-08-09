@@ -11,10 +11,10 @@ use crate::{
     domain::{DomainError, ErrorCode},
 };
 
-pub use exif::ExifMetadata;
+pub use exif::{CaptureMetadata, ExifMetadata, FilmSimulation, Rational};
 pub use raf::RafPreview;
 
-pub const MEDIA_PARSER_VERSION: i64 = 1;
+pub const MEDIA_PARSER_VERSION: i64 = 2;
 const MAX_PREVIEW_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

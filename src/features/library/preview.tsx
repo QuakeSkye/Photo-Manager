@@ -1,4 +1,9 @@
-import { useEffect, useState } from 'react';
+import {
+  useEffect,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react';
 
 import {
   getPhotoPreview,
@@ -10,6 +15,12 @@ interface PreviewImageProps {
   readonly alt: string;
   readonly thumbnail?: boolean;
   readonly onStateChange?: (state: 'loading' | 'ready' | 'unavailable') => void;
+  readonly onImageLoad?: (size: {
+    readonly width: number;
+    readonly height: number;
+  }) => void;
+  readonly onImageDoubleClick?: (event: MouseEvent<HTMLImageElement>) => void;
+  readonly imageStyle?: CSSProperties;
 }
 
 export function PreviewImage({
@@ -17,6 +28,9 @@ export function PreviewImage({
   alt,
   thumbnail = false,
   onStateChange,
+  onImageLoad,
+  onImageDoubleClick,
+  imageStyle,
 }: PreviewImageProps) {
   const [source, setSource] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(
@@ -77,6 +91,14 @@ export function PreviewImage({
       src={source}
       alt={alt}
       draggable={false}
+      style={imageStyle}
+      onLoad={(event) => {
+        onImageLoad?.({
+          width: event.currentTarget.naturalWidth,
+          height: event.currentTarget.naturalHeight,
+        });
+      }}
+      onDoubleClick={onImageDoubleClick}
     />
   );
 }

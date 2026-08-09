@@ -115,6 +115,16 @@ export interface AssetView {
   readonly previewState: PreviewReference['state'];
 }
 
+export interface RationalValue {
+  readonly numerator: number;
+  readonly denominator: number;
+}
+
+export interface FilmSimulationValue {
+  readonly key: string;
+  readonly code: number | null;
+}
+
 export interface PhotoDetail {
   readonly photoId: string;
   readonly photoVersion: number;
@@ -123,6 +133,14 @@ export interface PhotoDetail {
   readonly fileTimeMs: number | null;
   readonly cameraModel: string | null;
   readonly cameraSerial: string | null;
+  readonly lensModel: string | null;
+  readonly fNumber: RationalValue | null;
+  readonly exposureTime: RationalValue | null;
+  readonly iso: number | null;
+  readonly focalLength: RationalValue | null;
+  readonly pixelWidth: number | null;
+  readonly pixelHeight: number | null;
+  readonly filmSimulation: FilmSimulationValue | null;
   readonly jpeg: AssetView | null;
   readonly raf: AssetView | null;
   readonly totalSizeBytes: number;
@@ -581,6 +599,14 @@ function demoDetail(photoId: string, photoVersion: number): PhotoDetail {
     fileTimeMs: Date.UTC(2026, 6, 30 - Math.max(index, 0), 16, 4, 12),
     cameraModel: index % 4 === 1 ? null : 'FUJIFILM X-T5',
     cameraSerial: '3A001234',
+    lensModel: 'XF35mmF1.4 R',
+    fNumber: { numerator: 14, denominator: 5 },
+    exposureTime: { numerator: 1, denominator: 500 },
+    iso: 400,
+    focalLength: { numerator: 35, denominator: 1 },
+    pixelWidth: 6240,
+    pixelHeight: 4160,
+    filmSimulation: { key: 'classic-chrome', code: 0x600 },
     jpeg,
     raf,
     totalSizeBytes: (jpeg?.sizeBytes ?? 0) + (raf?.sizeBytes ?? 0),

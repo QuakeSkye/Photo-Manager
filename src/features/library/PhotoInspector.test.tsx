@@ -1,9 +1,11 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
 import type { PhotoDetail } from '../../shared/commands/library';
 import { PhotoInspector } from './PhotoInspector';
+
+afterEach(cleanup);
 
 const detail: PhotoDetail = {
   photoId: 'photo-1',
@@ -13,6 +15,14 @@ const detail: PhotoDetail = {
   fileTimeMs: Date.UTC(2026, 6, 30, 14, 26, 0),
   cameraModel: 'FUJIFILM X-T5',
   cameraSerial: '3A001234',
+  lensModel: 'XF35mmF1.4 R',
+  fNumber: { numerator: 14, denominator: 5 },
+  exposureTime: { numerator: 1, denominator: 500 },
+  iso: 400,
+  focalLength: { numerator: 35, denominator: 1 },
+  pixelWidth: 6240,
+  pixelHeight: 4160,
+  filmSimulation: { key: 'classic-chrome', code: 0x600 },
   jpeg: {
     assetId: 'jpeg-1',
     assetVersion: 1,
@@ -57,6 +67,58 @@ function renderInspector() {
 }
 
 describe('PhotoInspector', () => {
+  test('renders the eight capture parameters in the confirmed order and format', () => {
+    const { container } = renderInspector();
+    const section = screen.getByText('照片参数').closest('section');
+    expect(section).not.toBeNull();
+    expect(
+      [...(section?.querySelectorAll('dt') ?? [])].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual([
+      '相机',
+      '镜头',
+      '光圈',
+      '快门',
+      'ISO',
+      '焦距',
+      '尺寸',
+      '胶片模拟',
+    ]);
+    for (const value of [
+      'FUJIFILM X-T5',
+      'XF35mmF1.4 R',
+      'F2.8',
+      '1/500 秒',
+      'ISO 400',
+      '35 mm',
+      '6240 × 4160',
+      'Classic Chrome',
+    ]) {
+      expect(container).toHaveTextContent(value);
+    }
+  });
+
+  test('formats long exposure and unknown film codes while keeping missing fields local', () => {
+    render(
+      inspector({
+        detail: {
+          ...detail,
+          lensModel: null,
+          exposureTime: { numerator: 3, denominator: 2 },
+          focalLength: { numerator: 105, denominator: 2 },
+          filmSimulation: { key: 'unknown', code: 0xdead },
+        },
+      }),
+    );
+
+    expect(screen.getAllByText('未记录')).toHaveLength(1);
+    expect(screen.getByText('1.5 秒')).toBeInTheDocument();
+    expect(screen.getByText('52.5 mm')).toBeInTheDocument();
+    expect(screen.getByText('未知模式（0xDEAD）')).toBeInTheDocument();
+    expect(screen.getByText('ISO 400')).toBeInTheDocument();
+  });
+
   test('keeps both metadata groups expanded by default and collapses them independently', () => {
     const { rerender } = renderInspector();
 

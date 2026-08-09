@@ -8,7 +8,11 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{db::Database, roots::FujiLibraryService, safety::TestRoot};
+use crate::{
+    db::{Database, migration::map_sqlite_error},
+    roots::FujiLibraryService,
+    safety::TestRoot,
+};
 
 use super::{CatalogService, LibraryScanner, ScanRequest, SortMode};
 
@@ -162,10 +166,91 @@ fn repeat_scan_pairs_sorts_unknown_last_and_changes_no_original() {
 
     let first = scanner.scan(request(&fixture)).unwrap();
     assert_eq!(first.completion.observed_assets, 4);
+    assert_eq!(first.metadata_records_added, 4);
+    assert_eq!(first.files_checked, 6);
+    assert!(first.files_per_second > 0);
     assert_eq!(first.ignored_by_extension.get(".png"), Some(&1));
     let first_ids = catalog_rows(&fixture.database);
     let second = scanner.scan(request(&fixture)).unwrap();
     assert_eq!(second.completion.observed_assets, 4);
+    assert_eq!(second.metadata_records_added, 0);
+    let capture_rows: i64 = fixture
+        .database
+        .open_read_connection()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM asset_capture_metadata", (), |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(capture_rows, 4);
+    fixture
+        .database
+        .writer()
+        .unwrap()
+        .transaction(|transaction| {
+            transaction
+                .execute_batch("DROP TRIGGER asset_capture_metadata_no_delete")
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute(
+                    "DELETE FROM asset_capture_metadata
+                     WHERE rowid=(SELECT rowid FROM asset_capture_metadata LIMIT 1)",
+                    (),
+                )
+                .map_err(map_sqlite_error)?;
+            transaction
+                .execute_batch(
+                    "CREATE TRIGGER asset_capture_metadata_no_delete
+                     BEFORE DELETE ON asset_capture_metadata BEGIN
+                         SELECT RAISE(ABORT, 'asset capture metadata is immutable');
+                     END;",
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .unwrap();
+    let backfill = scanner.scan(request(&fixture)).unwrap();
+    assert_eq!(backfill.metadata_records_added, 1);
+    let backfilled_rows: i64 = fixture
+        .database
+        .open_read_connection()
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM asset_capture_metadata", (), |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(backfilled_rows, 4);
+    fixture
+        .database
+        .writer()
+        .unwrap()
+        .transaction(|transaction| {
+            transaction
+                .execute(
+                    "INSERT INTO asset_capture_metadata(
+                         asset_id, asset_version, parser_version, iso_value
+                     )
+                     SELECT asset_id, asset_version, 3, 800
+                     FROM asset_capture_metadata
+                     WHERE parser_version=2 LIMIT 1",
+                    (),
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .unwrap();
+    let parser_versions: (i64, i64) = fixture
+        .database
+        .open_read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT SUM(parser_version=2), SUM(parser_version=3)
+             FROM asset_capture_metadata",
+            (),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(parser_versions, (4, 1));
     assert_eq!(catalog_rows(&fixture.database), first_ids);
     assert_eq!(tree_snapshot(&fixture.library_path), before);
 
@@ -220,6 +305,10 @@ fn cancelled_full_scan_keeps_partial_index_but_never_changes_originals_or_reconc
     assert!(report.cancelled);
     assert!(report.completion.observed_assets > 0);
     assert!(report.completion.observed_assets < 4);
+    assert_eq!(
+        report.metadata_records_added,
+        report.completion.observed_assets
+    );
     assert_eq!(tree_snapshot(&fixture.library_path), before);
     assert_eq!(
         catalog
@@ -245,6 +334,26 @@ fn cancelled_full_scan_keeps_partial_index_but_never_changes_originals_or_reconc
         .unwrap();
     assert_eq!(run_state, "Interrupted");
     assert_eq!(result, "Cancelled");
+
+    let resumed = scanner.scan(request(&fixture)).unwrap();
+    assert!(!resumed.cancelled);
+    assert_eq!(resumed.completion.observed_assets, 4);
+    assert_eq!(
+        resumed.metadata_records_added,
+        4 - report.completion.observed_assets
+    );
+    assert_eq!(
+        fixture
+            .database
+            .open_read_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM asset_capture_metadata", (), |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+        4
+    );
+    assert_eq!(tree_snapshot(&fixture.library_path), before);
 }
 
 #[test]

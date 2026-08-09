@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
 };
 
 use crate::{
@@ -41,6 +42,10 @@ pub struct ScanReport {
     pub ignored_by_extension: BTreeMap<String, usize>,
     pub issues: Vec<ScanIssue>,
     pub cancelled: bool,
+    pub files_checked: usize,
+    pub metadata_records_added: usize,
+    pub elapsed_ms: u64,
+    pub files_per_second: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +96,7 @@ impl LibraryScanner {
         C: FnMut() -> bool,
         O: FnMut(ScanProgress),
     {
+        let started = Instant::now();
         let root_probe = probe_directory(&request.root_path)?;
         self.verify_binding(&request, &root_probe)?;
         let scan_run_id = self.catalog.begin_scan(
@@ -120,12 +126,7 @@ impl LibraryScanner {
                 state.skipped_reparse,
                 state.issues.len(),
             )?;
-            return Ok(ScanReport {
-                completion,
-                ignored_by_extension: state.ignored_by_extension,
-                issues: state.issues,
-                cancelled: true,
-            });
+            return Ok(state.report(completion, true, started.elapsed()));
         }
         let completion = self.catalog.complete_scan_with_deferred(
             scan_run_id,
@@ -135,12 +136,7 @@ impl LibraryScanner {
             state.skipped_reparse,
             state.issues.len(),
         )?;
-        Ok(ScanReport {
-            completion,
-            ignored_by_extension: state.ignored_by_extension,
-            issues: state.issues,
-            cancelled: false,
-        })
+        Ok(state.report(completion, false, started.elapsed()))
     }
 
     fn verify_binding(
@@ -360,11 +356,14 @@ impl LibraryScanner {
                     capture_local_key: exif.capture_local_key,
                     camera_model: exif.camera_model,
                     camera_serial: exif.camera_serial,
+                    capture_metadata: exif.capture,
                     preview,
                 };
                 match self.catalog.observe_media_asset_outcome(observation) {
                     Ok(ObservationOutcome::Observed(result)) => {
-                        state.observed.push(result.asset_id)
+                        state.observed.push(result.asset_id);
+                        state.metadata_records_added +=
+                            usize::from(result.capture_metadata_inserted);
                     }
                     Ok(ObservationOutcome::DeferredByReservation) => {
                         state.deferred_path_keys.push(path_key(relative));
@@ -399,9 +398,35 @@ struct ScanState {
     files_checked: usize,
     current_relative_path: Option<String>,
     cancelled: bool,
+    metadata_records_added: usize,
 }
 
 impl ScanState {
+    fn report(
+        self,
+        completion: ScanCompletion,
+        cancelled: bool,
+        elapsed: std::time::Duration,
+    ) -> ScanReport {
+        let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let files_per_second = if elapsed.is_zero() {
+            u64::try_from(self.files_checked).unwrap_or(u64::MAX)
+        } else {
+            let rate = self.files_checked as f64 / elapsed.as_secs_f64();
+            rate.round().clamp(0.0, u64::MAX as f64) as u64
+        };
+        ScanReport {
+            completion,
+            ignored_by_extension: self.ignored_by_extension,
+            issues: self.issues,
+            cancelled,
+            files_checked: self.files_checked,
+            metadata_records_added: self.metadata_records_added,
+            elapsed_ms,
+            files_per_second,
+        }
+    }
+
     fn progress(&self) -> ScanProgress {
         ScanProgress {
             directories_checked: self.directories_checked,

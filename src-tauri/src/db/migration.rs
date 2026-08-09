@@ -9,7 +9,7 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 8;
+pub const LATEST_SCHEMA_VERSION: u32 = 9;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
 pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
 pub const PHASE_THREE_MIGRATION_SQL: &str = include_str!("../../migrations/0003_phase_three.sql");
@@ -18,6 +18,8 @@ pub const PHASE_FIVE_MIGRATION_SQL: &str = include_str!("../../migrations/0005_p
 pub const PHASE_SIX_MIGRATION_SQL: &str = include_str!("../../migrations/0006_phase_six.sql");
 pub const PHASE_SEVEN_MIGRATION_SQL: &str = include_str!("../../migrations/0007_phase_seven.sql");
 pub const PHASE_EIGHT_MIGRATION_SQL: &str = include_str!("../../migrations/0008_phase_eight.sql");
+pub const PHOTO_CAPTURE_METADATA_MIGRATION_SQL: &str =
+    include_str!("../../migrations/0009_photo_capture_metadata.sql");
 
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "0001_phase_zero.sql", MIGRATION_SQL),
@@ -28,6 +30,11 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
     (6, "0006_phase_six.sql", PHASE_SIX_MIGRATION_SQL),
     (7, "0007_phase_seven.sql", PHASE_SEVEN_MIGRATION_SQL),
     (8, "0008_phase_eight.sql", PHASE_EIGHT_MIGRATION_SQL),
+    (
+        9,
+        "0009_photo_capture_metadata.sql",
+        PHOTO_CAPTURE_METADATA_MIGRATION_SQL,
+    ),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
