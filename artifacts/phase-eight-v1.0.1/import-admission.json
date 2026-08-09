@@ -1,0 +1,60 @@
+{
+  "reportVersion": 1,
+  "feature": "import",
+  "candidateManifestSha256": "0ea5b93fb5366fbad7132c55344ccb8199a1e0917e33fe4dd998166219e38aea",
+  "safetyReport": {
+    "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\import-safety-report.json",
+    "sizeBytes": 1914,
+    "sha256": "dca6f3abb2cf70519e7de003fcb256b18274fcc8fa2a901930f6ee6813d02984"
+  },
+  "evidence": [
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\acceptance-matrix.json",
+      "sizeBytes": 14899,
+      "sha256": "02a506bdf3c4a1c0e31e6ddb2d3c8712878c1b8d3e8ae4d5440ce41e6e3b9421"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\defects-report.json",
+      "sizeBytes": 609,
+      "sha256": "a0937e3250c272a08b483f20fa29bd9447ddcfe20f8c93bb6b25bb45fa858563"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\scale-report.json",
+      "sizeBytes": 1510,
+      "sha256": "eb5914fa1e04f1eb7919595464baa21c3beecb9473cd41652cdb316ea46f664e"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\io-report.json",
+      "sizeBytes": 959,
+      "sha256": "b56bef5a2f1c4bc528960614dafffdbc567ad652ea98257cef6f226b721428a7"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\database-report.json",
+      "sizeBytes": 653,
+      "sha256": "92ff2bb5e71cb641afda59ac2e231dee1203213737088fb6d82bb60dd1f6664e"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\cache-report.json",
+      "sizeBytes": 406,
+      "sha256": "42d16f76babea4b8f783086648812ce833545b6c3939a3f37cb9643ca86dcf8d"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\performance-report.json",
+      "sizeBytes": 1752,
+      "sha256": "27c995e3a6a219c4caad7e6336fd076ac2e814faf36564fab94fcdee5144817d"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\source-quality-report.json",
+      "sizeBytes": 2550,
+      "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+    },
+    {
+      "absolutePath": "\\\\?\\G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\ui-candidate-1786266673313\\ui-candidate-report.json",
+      "sizeBytes": 2434,
+      "sha256": "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+    }
+  ],
+  "acceptanceConditionsPassed": 27,
+  "unresolvedCritical": 0,
+  "unresolvedHigh": 0
+}

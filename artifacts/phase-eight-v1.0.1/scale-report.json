@@ -1,0 +1,35 @@
+{
+  "reportVersion": 1,
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "runRoot": "G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "mediaIncursSeekPenalty": true,
+  "photoCount": 100000,
+  "assetCount": 200000,
+  "logicalAssetBytes": 1258291200000,
+  "allocatedBytes": 216840910,
+  "fixtureCreateMs": 600612,
+  "databasePopulateMs": 174077,
+  "timelineDescMs": 414,
+  "timelineAscMs": 394,
+  "checkpointMs": 0,
+  "checkpointBusy": false,
+  "checkpointLogFrames": 3229,
+  "checkpointedFrames": 3229,
+  "schemaVersion": 8,
+  "schemaChecksum": "e78fd625669f4b76629a25a210cbd5de70eaf35de54605430c2607c29d969ca2",
+  "migrationChainChecksum": "3d736ebf30cf68c566585e0ae659292e417e752b3464bf8c485e24d554566f11",
+  "timelineDescQueryPlan": [
+    "SEARCH photo USING INDEX ix_photo_active_library_review (library_id=? AND lifecycle=?)",
+    "SEARCH relation USING INDEX ix_photo_asset_current_photo (photo_id=?)",
+    "SEARCH asset USING INDEX sqlite_autoindex_asset_1 (asset_id=?)",
+    "SEARCH root USING INDEX sqlite_autoindex_root_1 (root_id=?)",
+    "USE TEMP B-TREE FOR ORDER BY"
+  ],
+  "timelineAscQueryPlan": [
+    "SEARCH photo USING INDEX ix_photo_active_library_review (library_id=? AND lifecycle=?)",
+    "SEARCH relation USING INDEX ix_photo_asset_current_photo (photo_id=?)",
+    "SEARCH asset USING INDEX sqlite_autoindex_asset_1 (asset_id=?)",
+    "SEARCH root USING INDEX sqlite_autoindex_root_1 (root_id=?)",
+    "USE TEMP B-TREE FOR ORDER BY"
+  ]
+}

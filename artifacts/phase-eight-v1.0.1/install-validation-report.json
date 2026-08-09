@@ -1,0 +1,26 @@
+{
+    "reportVersion":  1,
+    "runId":  "61d6aad6-3a4d-48c3-b8f9-8e3dc4def80e",
+    "upgradeFromVersion":  "1.0.0",
+    "candidateVersion":  "1.0.1",
+    "installer":  {
+                      "absolutePath":  "D:\\A\\MyProject\\ai\\Aifirtst\\src-tauri\\target\\release\\bundle\\nsis\\Fuji 照片管理器_1.0.1_x64-setup.exe",
+                      "sha256":  "6dc9af6740d50d673240e3e668d0249c47b072b3cf46919ff653f78c6e768c8d",
+                      "authenticode":  "NotSigned"
+                  },
+    "installedExe":  {
+                         "absolutePath":  "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+                         "sha256":  "bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8",
+                         "fileVersion":  "1.0.1",
+                         "productVersion":  "1.0.1"
+                     },
+    "installLocationIsCurrentUserLocalAppData":  true,
+    "installLocationIsDDrive":  false,
+    "upgradePassed":  true,
+    "uninstallProgramFilesRemoved":  true,
+    "appDataTreeSha256":  "57878f10e9d8541d212b27f65ce4c0071770b954830762547b748a75c832a84b",
+    "appDataBackupRelative":  "install-validation-appdata-backup",
+    "appDataPreserved":  true,
+    "reinstalledSameExeSha256":  true,
+    "passed":  true
+}

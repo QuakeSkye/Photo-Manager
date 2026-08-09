@@ -1,0 +1,34 @@
+{
+  "reportVersion": 2,
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "import": {
+    "sourceWriteRequests": 0,
+    "sourceUnchanged": true,
+    "existingTargetUnchanged": true,
+    "successfulPublishIdentical": true,
+    "noOverwriteRejected": true,
+    "faultBeforePublishRejected": true,
+    "permanentDeleteUsed": false
+  },
+  "recycle": {
+    "requiredFlags": 1573904,
+    "permanentDeleteFlagPresent": false,
+    "callbackCount": 2,
+    "recycleObjectsNonempty": true,
+    "restoredIdentical": true,
+    "operationsAborted": false
+  },
+  "runtimeGate": {
+    "healthyDefaultOpen": true,
+    "startupClosedUntilReady": true,
+    "unannouncedWriterPoisonRequireRejected": true,
+    "unannouncedWriterPoisonRevalidateRejected": true,
+    "wrongFeatureRejected": true,
+    "wrongInstanceRejected": true,
+    "sharedFaultClosesBoth": true,
+    "faultLatchMonotonic": true,
+    "postPhysicalLatchCheckpointCompleted": true,
+    "stalePermitRejectedAfterLatch": true,
+    "concurrentFaultInvalidatesIssuedPermits": true
+  }
+}

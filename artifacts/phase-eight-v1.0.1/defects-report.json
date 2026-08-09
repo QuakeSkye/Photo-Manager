@@ -1,0 +1,18 @@
+{
+  "reportVersion": 1,
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "candidateManifestSha256": "0ea5b93fb5366fbad7132c55344ccb8199a1e0917e33fe4dd998166219e38aea",
+  "unresolvedCritical": 0,
+  "unresolvedHigh": 0,
+  "defects": [
+    {
+      "id": "P8-LOW-001",
+      "severity": "low",
+      "status": "mitigated",
+      "dataSafetyImpact": "none",
+      "summary": "A UI unit test once exceeded its one-second wait under parallel runner load.",
+      "disposition": "The frozen quality gate runs the unchanged assertions with one Vitest worker; all 39 tests must pass."
+    }
+  ],
+  "passed": true
+}

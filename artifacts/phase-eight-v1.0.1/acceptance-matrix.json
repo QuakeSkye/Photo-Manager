@@ -1,0 +1,488 @@
+{
+  "reportVersion": 1,
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "candidateManifestSha256": "0ea5b93fb5366fbad7132c55344ccb8199a1e0917e33fe4dd998166219e38aea",
+  "passedCount": 27,
+  "totalCount": 27,
+  "conditions": [
+    {
+      "id": 1,
+      "condition": "现有 Fuji 图库扫描零修改",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 2,
+      "condition": "仅识别 JPG/JPEG/RAF 并汇总忽略项",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 3,
+      "condition": "EXIF 日期分组、未知日期和稳定排序",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "scale-report.json",
+          "sizeBytes": 1510,
+          "sha256": "eb5914fa1e04f1eb7919595464baa21c3beecb9473cd41652cdb316ea46f664e"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 4,
+      "condition": "历史配对证据严格且不确定时分开",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 5,
+      "condition": "配对/拆分/缺失遵守 PhotoId 与墓碑规则",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 6,
+      "condition": "键盘、滚轮、D/R 与多步撤销",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "ui-candidate-1786266673313/ui-candidate-report.json",
+          "sizeBytes": 2434,
+          "sha256": "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+        }
+      ],
+      "manualReview": {
+        "reviewer": "Codex candidate UI review",
+        "result": "passed",
+        "scope": "generated/disposable UI fixture only"
+      }
+    },
+    {
+      "id": 7,
+      "condition": "删除标记快照持久化且身份变化失效",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 8,
+      "condition": "Photoshop 与文件位置动作选择正确资产",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "ui-candidate-1786266673313/ui-candidate-report.json",
+          "sizeBytes": 2434,
+          "sha256": "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 9,
+      "condition": "启动、待删除入口、归零和问题项导航正确",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "ui-candidate-1786266673313/ui-candidate-report.json",
+          "sizeBytes": 2434,
+          "sha256": "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+        }
+      ],
+      "manualReview": {
+        "reviewer": "Codex candidate UI review",
+        "result": "passed",
+        "scope": "generated/disposable UI fixture only"
+      }
+    },
+    {
+      "id": 10,
+      "condition": "只进 Windows 回收站且逐文件提交",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 11,
+      "condition": "部分删除报告与新 Attempt 重试",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 12,
+      "condition": "内存卡子树只读且整卷零写入",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 13,
+      "condition": "Root 身份与任务期间设置约束",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 14,
+      "condition": "双端身份、哈希、逐字节 skip 证明",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 15,
+      "condition": "每次 Import 新验证代次与完整名称族",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 16,
+      "condition": "新文件目录、日期矩阵与时间保留",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 17,
+      "condition": "空间门、固定复制集与 partial 报告",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 18,
+      "condition": "partial 所有权、句柄验证与 no-replace 发布",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 19,
+      "condition": "取消/崩溃/拔卡不回滚且不修改源",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 20,
+      "condition": "唯一 observe_asset 建档与 reservation 隔离",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 21,
+      "condition": "现有图库不自动整理",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 22,
+      "condition": "缓存命名空间、所有权、LRU 与未知文件保护",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "cache-report.json",
+          "sizeBytes": 406,
+          "sha256": "42d16f76babea4b8f783086648812ce833545b6c3939a3f37cb9643ca86dcf8d"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 23,
+      "condition": "Schema ADR 约束与状态机执行",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "database-report.json",
+          "sizeBytes": 653,
+          "sha256": "92ff2bb5e71cb641afda59ac2e231dee1203213737088fb6d82bb60dd1f6664e"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 24,
+      "condition": "唯一照片视图与长期不可改写报告",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "source-quality-report.json",
+          "sizeBytes": 2550,
+          "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+        },
+        {
+          "relativePath": "ui-candidate-1786266673313/ui-candidate-report.json",
+          "sizeBytes": 2434,
+          "sha256": "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+        }
+      ],
+      "manualReview": {
+        "reviewer": "Codex candidate UI review",
+        "result": "passed",
+        "scope": "generated/disposable UI fixture only"
+      }
+    },
+    {
+      "id": 25,
+      "condition": "SQLite FULL/WAL、备份恢复与损坏只读",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "database-report.json",
+          "sizeBytes": 653,
+          "sha256": "92ff2bb5e71cb641afda59ac2e231dee1203213737088fb6d82bb60dd1f6664e"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 26,
+      "condition": "10 万/20 万/1 TiB 达到性能指标",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "scale-report.json",
+          "sizeBytes": 1510,
+          "sha256": "eb5914fa1e04f1eb7919595464baa21c3beecb9473cd41652cdb316ea46f664e"
+        },
+        {
+          "relativePath": "io-report.json",
+          "sizeBytes": 959,
+          "sha256": "b56bef5a2f1c4bc528960614dafffdbc567ad652ea98257cef6f226b721428a7"
+        },
+        {
+          "relativePath": "performance-report.json",
+          "sizeBytes": 1752,
+          "sha256": "27c995e3a6a219c4caad7e6336fd076ac2e814faf36564fab94fcdee5144817d"
+        }
+      ],
+      "manualReview": null
+    },
+    {
+      "id": 27,
+      "condition": "真实图库启用前全部写安全测试通过",
+      "passed": true,
+      "evidence": [
+        {
+          "relativePath": "safety-report.json",
+          "sizeBytes": 1031,
+          "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+        },
+        {
+          "relativePath": "cache-report.json",
+          "sizeBytes": 406,
+          "sha256": "42d16f76babea4b8f783086648812ce833545b6c3939a3f37cb9643ca86dcf8d"
+        },
+        {
+          "relativePath": "database-report.json",
+          "sizeBytes": 653,
+          "sha256": "92ff2bb5e71cb641afda59ac2e231dee1203213737088fb6d82bb60dd1f6664e"
+        },
+        {
+          "relativePath": "candidate-manifest.json",
+          "sizeBytes": 2770,
+          "sha256": "4f858825d097808520d3e045e32e7efa1aee63b755845ff10c0a2e86178cc029"
+        }
+      ],
+      "manualReview": null
+    }
+  ],
+  "passed": true
+}

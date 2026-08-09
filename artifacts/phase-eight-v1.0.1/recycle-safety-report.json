@@ -1,0 +1,48 @@
+{
+  "reportVersion": 3,
+  "feature": "recycle",
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "candidateManifestSha256": "0ea5b93fb5366fbad7132c55344ccb8199a1e0917e33fe4dd998166219e38aea",
+  "generatedDataOnly": true,
+  "recycleOnlyFlags": true,
+  "permanentDeleteFlagPresent": false,
+  "perFileCallbacks": 2,
+  "restoredIdentical": true,
+  "installedExeSha256": "bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8",
+  "packageLockSha256": "6148b74a64871fad9332fac42245ac937eadad31d6fa052259e3839dc3a0242c",
+  "cargoLockSha256": "806aef41f7c7fac9c10318b22ea5d3192a1961eb724a3084d66d1c03a9df2b71",
+  "schemaVersion": 8,
+  "schemaChecksum": "e78fd625669f4b76629a25a210cbd5de70eaf35de54605430c2607c29d969ca2",
+  "migrationChainChecksum": "3d736ebf30cf68c566585e0ae659292e417e752b3464bf8c485e24d554566f11",
+  "runtimeGate": {
+    "healthyDefaultOpen": true,
+    "startupClosedUntilReady": true,
+    "unannouncedWriterPoisonRequireRejected": true,
+    "unannouncedWriterPoisonRevalidateRejected": true,
+    "wrongFeatureRejected": true,
+    "wrongInstanceRejected": true,
+    "sharedFaultClosesBoth": true,
+    "faultLatchMonotonic": true,
+    "postPhysicalLatchCheckpointCompleted": true,
+    "stalePermitRejectedAfterLatch": true,
+    "concurrentFaultInvalidatesIssuedPermits": true
+  },
+  "evidence": [
+    {
+      "relativePath": "safety-report.json",
+      "sizeBytes": 1031,
+      "sha256": "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+    },
+    {
+      "relativePath": "source-quality-report.json",
+      "sizeBytes": 2550,
+      "sha256": "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+    },
+    {
+      "relativePath": "acceptance-matrix.json",
+      "sizeBytes": 14899,
+      "sha256": "02a506bdf3c4a1c0e31e6ddb2d3c8712878c1b8d3e8ae4d5440ce41e6e3b9421"
+    }
+  ],
+  "passed": true
+}

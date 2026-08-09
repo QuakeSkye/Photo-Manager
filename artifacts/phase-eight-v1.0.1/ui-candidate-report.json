@@ -1,0 +1,86 @@
+{
+  "reportVersion": 1,
+  "candidateExe": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+  "candidateExeSha256": "bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8",
+  "candidateExeName": "local-photo-manager.exe",
+  "runRoot": "G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "fixture": {
+    "photoCount": 100000,
+    "reportVersion": 1,
+    "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+    "testRoot": "G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a\\fpm-generated-test-root-bf8605db-440c-4a85-91ff-aaa1219e9f9f"
+  },
+  "chromiumProduct": null,
+  "matrices": [
+    {
+      "dpiPercent": 100,
+      "deviceScaleFactor": 1,
+      "width": 1440,
+      "height": 900,
+      "audit": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "devicePixelRatio": 1.0000000298023224
+        },
+        "horizontalOverflow": false,
+        "visibleFocusableCount": 21,
+        "contrastViolations": []
+      },
+      "arrowNavigationChanged": true,
+      "focus": {
+        "tag": "BUTTON",
+        "label": "第 2 张：DSCF050399"
+      },
+      "screenshot": "dpi-100-1440x900.png",
+      "passed": true
+    },
+    {
+      "dpiPercent": 125,
+      "deviceScaleFactor": 1.25,
+      "width": 1280,
+      "height": 720,
+      "audit": {
+        "viewport": {
+          "width": 1280,
+          "height": 720,
+          "devicePixelRatio": 1.2499999701976776
+        },
+        "horizontalOverflow": false,
+        "visibleFocusableCount": 19,
+        "contrastViolations": []
+      },
+      "arrowNavigationChanged": true,
+      "focus": {
+        "tag": "BUTTON",
+        "label": "第 3 张：DSCF025199"
+      },
+      "screenshot": "dpi-125-1280x720.png",
+      "passed": true
+    },
+    {
+      "dpiPercent": 150,
+      "deviceScaleFactor": 1.5,
+      "width": 1100,
+      "height": 700,
+      "audit": {
+        "viewport": {
+          "width": 1100,
+          "height": 700,
+          "devicePixelRatio": 1.5
+        },
+        "horizontalOverflow": false,
+        "visibleFocusableCount": 19,
+        "contrastViolations": []
+      },
+      "arrowNavigationChanged": true,
+      "focus": {
+        "tag": "BUTTON",
+        "label": "第 4 张：DSCF089879"
+      },
+      "screenshot": "dpi-150-1100x700.png",
+      "passed": true
+    }
+  ],
+  "passed": true
+}

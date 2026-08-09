@@ -1,20 +1,25 @@
-# Fuji 照片管理器 v1.0.0 候选发布说明
-
-> **已被 v1.0.1 工作取代：** v1.0.0 的运行时写入准入没有在生产命令边界强制执行。本说明及其候选证据只作历史保留，不能授权真实 Import/Recycle，也不能证明 v1.0.1。
+# Fuji 照片管理器 v1.0.1 发布说明
 
 日期：2026-08-09
 
-本候选只完成“阶段 8：规模硬化与 v1 发布”，没有加入搜索、手动配对、完整 RAW 解码、多图库、手动缓存清理或永久删除等范围外功能。
+v1.0.1 修复了 v1.0.0 中生产写命令没有真正受声明 gate 强制约束的高风险问题。v1.0.0 的阶段 8 完成结论已失效，不能用于授权真实照片操作。
 
 主要变化：
 
-- 在 100,000 Photo、200,000 Asset、至少 1 TiB 逻辑规模下补充索引、分页与启动性能硬化。
-- 加入机械硬盘有限并发、浏览优先和后台 I/O 抑制/恢复调度。
-- 冻结 32 GiB 默认缓存、64 GiB 上限以及 `max(20 GiB, 10%)` 余量规则，并强化逐文件缓存所有权。
-- 将 schema 升至 v8，加入迁移清单、schema checksum、WAL/checkpoint、备份恢复、损坏只读和空间不足验证。
-- 构建 Windows NSIS v1.0.0 候选，并将测试准入绑定到安装包、实际安装 EXE、依赖锁、schema、全部迁移和报告 SHA-256。
-- 对实际安装候选重新运行生成数据 Import/Recycle、故障注入、HDD I/O、数据库、缓存、性能及 DPI/键盘/对比度矩阵。
+- 新增唯一 `RuntimeSafetyGate`。健康启动时 Import 与 Recycle 默认开放，不再需要人工准入或软件内解锁。
+- 所有来源选择、预检、Import 开始/重试、Recycle 开始/重试，以及每个目录创建、partial 创建、发布和单 asset Shell 动作都强制使用绑定实例、feature 和 generation 的 permit。
+- `require_feature()` / `revalidate()` 每次同步检查实时 writer health、数据库模式和一致 gate 快照，未通知的 writer poisoning 不能穿透。
+- 物理动作完成后不再用 gate 拒绝结果 Fact：始终尝试提交观察结果，提交后才决定是否开始下一文件；writer 无法提交时保留非终态 Intent、Reservation、Lease 和结果不明状态供重启协调。
+- Recycle 改为每个 asset 一次 STA Shell 调用；仍只使用 Windows 回收站 flags，没有永久删除或降级路径。
+- 设置页显示实时写入安全状态；gate 关闭时执行按钮禁用且原因可见，浏览、报告、取消和移除标记保持可用。
+- 重新完成 100,000 Photo、200,000 Asset、至少 1 TiB 逻辑规模，机械盘 I/O、SQLite、缓存、DPI/键盘/对比度和准确安装候选安全验收。
 
-重要安全说明：Windows 回收站不是照片备份，SQLite 备份也不是照片备份。`IFileOperation` 最终身份校验与 Shell 执行之间仍存在非原子的残余窗口。真实照片 Import 与 Recycle 在本候选中继续独立关闭，必须另行完成确认清单并获得用户授权。
+冻结候选：
+
+- 安装包 SHA-256：`6dc9af6740d50d673240e3e668d0249c47b072b3cf46919ff653f78c6e768c8d`
+- 已安装 EXE SHA-256：`bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8`
+- 安装位置：`C:\Users\15684\AppData\Local\Fuji 照片管理器`
+
+重要安全说明：Windows 回收站不是照片备份，SQLite 备份也不是照片备份。`IFileOperation` 最终校验与 Shell 执行之间仍存在非原子残余窗口。安装包未签名；任何签名、重建或绑定输入变化都必须完整重测。
 
 本候选没有推送、上传或发布到任何远端。

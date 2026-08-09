@@ -1,0 +1,14 @@
+{
+    "reportVersion":  1,
+    "runId":  "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+    "runRoot":  "G:\\test\\local-photo-manager-phase8\\fpm-phase8-run-40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+    "fileCount":  200103,
+    "allocatedBytes":  92995951824,
+    "limitBytes":  300000000000,
+    "withinLimit":  true,
+    "gFreeBytes":  523677638656,
+    "reserveBytes":  100000000000,
+    "reserveSatisfied":  true,
+    "measuredAfterFinalSuite":  true,
+    "passed":  true
+}

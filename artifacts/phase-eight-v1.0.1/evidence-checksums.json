@@ -1,0 +1,148 @@
+{
+    "reportVersion":  1,
+    "candidateManifestSha256":  "0ea5b93fb5366fbad7132c55344ccb8199a1e0917e33fe4dd998166219e38aea",
+    "installedExeSha256":  "bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8",
+    "installerSha256":  "6dc9af6740d50d673240e3e668d0249c47b072b3cf46919ff653f78c6e768c8d",
+    "files":  [
+                  {
+                      "name":  "acceptance-matrix.json",
+                      "sizeBytes":  14899,
+                      "sha256":  "02a506bdf3c4a1c0e31e6ddb2d3c8712878c1b8d3e8ae4d5440ce41e6e3b9421"
+                  },
+                  {
+                      "name":  "admission-verification.json",
+                      "sizeBytes":  254,
+                      "sha256":  "37401857646089b02cbed27ac6352ce880ae2f954bc37aa628bc683d3bab3970"
+                  },
+                  {
+                      "name":  "admission-verification-final.json",
+                      "sizeBytes":  254,
+                      "sha256":  "37401857646089b02cbed27ac6352ce880ae2f954bc37aa628bc683d3bab3970"
+                  },
+                  {
+                      "name":  "cache-report.json",
+                      "sizeBytes":  406,
+                      "sha256":  "42d16f76babea4b8f783086648812ce833545b6c3939a3f37cb9643ca86dcf8d"
+                  },
+                  {
+                      "name":  "candidate-manifest.json",
+                      "sizeBytes":  2770,
+                      "sha256":  "4f858825d097808520d3e045e32e7efa1aee63b755845ff10c0a2e86178cc029"
+                  },
+                  {
+                      "name":  "candidate-verification.json",
+                      "sizeBytes":  231,
+                      "sha256":  "eb3d70a3f54e391b1ac315b513f64e5e9af64ad0c42843f234ee94ad3d718d76"
+                  },
+                  {
+                      "name":  "candidate-verification-final.json",
+                      "sizeBytes":  231,
+                      "sha256":  "eb3d70a3f54e391b1ac315b513f64e5e9af64ad0c42843f234ee94ad3d718d76"
+                  },
+                  {
+                      "name":  "database-report.json",
+                      "sizeBytes":  653,
+                      "sha256":  "92ff2bb5e71cb641afda59ac2e231dee1203213737088fb6d82bb60dd1f6664e"
+                  },
+                  {
+                      "name":  "defects-report.json",
+                      "sizeBytes":  609,
+                      "sha256":  "a0937e3250c272a08b483f20fa29bd9447ddcfe20f8c93bb6b25bb45fa858563"
+                  },
+                  {
+                      "name":  "dpi-100-1440x900.png",
+                      "sizeBytes":  58033,
+                      "sha256":  "918d0157585cabfe6fad1ebd07b6c4905ba6cbd1b826692235245111cf18fb35"
+                  },
+                  {
+                      "name":  "dpi-125-1280x720.png",
+                      "sizeBytes":  73727,
+                      "sha256":  "1193a8c40ed420e95e6367f8be7621310d7c93ba33dc6cfe717d5761f06bee95"
+                  },
+                  {
+                      "name":  "dpi-150-1100x700.png",
+                      "sizeBytes":  88964,
+                      "sha256":  "5b949ff5584ba4263632a404f6a8262fb2357c9d9b5b45ea65242c14b4c29bcb"
+                  },
+                  {
+                      "name":  "Fuji 照片管理器_1.0.1_x64-setup.exe",
+                      "sizeBytes":  3581783,
+                      "sha256":  "6dc9af6740d50d673240e3e668d0249c47b072b3cf46919ff653f78c6e768c8d"
+                  },
+                  {
+                      "name":  "import-admission.json",
+                      "sizeBytes":  2938,
+                      "sha256":  "88ef0996e5c6d28ddeac45c476687ecab7d1bb75b26a47089af2981aa07c4c1d"
+                  },
+                  {
+                      "name":  "import-safety-report.json",
+                      "sizeBytes":  1914,
+                      "sha256":  "dca6f3abb2cf70519e7de003fcb256b18274fcc8fa2a901930f6ee6813d02984"
+                  },
+                  {
+                      "name":  "install-validation-report.json",
+                      "sizeBytes":  1322,
+                      "sha256":  "ba3f3c895d3f4f191584a60fef0fb24d00eeebc0d3712157904e38ffc6b44d56"
+                  },
+                  {
+                      "name":  "io-report.json",
+                      "sizeBytes":  959,
+                      "sha256":  "b56bef5a2f1c4bc528960614dafffdbc567ad652ea98257cef6f226b721428a7"
+                  },
+                  {
+                      "name":  "performance-report.json",
+                      "sizeBytes":  1752,
+                      "sha256":  "27c995e3a6a219c4caad7e6336fd076ac2e814faf36564fab94fcdee5144817d"
+                  },
+                  {
+                      "name":  "phase-eight-final-summary.json",
+                      "sizeBytes":  3497,
+                      "sha256":  "9b814fde4f32c45c58cfc2919acbe9e1735b6fa7fee3dca76d97e25d3eb6147d"
+                  },
+                  {
+                      "name":  "protected-path-verification.json",
+                      "sizeBytes":  333,
+                      "sha256":  "3d7d125acd863fa0dbff32432cf99fc36dd0def6d9ba54605c00032a457001b1"
+                  },
+                  {
+                      "name":  "README.md",
+                      "sizeBytes":  593,
+                      "sha256":  "c25d943fd5d08e2d0eedf511bc64d76d6d6fdbc01b1b1d19063b133f7bc45050"
+                  },
+                  {
+                      "name":  "recycle-admission.json",
+                      "sizeBytes":  2940,
+                      "sha256":  "02c3c3d88df853665ff9b7a87d57798ed00929f5725c6f7a35b9de76a8f0ad77"
+                  },
+                  {
+                      "name":  "recycle-safety-report.json",
+                      "sizeBytes":  1853,
+                      "sha256":  "476e5872fcda3ac926984fa4d8a0a3dce40bc0c7c60d266f76510912f51e3eee"
+                  },
+                  {
+                      "name":  "run-allocation-final.json",
+                      "sizeBytes":  483,
+                      "sha256":  "e50276fd3de44d14a3481dc4bef9aee1fce2ad84cf58dc3af03642b783014fcc"
+                  },
+                  {
+                      "name":  "safety-report.json",
+                      "sizeBytes":  1031,
+                      "sha256":  "bdedb11ec0e8dd3aaad1ccf1f693cde838df35be74be6d4e674dcd2fb96b9785"
+                  },
+                  {
+                      "name":  "scale-report.json",
+                      "sizeBytes":  1510,
+                      "sha256":  "eb5914fa1e04f1eb7919595464baa21c3beecb9473cd41652cdb316ea46f664e"
+                  },
+                  {
+                      "name":  "source-quality-report.json",
+                      "sizeBytes":  2550,
+                      "sha256":  "2d2b29b8753eea4699050c008b498082968a4863b445cd13f4ce9559b70df28c"
+                  },
+                  {
+                      "name":  "ui-candidate-report.json",
+                      "sizeBytes":  2434,
+                      "sha256":  "9cc1e470d36ecd037f93af9b586a34339c4391ba29ee9da9bba6bc24cbd72f7f"
+                  }
+              ]
+}

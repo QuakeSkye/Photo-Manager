@@ -1,0 +1,15 @@
+{
+  "reportVersion": 1,
+  "runId": "40157cfe-9e18-44f2-80cf-bab09ff6fb9a",
+  "cache": {
+    "defaultBytes": 34359738368,
+    "maximumBytes": 68719476736,
+    "minimumReserveBytes": 21474836480,
+    "reserveUsesMaxOf20GibAndTenPercent": true,
+    "unknownFilePreserved": true,
+    "ownedEntryEvicted": true,
+    "evictionFactCount": 1,
+    "rebuiltWithNewOrdinal": true,
+    "rebuiltWithNewPath": true
+  }
+}
