@@ -6,6 +6,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     io::{Read, Seek, SeekFrom},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -787,7 +788,16 @@ pub struct ImportExecutionService {
     status: Arc<Mutex<ImportExecutionStatus>>,
     latest_seed: Arc<Mutex<Option<ExecutionDraftSeed>>>,
     cancel_requested: Arc<AtomicBool>,
+    worker_active: Arc<AtomicBool>,
     faults: FaultInjector,
+}
+
+struct ImportWorkerGuard(Arc<AtomicBool>);
+
+impl Drop for ImportWorkerGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -907,6 +917,7 @@ impl ImportExecutionService {
             status: Arc::new(Mutex::new(ImportExecutionStatus::default())),
             latest_seed: Arc::new(Mutex::new(None)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
+            worker_active: Arc::new(AtomicBool::new(false)),
             faults,
         }
     }
@@ -946,14 +957,49 @@ impl ImportExecutionService {
         permit: SafetyPermit,
         draft_digest: &str,
     ) -> Result<ImportExecutionStatus, DomainError> {
-        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
+        let job_id = self.prepare_start(&permit, draft_digest)?;
+        self.continue_start(permit, &job_id)
+    }
+
+    pub fn start_background(
+        self: &Arc<Self>,
+        permit: SafetyPermit,
+        draft_digest: &str,
+    ) -> Result<ImportExecutionStatus, DomainError> {
+        self.acquire_worker()?;
+        let job_id = match self.prepare_start(&permit, draft_digest) {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let accepted = match self.status() {
+            Ok(status) => status,
+            Err(error) => {
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        self.spawn_worker("fuji-import-execution", job_id, move |service, job_id| {
+            service.continue_start(permit, &job_id).map(|_| ())
+        })?;
+        Ok(accepted)
+    }
+
+    fn prepare_start(
+        &self,
+        permit: &SafetyPermit,
+        draft_digest: &str,
+    ) -> Result<Vec<u8>, DomainError> {
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         self.cancel_requested.store(false, Ordering::Release);
         let existing = self.active_job_id()?;
         let (job_id, seed) = match existing {
             None => {
                 let seed = self.preflight.confirmed_seed(draft_digest)?;
                 self.require_safe_target(&seed)?;
-                self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
+                self.safety_gate.revalidate(permit, FeatureGate::Import)?;
                 let job_id = self.create_initial_intent(&seed)?;
                 (job_id, seed)
             }
@@ -985,6 +1031,14 @@ impl ImportExecutionService {
             Some(&job_id),
             Some("正在执行全量只读验证。"),
         )?;
+        Ok(job_id)
+    }
+
+    fn continue_start(
+        &self,
+        permit: SafetyPermit,
+        job_id: &[u8],
+    ) -> Result<ImportExecutionStatus, DomainError> {
         let refreshed = match self.preflight.refresh_active_import(&job_id) {
             Ok(seed) => seed,
             Err(error) if error.code == ErrorCode::RootOffline => {
@@ -1014,20 +1068,58 @@ impl ImportExecutionService {
     }
 
     pub fn retry(&self, permit: SafetyPermit) -> Result<ImportExecutionStatus, DomainError> {
-        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
+        let job_id = self.prepare_retry(&permit)?;
+        self.continue_retry(permit, &job_id)
+    }
+
+    pub fn retry_background(
+        self: &Arc<Self>,
+        permit: SafetyPermit,
+    ) -> Result<ImportExecutionStatus, DomainError> {
+        self.acquire_worker()?;
+        let job_id = match self.prepare_retry(&permit) {
+            Ok(job_id) => job_id,
+            Err(error) => {
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let accepted = match self.status() {
+            Ok(status) => status,
+            Err(error) => {
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        self.spawn_worker("fuji-import-retry", job_id, move |service, job_id| {
+            service.continue_retry(permit, &job_id).map(|_| ())
+        })?;
+        Ok(accepted)
+    }
+
+    fn prepare_retry(&self, permit: &SafetyPermit) -> Result<Vec<u8>, DomainError> {
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         let job_id = self.active_job_id()?.ok_or_else(|| {
             DomainError::new(ErrorCode::InvalidTransition, "没有可重试的导入任务。")
         })?;
         self.cancel_requested.store(false, Ordering::Release);
         self.close_interrupted_attempt(&job_id)?;
-        let refreshed = self.preflight.refresh_active_import(&job_id)?;
-        self.require_safe_target(&refreshed)?;
-        *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         self.set_phase(
             ImportExecutionPhase::ValidatingPlan,
             Some(&job_id),
             Some("正在重新验证未完成项。"),
         )?;
+        Ok(job_id)
+    }
+
+    fn continue_retry(
+        &self,
+        permit: SafetyPermit,
+        job_id: &[u8],
+    ) -> Result<ImportExecutionStatus, DomainError> {
+        let refreshed = self.preflight.refresh_active_import(&job_id)?;
+        self.require_safe_target(&refreshed)?;
+        *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         let Some(job) = self.validate_generation(&job_id, &refreshed)? else {
             return self.status();
         };
@@ -1046,6 +1138,72 @@ impl ImportExecutionService {
         )?;
         self.execute_attempt(attempt, &refreshed)?;
         self.status()
+    }
+
+    fn acquire_worker(&self) -> Result<(), DomainError> {
+        self.worker_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| {
+                DomainError::new(
+                    ErrorCode::LeaseUnavailable,
+                    "导入后台任务已经在运行，请等待当前状态更新。",
+                )
+            })
+    }
+
+    fn spawn_worker<F>(
+        self: &Arc<Self>,
+        name: &str,
+        job_id: Vec<u8>,
+        work: F,
+    ) -> Result<(), DomainError>
+    where
+        F: FnOnce(Arc<Self>, Vec<u8>) -> Result<(), DomainError> + Send + 'static,
+    {
+        let service = Arc::clone(self);
+        let worker_flag = Arc::clone(&self.worker_active);
+        let worker_job_id = job_id.clone();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                let _guard = ImportWorkerGuard(worker_flag);
+                let panic_service = Arc::clone(&service);
+                match catch_unwind(AssertUnwindSafe(|| work(service, worker_job_id.clone()))) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        let _ = panic_service.set_phase(
+                            ImportExecutionPhase::NeedsAttention,
+                            Some(&worker_job_id),
+                            Some(&error.user_message),
+                        );
+                    }
+                    Err(_) => {
+                        panic_service
+                            .safety_gate
+                            .latch_fault(GateCloseReason::JobRunner);
+                        let _ = panic_service.set_phase(
+                            ImportExecutionPhase::NeedsAttention,
+                            Some(&worker_job_id),
+                            Some("导入后台任务异常结束；写入安全门已关闭，请重新启动应用。"),
+                        );
+                    }
+                }
+            });
+        if thread.is_err() {
+            self.worker_active.store(false, Ordering::Release);
+            self.safety_gate.latch_fault(GateCloseReason::JobRunner);
+            self.set_phase(
+                ImportExecutionPhase::NeedsAttention,
+                Some(&job_id),
+                Some("无法启动导入后台任务；写入安全门已关闭，请重新启动应用。"),
+            )?;
+            return Err(DomainError::new(
+                ErrorCode::Internal,
+                "无法启动导入后台任务，请重新启动应用后重试。",
+            ));
+        }
+        Ok(())
     }
 
     pub fn cancel_before_start(&self) -> Result<ImportExecutionStatus, DomainError> {

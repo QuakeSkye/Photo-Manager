@@ -13,7 +13,7 @@ pub fn start_import(
     safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportExecutionStatus, DomainError> {
     let permit = safety_gate.require_feature(FeatureGate::Import)?;
-    service.start(permit, &draft_digest)
+    service.inner().start_background(permit, &draft_digest)
 }
 #[tauri::command]
 pub fn retry_import(
@@ -21,7 +21,7 @@ pub fn retry_import(
     safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportExecutionStatus, DomainError> {
     let permit = safety_gate.require_feature(FeatureGate::Import)?;
-    service.retry(permit)
+    service.inner().retry_background(permit)
 }
 #[tauri::command]
 pub fn get_import_execution_status(

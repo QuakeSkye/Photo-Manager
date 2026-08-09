@@ -202,6 +202,47 @@ fn assert_source_unchanged(fixture: &ImportFixture) {
 
 #[cfg(windows)]
 #[test]
+fn background_import_returns_acceptance_before_execution_finishes() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6100") else {
+        return;
+    };
+    let execution = Arc::new(ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    ));
+
+    let accepted = execution
+        .start_background(execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    assert_eq!(accepted.phase, ImportExecutionPhase::ValidatingPlan);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let completed = loop {
+        let status = execution.status().unwrap();
+        if matches!(
+            status.phase,
+            ImportExecutionPhase::Completed
+                | ImportExecutionPhase::CompletedWithErrors
+                | ImportExecutionPhase::Cancelled
+                | ImportExecutionPhase::NeedsAttention
+        ) {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background import timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert_eq!(completed.phase, ImportExecutionPhase::Completed);
+    assert_eq!(completed.published_files, 1);
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
 fn disposable_two_volume_import_publishes_without_source_or_existing_target_changes() {
     let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
     fs::create_dir_all(&workspace_target).unwrap();
