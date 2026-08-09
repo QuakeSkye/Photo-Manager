@@ -34,7 +34,8 @@ pub fn reconcile_library(
     library_id: LibraryId,
 ) -> Result<(), DomainError> {
     let mut present = load_present_assets(transaction, library_id)?;
-    let desired = desired_pairs(&present);
+    let imported = load_same_import_pairs(transaction, library_id)?;
+    let desired = combined_desired_pairs(&present, &imported);
     let current = load_current_relations(transaction, library_id)?;
 
     for (photo_id, (version, relations)) in current {
@@ -51,7 +52,41 @@ pub fn reconcile_library(
     }
 
     present = load_present_assets(transaction, library_id)?;
-    let desired = desired_pairs(&present);
+    let desired = combined_desired_pairs(&present, &imported);
+    merge_desired_pairs(transaction, library_id, &present, desired, &imported)
+}
+
+pub fn reconcile_import_groups(
+    transaction: &Transaction<'_>,
+    library_id: LibraryId,
+) -> Result<(), DomainError> {
+    let present = load_present_assets(transaction, library_id)?;
+    let imported = load_same_import_pairs(transaction, library_id)?;
+    merge_desired_pairs(
+        transaction,
+        library_id,
+        &present,
+        imported.clone(),
+        &imported,
+    )
+}
+
+fn combined_desired_pairs(
+    present: &[PresentAsset],
+    imported: &HashSet<(AssetId, AssetId)>,
+) -> HashSet<(AssetId, AssetId)> {
+    let mut desired = desired_pairs(present);
+    desired.extend(imported.iter().copied());
+    desired
+}
+
+fn merge_desired_pairs(
+    transaction: &Transaction<'_>,
+    library_id: LibraryId,
+    present: &[PresentAsset],
+    desired: HashSet<(AssetId, AssetId)>,
+    imported: &HashSet<(AssetId, AssetId)>,
+) -> Result<(), DomainError> {
     let by_id = present
         .iter()
         .map(|asset| (asset.asset_id, asset))
@@ -59,7 +94,12 @@ pub fn reconcile_library(
     for (jpg_id, raf_id) in desired {
         let jpg = by_id.get(&jpg_id).ok_or_else(catalog_invariant)?;
         let raf = by_id.get(&raf_id).ok_or_else(catalog_invariant)?;
-        let evidence_id = ensure_pair_evidence(transaction, library_id, jpg, raf)?;
+        let evidence_kind = if imported.contains(&(jpg_id, raf_id)) {
+            "SameImportGroup"
+        } else {
+            "HistoricalExact"
+        };
+        let evidence_id = ensure_pair_evidence(transaction, library_id, jpg, raf, evidence_kind)?;
         if jpg.photo_id != raf.photo_id {
             merge_pair(transaction, jpg, raf, &evidence_id)?;
         } else if !current_evidence_matches(transaction, jpg.photo_id, &evidence_id)? {
@@ -125,6 +165,73 @@ fn load_present_assets(
         });
     }
     Ok(assets)
+}
+
+fn load_same_import_pairs(
+    transaction: &Transaction<'_>,
+    library_id: LibraryId,
+) -> Result<HashSet<(AssetId, AssetId)>, DomainError> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT jpg_index.asset_id, raf_index.asset_id
+             FROM import_group AS import_pair
+             JOIN import_asset_step AS jpg_step
+               ON jpg_step.group_id=import_pair.group_id AND jpg_step.role='Jpg'
+             JOIN import_asset_step AS raf_step
+               ON raf_step.group_id=import_pair.group_id AND raf_step.role='Raf'
+             JOIN import_published_fact AS jpg_published
+               ON jpg_published.step_id=jpg_step.step_id
+             JOIN import_published_fact AS raf_published
+               ON raf_published.step_id=raf_step.step_id
+             JOIN import_indexed_fact AS jpg_index
+               ON jpg_index.published_fact_id=jpg_published.published_fact_id
+             JOIN import_indexed_fact AS raf_index
+               ON raf_index.published_fact_id=raf_published.published_fact_id
+             JOIN asset AS jpg_asset ON jpg_asset.asset_id=jpg_index.asset_id
+             JOIN asset AS raf_asset ON raf_asset.asset_id=raf_index.asset_id
+             JOIN asset_revision AS jpg_current
+               ON jpg_current.asset_id=jpg_asset.asset_id
+              AND jpg_current.asset_version=jpg_asset.current_version
+             JOIN asset_revision AS raf_current
+               ON raf_current.asset_id=raf_asset.asset_id
+              AND raf_current.asset_version=raf_asset.current_version
+             JOIN file_identity_snapshot AS jpg_snapshot
+               ON jpg_snapshot.snapshot_id=jpg_published.target_snapshot_id
+             JOIN file_identity_snapshot AS raf_snapshot
+               ON raf_snapshot.snapshot_id=raf_published.target_snapshot_id
+             WHERE import_pair.pair_evidence='SameImportGroup'
+               AND jpg_asset.library_id=?1 AND raf_asset.library_id=?1
+               AND jpg_asset.presence_state='Present'
+               AND raf_asset.presence_state='Present'
+               AND jpg_current.root_id=jpg_snapshot.root_id
+               AND jpg_current.root_binding_id=jpg_snapshot.root_binding_id
+               AND jpg_current.path_key=jpg_snapshot.path_key
+               AND jpg_current.file_id IS jpg_snapshot.file_id
+               AND jpg_current.size_bytes=jpg_snapshot.size_bytes
+               AND jpg_current.mtime_filetime=jpg_snapshot.mtime_filetime
+               AND raf_current.root_id=raf_snapshot.root_id
+               AND raf_current.root_binding_id=raf_snapshot.root_binding_id
+               AND raf_current.path_key=raf_snapshot.path_key
+               AND raf_current.file_id IS raf_snapshot.file_id
+               AND raf_current.size_bytes=raf_snapshot.size_bytes
+               AND raf_current.mtime_filetime=raf_snapshot.mtime_filetime",
+        )
+        .map_err(map_sqlite_error)?;
+    let rows = statement
+        .query_map([library_id.as_bytes().as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(map_sqlite_error)?;
+    let mut pairs = HashSet::new();
+    for row in rows {
+        let (jpg, raf) = row.map_err(map_sqlite_error)?;
+        let jpg = AssetId::from_uuid(uuid_from(&jpg)?);
+        let raf = AssetId::from_uuid(uuid_from(&raf)?);
+        if jpg != raf {
+            pairs.insert((jpg, raf));
+        }
+    }
+    Ok(pairs)
 }
 
 fn desired_pairs(assets: &[PresentAsset]) -> HashSet<(AssetId, AssetId)> {
@@ -209,13 +316,15 @@ fn ensure_pair_evidence(
     library_id: LibraryId,
     jpg: &PresentAsset,
     raf: &PresentAsset,
+    evidence_kind: &str,
 ) -> Result<Vec<u8>, DomainError> {
     if let Some(id) = transaction
         .query_row(
             "SELECT pair_evidence_id FROM pair_evidence
-             WHERE evidence_kind='HistoricalExact' AND jpg_asset_id=?1 AND jpg_asset_version=?2
-               AND raf_asset_id=?3 AND raf_asset_version=?4",
+             WHERE evidence_kind=?1 AND jpg_asset_id=?2 AND jpg_asset_version=?3
+               AND raf_asset_id=?4 AND raf_asset_version=?5",
             (
+                evidence_kind,
                 jpg.asset_id.as_bytes().as_slice(),
                 jpg.asset_version,
                 raf.asset_id.as_bytes().as_slice(),
@@ -234,9 +343,10 @@ fn ensure_pair_evidence(
             "INSERT INTO pair_evidence(
                 pair_evidence_id, evidence_kind, library_id, jpg_asset_id, raf_asset_id,
                 jpg_asset_version, raf_asset_version, capture_local_key, created_at
-             ) VALUES (?1, 'HistoricalExact', ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             (
                 &id,
+                evidence_kind,
                 library_id.as_bytes().as_slice(),
                 jpg.asset_id.as_bytes().as_slice(),
                 raf.asset_id.as_bytes().as_slice(),

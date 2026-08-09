@@ -54,6 +54,15 @@ fn generated_jpeg(payload: &[u8]) -> Vec<u8> {
     jpeg
 }
 
+fn generated_raf(jpeg: &[u8]) -> Vec<u8> {
+    let mut raf = vec![0; 92];
+    raf[..16].copy_from_slice(b"FUJIFILMCCD-RAW ");
+    raf[84..88].copy_from_slice(&92_u32.to_be_bytes());
+    raf[88..92].copy_from_slice(&u32::try_from(jpeg.len()).unwrap().to_be_bytes());
+    raf.extend_from_slice(jpeg);
+    raf
+}
+
 fn file_hash(path: &Path) -> [u8; 32] {
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -253,6 +262,180 @@ fn background_import_returns_acceptance_before_execution_finishes() {
     assert_eq!(metadata.0.as_deref(), Some("2026-08-07T10:11:12"));
     assert_eq!(metadata.1, "JpegSource");
     assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn same_import_group_indexes_jpg_and_raf_as_one_photo() {
+    let workspace_target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    fs::create_dir_all(&workspace_target).unwrap();
+    let app_data = TestRoot::create_in(&workspace_target).unwrap();
+    let target = TestRoot::create_in(&workspace_target).unwrap();
+    let source_parent = tempfile::tempdir().unwrap();
+    let source = source_parent.path().join("DCIM").join("100_FUJI");
+    let raw = source.join("raw");
+    fs::create_dir_all(&raw).unwrap();
+    let jpeg = generated_jpeg(b"same-import-group");
+    let raf = generated_raf(&jpeg);
+    let jpg_source = source.join("_DSF3545.JPG");
+    let raf_source = raw.join("_DSF3545.RAF");
+    fs::write(&jpg_source, &jpeg).unwrap();
+    fs::write(&raf_source, &raf).unwrap();
+    let source_before = (file_hash(&jpg_source), file_hash(&raf_source));
+
+    if probe_directory(&source).unwrap().volume_identity_key
+        == probe_directory(target.path()).unwrap().volume_identity_key
+    {
+        return;
+    }
+
+    let database = Arc::new(Database::open(app_data.path()).unwrap());
+    let binding = FujiLibraryService::new(database.clone(), app_data.path())
+        .bind(target.path())
+        .unwrap();
+    let catalog = Arc::new(CatalogService::new(database.clone()));
+    let preflight = Arc::new(ImportPreflightService::new(
+        database.clone(),
+        app_data.path(),
+    ));
+    preflight
+        .select_source(&preflight.test_permit(), &source)
+        .unwrap();
+    let draft = preflight.run_preflight(&preflight.test_permit()).unwrap();
+    assert_eq!(draft.summary.new_files, 2);
+    assert_eq!(draft.items[0].logical_group, "_DSF3545");
+    assert_eq!(draft.items[1].logical_group, "_DSF3545");
+
+    let execution = ImportExecutionService::new(
+        database.clone(),
+        preflight,
+        catalog.clone(),
+        ready_gate(&database),
+    );
+    let status = execution
+        .start(execution.test_permit(), &draft.draft_digest)
+        .unwrap();
+    assert_eq!(status.phase, ImportExecutionPhase::Completed);
+
+    let connection = database.open_read_connection().unwrap();
+    let active_photos: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM photo WHERE library_id=?1 AND lifecycle='Active'",
+            [binding.library_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let roles: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT SUM(relation.role='Jpg'), SUM(relation.role='Raf'),
+                    COUNT(DISTINCT relation.photo_id)
+             FROM photo_asset AS relation
+             JOIN photo ON photo.photo_id=relation.photo_id
+             WHERE photo.library_id=?1 AND photo.lifecycle='Active'
+               AND relation.to_photo_version IS NULL",
+            [binding.library_id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    let import_evidence: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pair_evidence WHERE evidence_kind='SameImportGroup'",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(active_photos, 1);
+    assert_eq!(roles, (1, 1, 1));
+    assert_eq!(import_evidence, 1);
+    drop(connection);
+
+    database
+        .writer()
+        .unwrap()
+        .transaction(|transaction| {
+            transaction
+                .execute_batch("DROP TRIGGER asset_media_metadata_no_update")
+                .unwrap();
+            transaction
+                .execute(
+                    "UPDATE asset_media_metadata
+                     SET capture_local_key=NULL, camera_model=NULL, camera_serial=NULL",
+                    (),
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "UPDATE import_group SET pair_evidence=NULL
+                     WHERE pair_evidence='SameImportGroup'",
+                    (),
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    catalog.reconcile_library(binding.library_id).unwrap();
+    let split_photos: i64 = database
+        .open_read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM photo WHERE library_id=?1 AND lifecycle='Active'",
+            [binding.library_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(split_photos, 2);
+
+    database
+        .writer()
+        .unwrap()
+        .transaction(|transaction| {
+            transaction
+                .execute(
+                    "UPDATE import_group SET pair_evidence='SameImportGroup'
+                     WHERE pair_evidence IS NULL",
+                    (),
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    catalog.reconcile_library(binding.library_id).unwrap();
+    let repaired_photos: i64 = database
+        .open_read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM photo WHERE library_id=?1 AND lifecycle='Active'",
+            [binding.library_id.as_bytes().as_slice()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repaired_photos, 1);
+
+    assert_eq!(file_hash(&jpg_source), source_before.0);
+    assert_eq!(file_hash(&raf_source), source_before.1);
+    assert_eq!(
+        fs::read(
+            target
+                .path()
+                .join("2026")
+                .join("20260807")
+                .join("_DSF3545.JPG")
+        )
+        .unwrap(),
+        jpeg
+    );
+    assert_eq!(
+        fs::read(
+            target
+                .path()
+                .join("2026")
+                .join("20260807")
+                .join("raw")
+                .join("_DSF3545.RAF")
+        )
+        .unwrap(),
+        raf
+    );
 }
 
 #[cfg(windows)]

@@ -477,6 +477,12 @@ impl CatalogService {
             .transaction(move |transaction| pairing::reconcile_library(transaction, library_id))
     }
 
+    pub fn reconcile_import_groups(&self, library_id: LibraryId) -> Result<(), DomainError> {
+        self.database.writer()?.transaction(move |transaction| {
+            pairing::reconcile_import_groups(transaction, library_id)
+        })
+    }
+
     pub fn timeline(
         &self,
         library_id: LibraryId,

@@ -1912,7 +1912,21 @@ impl ImportExecutionService {
                 }
             }
         }
-        self.finalize_attempt(&attempt, had_error, cancelled)
+        let pairing_error = if cancelled {
+            None
+        } else {
+            let library = library_id(&attempt.job.library_id)?;
+            self.catalog.reconcile_import_groups(library).err()
+        };
+        had_error |= pairing_error.is_some();
+        self.finalize_attempt(&attempt, had_error, cancelled)?;
+        if let Some(error) = pairing_error {
+            self.lock_status()?.message = Some(format!(
+                "照片已安全发布，但 JPG/RAF 配对需要在下次图库扫描时重试：{}",
+                error.user_message
+            ));
+        }
+        Ok(())
     }
 
     fn settle_failed_publish_intent(&self, step: &AttemptStep) -> Result<(), DomainError> {
