@@ -18,10 +18,10 @@ v1.0.0 阶段 8 候选虽然生成了绑定准确二进制、锁文件、schema�
 - 在每个 Rust 命令和物理文件动作边界强制执行统一运行时安全门；
 - UI 显示同一安全门的真实状态和关闭原因；
 - 版本升至 1.0.1；
-- Windows 程序文件固定安装到 `D:\B\Fujifilm`；
+- Windows 程序文件沿用 v1.0.0 的 Tauri `currentUser` 默认安装位置；
 - 重新构建、安装并完整重跑阶段 8。
 
-本变更不增加搜索、手动配对、完整 RAW 解码、多图库、手动缓存清理、永久删除或其他 v1 范围外功能。SQLite、日志、数据库备份和默认缓存继续使用每个 Windows 用户的 LocalAppData；D 盘只存放程序文件，不作为测试卷。规模与安全测试数据仍只允许位于 `G:\test\local-photo-manager-phase8\<run-id>`。
+本变更不增加搜索、手动配对、完整 RAW 解码、多图库、手动缓存清理、永久删除或其他 v1 范围外功能。程序文件和应用数据继续使用各自的 LocalAppData 子目录；D 盘只保留源码与构建工作区，不作为安装位置或测试卷。规模与安全测试数据仍只允许位于 `G:\test\local-photo-manager-phase8\<run-id>`。
 
 ## 3. RuntimeSafetyGate
 
@@ -98,20 +98,18 @@ generation 一旦变化，旧许可立即失效。正在执行的不可中断系
 
 `SafetyStatus` 的 phase 更新为 v1.0.1，`GateState` 支持 `open|closed`。设置页增加只读“写入安全状态”，显示共享健康、Import、Recycle 和关闭原因。执行按钮在关闭时禁用，但报告、取消、浏览和移除已有标记保持可用。前端不得缓存开放状态作为权限；每次 Rust 调用仍独立验证。
 
-## 8. 固定 Windows 安装路径
+## 8. Windows 安装路径
 
-程序文件固定安装到 `D:\B\Fujifilm`：
+v1.0.1 沿用 v1.0.0 的 Tauri NSIS `currentUser` 默认安装方式：
 
-- 使用与锁定的 Tauri CLI 2.11.4 相匹配的自定义 NSIS template；[Tauri 官方 Windows Installer 文档](https://v2.tauri.app/distribute/windows-installer/)允许通过 `bundle.windows.nsis.template` 配置完整模板；
-- 保持 `currentUser` 安装模式和现有产品 identifier，以便识别当前 v1.0.0 用户级安装；
-- 安装页面不提供目录选择；复制前再次强制 `$INSTDIR` 为准确路径；
-- `/D` 或其他命令行参数不得改变最终目录；
-- D 盘不存在、目录无法创建、目标不是目录或权限不足时安装失败，不回退到 C 盘、LocalAppData 或其他位置；
-- 升级前关闭运行中的旧应用；迁移/卸载旧程序文件不得删除 LocalAppData 用户数据库、报告、备份或设置；
-- EXE 和 uninstaller 位于固定目录，快捷方式、DisplayIcon、卸载注册信息必须指向该目录；
-- 安装测试验证路径的 canonical form、文件身份、版本、SHA-256 和注册信息。
+- 保持现有产品 identifier 和安装模式，以便 NSIS 识别并升级当前 v1.0.0 用户级安装；
+- 本机预期程序目录为 `C:\Users\15684\AppData\Local\Fuji 照片管理器`；其他 Windows 用户使用其对应的 `%LOCALAPPDATA%\Fuji 照片管理器`；
+- 不增加自定义 NSIS template，不把程序文件改装到 D 盘；
+- 升级前关闭运行中的旧应用；迁移/卸载旧程序文件不得删除用户数据库、报告、备份或设置；
+- EXE、uninstaller、快捷方式、DisplayIcon 和卸载注册信息必须一致指向实际 current-user 安装目录；
+- 安装测试从注册信息和安装目录定位 EXE，再验证 canonical path、文件身份、版本和 SHA-256，不能使用 `target\release` 产物代替。
 
-SQLite、日志、备份和默认缓存仍由 Tauri `app_local_data_dir` 解析到 LocalAppData。`FPM_TEST_ROOT` 只允许受 TestRoot 标记保护的阶段测试进程使用，不能改变生产默认 AppData。
+SQLite、日志、备份和默认缓存仍由 Tauri `app_local_data_dir` 解析到应用数据 LocalAppData 目录。程序安装目录与应用数据目录不能混作图库、ImportSource 或 CacheRoot。`FPM_TEST_ROOT` 只允许受 TestRoot 标记保护的阶段测试进程使用，不能改变生产默认 AppData。
 
 ## 9. 测试策略
 
@@ -136,8 +134,8 @@ SQLite、日志、备份和默认缓存仍由 Tauri `app_local_data_dir` 解析�
 ### 9.3 安装器
 
 - 从已安装 v1.0.0 升级到 v1.0.1；只使用生成或可丢弃 AppData；
-- GUI、静默、被动及带 `/D` 参数的安装都只能落在 `D:\B\Fujifilm`；
-- 路径不可用时明确失败且不产生另一位置的安装；
+- GUI、静默和被动安装均验证为 current-user LocalAppData 安装，不得落入 D 盘工作区；
+- 安装目录不可用时明确失败，不把构建目录中的 EXE 当作已安装候选；
 - 卸载后程序文件移除，生成的用户 AppData 保留；若无法在不接触现有真实 AppData 的环境中安全验证，明确列为限制；
 - 最终重新安装同一候选，再针对该准确安装 EXE 运行全部候选测试。
 
@@ -158,9 +156,9 @@ SQLite、日志、备份和默认缓存仍由 Tauri `app_local_data_dir` 解析�
 
 1. 统一版本为 1.0.1；
 2. 全部源码测试、Clippy、格式和安全审计通过；
-3. 冻结源码、锁文件、schema、迁移和 NSIS template；
+3. 冻结源码、锁文件、schema、迁移和 NSIS 配置；
 4. 构建唯一候选并记录 installer SHA-256；
-5. 验证 v1.0.0 升级和固定安装路径；
+5. 验证 v1.0.0 current-user 升级和默认安装路径；
 6. 准确安装 v1.0.1 并记录 EXE SHA-256；
 7. 对该安装 EXE 完整重跑阶段 8；
 8. 重新生成候选 manifest、全部报告 checksum、27 条矩阵和缺陷清单；
@@ -178,7 +176,7 @@ SQLite、日志、备份和默认缓存仍由 Tauri `app_local_data_dir` 解析�
 2. 状态显示、命令入口和服务物理边界使用同一 gate；
 3. stale permit、共享故障和恢复失败不能执行新文件动作；
 4. 没有前端、IPC、后台 runner、retry 或恢复旁路；
-5. 程序文件准确安装在 `D:\B\Fujifilm`，AppData 不迁入 D；
+5. 程序文件准确安装在 current-user LocalAppData 默认目录，且 D 盘工作区不承载安装或测试数据；
 6. 新候选所有证据绑定新的 installer/EXE/locks/schema/migrations checksum；
 7. v1.0.0 证据被明确标记为历史且不能授权 v1.0.1。
 
