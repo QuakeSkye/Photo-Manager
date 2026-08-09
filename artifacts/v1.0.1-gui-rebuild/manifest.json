@@ -1,0 +1,85 @@
+{
+  "reportVersion": 1,
+  "product": "Fuji 照片管理器",
+  "version": "1.0.1",
+  "generatedAt": "2026-08-09T20:40:43+08:00",
+  "status": "gui_smoke_passed_phase_eight_not_run",
+  "acceptedCandidate": false,
+  "source": {
+    "commit": "f99258abcdedc91c534e8b568825bfdac26e86fd",
+    "mainRsSha256": "2de4a19007a8d6fe0178be8b89fa207900ac17b9912798b35ede95be94b1c91e",
+    "packageLockSha256": "6148b74a64871fad9332fac42245ac937eadad31d6fa052259e3839dc3a0242c",
+    "cargoLockSha256": "806aef41f7c7fac9c10318b22ea5d3192a1961eb724a3084d66d1c03a9df2b71",
+    "schemaVersion": 8,
+    "schemaSha256": "e78fd625669f4b76629a25a210cbd5de70eaf35de54605430c2607c29d969ca2",
+    "migrationCount": 8,
+    "migrationChainSha256": "3d736ebf30cf68c566585e0ae659292e417e752b3464bf8c485e24d554566f11"
+  },
+  "artifacts": {
+    "installer": {
+      "file": "Fuji 照片管理器_1.0.1_x64-setup.exe",
+      "size": 3579203,
+      "sha256": "d041e1a8f125c0c7b94d7b6f9b8a6c80b597ba68e83a292e16764033640f5981",
+      "authenticode": "NotSigned"
+    },
+    "releaseExe": {
+      "file": "local-photo-manager_1.0.1_gui.exe",
+      "size": 14658560,
+      "sha256": "a4c8fde169312c758fe572c47dca03d35228d0baead07ea58fa4bdc40c240642",
+      "peSubsystem": 2,
+      "peSubsystemName": "Windows GUI",
+      "authenticode": "NotSigned"
+    },
+    "installedExe": {
+      "file": "local-photo-manager_1.0.1_installed-nsis.exe",
+      "installedPath": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "size": 14658560,
+      "sha256": "56e4605d56fb87139a937b1dedbdd557421385b37328439111fd067c739d4f02",
+      "peSubsystem": 2,
+      "peSubsystemName": "Windows GUI",
+      "authenticode": "NotSigned"
+    },
+    "releaseToInstalledDifference": {
+      "differentByteCount": 3,
+      "firstOffsetHex": "0x00AF5E62",
+      "lastOffsetHex": "0x00AF5E64",
+      "releaseAscii": "UNK",
+      "installedAscii": "NSS",
+      "observation": "Tauri/NSIS bundle-type marker; all other bytes are identical"
+    }
+  },
+  "shortcuts": [
+    {
+      "path": "C:\\Users\\15684\\Desktop\\Fuji 照片管理器.lnk",
+      "target": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "resolvedTargetInsideCodexSandbox": "C:\\Users\\CodexSandboxOffline\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "arguments": "",
+      "workingDirectory": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器",
+      "sha256": "0dc24edbfaa7fe04e44cbfa21cdcdcd73973127338cb8a3cd3fc0cbecfd8bd83",
+      "passed": true
+    },
+    {
+      "path": "C:\\Users\\15684\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Fuji 照片管理器.lnk",
+      "target": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "resolvedTargetInsideCodexSandbox": "C:\\Users\\CodexSandboxOffline\\AppData\\Local\\Fuji 照片管理器\\local-photo-manager.exe",
+      "arguments": "",
+      "workingDirectory": "C:\\Users\\15684\\AppData\\Local\\Fuji 照片管理器",
+      "sha256": "0dc24edbfaa7fe04e44cbfa21cdcdcd73973127338cb8a3cd3fc0cbecfd8bd83",
+      "passed": true
+    }
+  ],
+  "smoke": {
+    "startedFrom": "C:\\Users\\15684\\Desktop\\Fuji 照片管理器.lnk",
+    "processPathMatchedInstalledExe": true,
+    "windowTitle": "Fuji 照片管理器",
+    "stableWindowSeconds": 3,
+    "newCmdProcessIds": [],
+    "closedNormally": true,
+    "phaseEightRun": false,
+    "importRecycleRun": false
+  },
+  "supersedesInstalledStateOnly": {
+    "oldAcceptedInstalledExeSha256": "bc855771910129719c4c56d513c024debd832c23fffe71da909ea2c7079801d8",
+    "oldAcceptanceAppliesToThisBinary": false
+  }
+}

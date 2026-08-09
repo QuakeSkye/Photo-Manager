@@ -22,7 +22,7 @@
 ## 4. 安装与快捷方式
 
 1. 静默安装新生成的 current-user NSIS 安装包，安装位置沿用当前用户 LocalAppData，不使用 D 盘。
-2. 从卸载注册信息或实际文件定位安装目录，确认安装 EXE 的 SHA-256 与 release EXE 一致。
+2. 从卸载注册信息或实际文件定位安装目录，分别记录安装 EXE 与 release EXE 的 SHA-256；若 Tauri 的 bundle-type 标记导致差异，必须逐字节证明差异仅限该标记并绑定两个准确 hash。
 3. 读取桌面和开始菜单快捷方式的 TargetPath、Arguments、WorkingDirectory；若隔离安装环境写入沙箱用户名，仅重建当前用户的这两个快捷方式并再次核验。
 
 ## 5. 非阶段 8 冒烟与证据
