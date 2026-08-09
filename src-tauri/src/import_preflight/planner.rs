@@ -643,6 +643,16 @@ mod tests {
             kind,
             size_bytes: 10,
             capture_local_key: date.map(str::to_string),
+            inspection: crate::media::MediaInspection {
+                exif: crate::media::ExifMetadata {
+                    capture_local_key: date.map(str::to_string),
+                    ..crate::media::ExifMetadata::default()
+                },
+                preview: match kind {
+                    DraftMediaKind::Jpg => crate::media::PreviewState::JpegSource,
+                    DraftMediaKind::Raf => crate::media::PreviewState::Unavailable,
+                },
+            },
             full_hash: [1; 32],
             identity: FileProbe {
                 file_id: Some(vec![1]),

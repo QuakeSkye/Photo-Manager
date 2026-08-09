@@ -238,6 +238,20 @@ fn background_import_returns_acceptance_before_execution_finishes() {
     };
     assert_eq!(completed.phase, ImportExecutionPhase::Completed);
     assert_eq!(completed.published_files, 1);
+    let metadata: (Option<String>, String) = fixture
+        .database
+        .open_read_connection()
+        .unwrap()
+        .query_row(
+            "SELECT capture_local_key, preview_state
+             FROM asset_media_metadata
+             ORDER BY observed_at DESC LIMIT 1",
+            (),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(metadata.0.as_deref(), Some("2026-08-07T10:11:12"));
+    assert_eq!(metadata.1, "JpegSource");
     assert_source_unchanged(&fixture);
 }
 

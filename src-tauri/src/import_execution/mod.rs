@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
-    catalog::{AssetObservation, CatalogService, MediaKind},
+    catalog::{AssetObservation, CatalogObservation, CatalogService, MediaKind},
     db::{
         Database,
         migration::{map_sqlite_error, now_micros},
@@ -2210,8 +2210,31 @@ impl ImportExecutionService {
             mtime_filetime: target_probe.mtime_filetime,
             observed_at: now_micros(),
         };
+        let source = seed
+            .enumerated
+            .files
+            .iter()
+            .find(|file| {
+                crate::import_preflight::display_relative(&file.relative_path)
+                    .eq_ignore_ascii_case(&step.source_relative_path)
+            })
+            .ok_or_else(|| {
+                DomainError::new(ErrorCode::Internal, "导入索引缺少冻结的来源媒体元数据。")
+            })?;
+        let observation = CatalogObservation {
+            asset: observation,
+            hard_link_count: i64::try_from(target_probe.hard_link_count).unwrap_or(i64::MAX),
+            deletion_supported: seed.target.root_probe.filesystem_kind == FilesystemKind::Ntfs
+                && target_probe.hard_link_count == 1,
+            scan_run_id: None,
+            capture_local_key: source.inspection.exif.capture_local_key.clone(),
+            camera_model: source.inspection.exif.camera_model.clone(),
+            camera_serial: source.inspection.exif.camera_serial.clone(),
+            capture_metadata: source.inspection.exif.capture.clone(),
+            preview: source.inspection.preview,
+        };
         let observed = self.catalog.observe_import_reserved_asset(
-            observation.into(),
+            observation,
             &attempt.job.job_id,
             &attempt.attempt_id,
             attempt.lease_generation,

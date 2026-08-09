@@ -190,6 +190,7 @@ pub(crate) struct SourceFile {
     pub kind: DraftMediaKind,
     pub size_bytes: u64,
     pub capture_local_key: Option<String>,
+    pub inspection: media::MediaInspection,
     pub full_hash: [u8; 32],
     pub identity: FileProbe,
 }
@@ -591,7 +592,8 @@ impl ImportPreflightService {
                         self.cancel_requested.load(Ordering::Acquire)
                     })?;
                 match inspect_source_file(&path, media_kind, audit) {
-                    Ok((identity, full_hash, capture_local_key)) => {
+                    Ok((identity, full_hash, inspection)) => {
+                        let capture_local_key = inspection.exif.capture_local_key.clone();
                         result.files.push(SourceFile {
                             relative_path: relative,
                             file_name,
@@ -600,6 +602,7 @@ impl ImportPreflightService {
                             kind,
                             size_bytes: identity.size_bytes,
                             capture_local_key,
+                            inspection,
                             full_hash,
                             identity,
                         });
@@ -1127,7 +1130,7 @@ fn inspect_source_file(
     path: &Path,
     kind: MediaKind,
     audit: &ProcessIoAudit,
-) -> Result<(FileProbe, [u8; 32], Option<String>), DomainError> {
+) -> Result<(FileProbe, [u8; 32], media::MediaInspection), DomainError> {
     let mut handle = StableReadHandle::open(path, AuditSide::Source, audit)?;
     let before = handle.probe(audit)?;
     if before.reparse_point {
@@ -1136,9 +1139,10 @@ fn inspect_source_file(
             "照片文件是 reparse point。",
         ));
     }
-    let capture_local_key = media::inspect(handle.file_mut(), kind)
-        .ok()
-        .and_then(|inspection| inspection.exif.capture_local_key);
+    let inspection = media::inspect(handle.file_mut(), kind).unwrap_or(media::MediaInspection {
+        exif: media::ExifMetadata::default(),
+        preview: media::PreviewState::Unavailable,
+    });
     let full_hash = handle.full_hash(audit)?;
     let after = handle.probe(audit)?;
     if before != after {
@@ -1147,7 +1151,7 @@ fn inspect_source_file(
             "完整读取期间来源文件发生变化。",
         ));
     }
-    Ok((before, full_hash, capture_local_key))
+    Ok((before, full_hash, inspection))
 }
 
 fn supported_kind(path: &Path) -> Option<(DraftMediaKind, MediaKind, String)> {
