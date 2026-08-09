@@ -12,10 +12,16 @@ use crate::{
     db::Database,
     import_preflight::ImportPreflightService,
     roots::{FujiLibraryService, path_key, probe_directory},
-    safety::TestRoot,
+    safety::{RuntimeSafetyGate, TestRoot},
 };
 
 use super::*;
+
+fn ready_gate(database: &Arc<Database>) -> Arc<RuntimeSafetyGate> {
+    let gate = Arc::new(RuntimeSafetyGate::new(database.clone()));
+    gate.mark_ready().unwrap();
+    gate
+}
 
 fn generated_jpeg(payload: &[u8]) -> Vec<u8> {
     let date = "2026:08:07 10:11:12";
@@ -157,8 +163,10 @@ fn import_fixture_with_target(
         database.clone(),
         app_data.path(),
     ));
-    preflight.select_source(&source).unwrap();
-    let draft = preflight.run_preflight().unwrap();
+    preflight
+        .select_source(&preflight.test_permit(), &source)
+        .unwrap();
+    let draft = preflight.run_preflight(&preflight.test_permit()).unwrap();
     Some(ImportFixture {
         _app_data: app_data,
         target,
@@ -225,11 +233,16 @@ fn disposable_two_volume_import_publishes_without_source_or_existing_target_chan
         database.clone(),
         app_data.path(),
     ));
-    preflight.select_source(&source).unwrap();
-    let draft = preflight.run_preflight().unwrap();
+    preflight
+        .select_source(&preflight.test_permit(), &source)
+        .unwrap();
+    let draft = preflight.run_preflight(&preflight.test_permit()).unwrap();
     assert_eq!(draft.summary.new_files, 1);
-    let execution = ImportExecutionService::new(database.clone(), preflight, catalog);
-    let status = execution.start(&draft.draft_digest).unwrap();
+    let execution =
+        ImportExecutionService::new(database.clone(), preflight, catalog, ready_gate(&database));
+    let status = execution
+        .start(execution.test_permit(), &draft.draft_digest)
+        .unwrap();
     assert_eq!(status.phase, ImportExecutionPhase::Completed);
     assert_eq!(status.published_files, 1);
     assert_eq!(status.source_write_requests, 0);
@@ -313,10 +326,14 @@ fn task_creation_commit_fault_rolls_back_before_any_file_action() {
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults,
     );
     assert_eq!(
-        execution.start(&fixture.draft_digest).unwrap_err().code,
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .unwrap_err()
+            .code,
         ErrorCode::FaultInjected
     );
     let connection = fixture.database.open_read_connection().unwrap();
@@ -345,10 +362,14 @@ fn crash_between_create_new_and_owned_commit_never_adopts_or_deletes_partial() {
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults,
     );
     assert_eq!(
-        execution.start(&fixture.draft_digest).unwrap_err().code,
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .unwrap_err()
+            .code,
         ErrorCode::FaultInjected
     );
     let partial: String = fixture
@@ -364,7 +385,7 @@ fn crash_between_create_new_and_owned_commit_never_adopts_or_deletes_partial() {
     let partial = fixture.target.path().join(partial);
     assert!(partial.exists());
     let before = file_hash(&partial);
-    let status = execution.retry().unwrap();
+    let status = execution.retry(execution.test_permit()).unwrap();
     assert_eq!(status.phase, ImportExecutionPhase::NeedsAttention);
     assert_eq!(file_hash(&partial), before);
     assert_eq!(
@@ -395,10 +416,14 @@ fn publish_fact_commit_crash_is_reconciled_without_second_rename_or_overwrite() 
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults,
     );
     assert_eq!(
-        execution.start(&fixture.draft_digest).unwrap_err().code,
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .unwrap_err()
+            .code,
         ErrorCode::FaultInjected
     );
     let connection = fixture.database.open_read_connection().unwrap();
@@ -412,7 +437,7 @@ fn publish_fact_commit_crash_is_reconciled_without_second_rename_or_overwrite() 
     assert_eq!(state, ("Publishing".into(), 0));
     drop(connection);
     assert_eq!(
-        execution.retry().unwrap().phase,
+        execution.retry(execution.test_permit()).unwrap().phase,
         ImportExecutionPhase::Completed
     );
     let facts: (i64, i64) = fixture
@@ -443,15 +468,19 @@ fn crash_after_handle_delete_records_observed_missing_then_uses_new_incarnation(
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults.clone(),
     );
     assert_eq!(
-        execution.start(&fixture.draft_digest).unwrap_err().code,
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .unwrap_err()
+            .code,
         ErrorCode::FaultInjected
     );
     faults.fail_on_hit(FaultPoint::Win32AfterCall, 1).unwrap();
     assert_eq!(
-        execution.retry().unwrap_err().code,
+        execution.retry(execution.test_permit()).unwrap_err().code,
         ErrorCode::FaultInjected
     );
     let connection = fixture.database.open_read_connection().unwrap();
@@ -465,7 +494,7 @@ fn crash_after_handle_delete_records_observed_missing_then_uses_new_incarnation(
     assert_eq!(cleaning, ("CleaningOwnedPartial".into(), 0));
     drop(connection);
     assert_eq!(
-        execution.retry().unwrap().phase,
+        execution.retry(execution.test_permit()).unwrap().phase,
         ImportExecutionPhase::Completed
     );
     let connection = fixture.database.open_read_connection().unwrap();
@@ -498,9 +527,12 @@ fn duplicate_is_reproved_in_validation_and_execution_without_target_change() {
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults,
     );
-    let status = execution.start(&fixture.draft_digest).unwrap();
+    let status = execution
+        .start(execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
     assert_eq!(status.phase, ImportExecutionPhase::Completed);
     assert_eq!((status.skipped_files, status.published_files), (1, 0));
     let proof_counts: (i64, i64, i64) = fixture
@@ -536,16 +568,22 @@ fn changed_plan_stops_before_space_and_attempt_then_cancels_without_file_change(
     // Remove the conflict before preflight, then introduce it only after the user saw the draft.
     let target = fixture.preexisting_target.as_ref().unwrap();
     fs::remove_file(target).unwrap();
-    let draft = fixture.preflight.run_preflight().unwrap();
+    let draft = fixture
+        .preflight
+        .run_preflight(&fixture.preflight.test_permit())
+        .unwrap();
     fs::write(target, b"concurrent formal bytes").unwrap();
     let before = file_hash(target);
     let execution = ImportExecutionService::with_faults(
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
+        ready_gate(&fixture.database),
         faults,
     );
-    let status = execution.start(&draft.draft_digest).unwrap();
+    let status = execution
+        .start(execution.test_permit(), &draft.draft_digest)
+        .unwrap();
     assert_eq!(status.phase, ImportExecutionPhase::AwaitingPlanConfirmation);
     let connection = fixture.database.open_read_connection().unwrap();
     let counts: (i64, i64, i64) = connection
@@ -562,5 +600,87 @@ fn changed_plan_stops_before_space_and_attempt_then_cancels_without_file_change(
         ImportExecutionPhase::Cancelled
     );
     assert_eq!(file_hash(target), before);
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn gate_closing_after_publish_does_not_reject_published_fact_commit() {
+    let faults = FaultInjector::default();
+    let Some(fixture) = import_fixture(faults.clone(), "6107") else {
+        return;
+    };
+    let gate = ready_gate(&fixture.database);
+    faults
+        .latch_gate_on_hit(
+            FaultPoint::ImportAfterPhysicalBeforeFact,
+            1,
+            gate.clone(),
+            crate::safety::GateCloseReason::CapabilityBoundary,
+        )
+        .unwrap();
+    let execution = ImportExecutionService::with_faults(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        gate.clone(),
+        faults,
+    );
+
+    let status = execution
+        .start(execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+
+    assert_eq!(status.phase, ImportExecutionPhase::Completed);
+    assert_eq!(
+        fixture
+            .database
+            .open_read_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM import_published_fact", (), |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        gate.status().global_write_gate,
+        crate::safety::GateState::Closed
+    );
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn permit_from_another_gate_instance_cannot_start_import() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6108") else {
+        return;
+    };
+    let service_gate = ready_gate(&fixture.database);
+    let foreign_gate = ready_gate(&fixture.database);
+    let foreign_permit = foreign_gate.require_feature(FeatureGate::Import).unwrap();
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        service_gate,
+    );
+
+    let error = execution
+        .start(foreign_permit, &fixture.draft_digest)
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::CapabilityDenied);
+    assert_eq!(
+        fixture
+            .database
+            .open_read_connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM import_job", (), |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
     assert_source_unchanged(&fixture);
 }

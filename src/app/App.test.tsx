@@ -446,7 +446,7 @@ describe('阶段 3 待删除复核闭环', () => {
     expect(screen.getByRole('button', { name: /取消失效标记/ })).toBeEnabled();
     expect(screen.getByRole('button', { name: '重新扫描确认' })).toBeEnabled();
     expect(screen.getByRole('button', { name: '执行删除…' })).toBeDisabled();
-    expect(screen.getByText(/可丢弃 NTFS 测试 Root/)).toBeInTheDocument();
+    expect(screen.getByText(/身份已验证的 NTFS Fuji 图库/)).toBeInTheDocument();
     expect(screen.queryByText(/Photoshop|文件位置/)).not.toBeInTheDocument();
   });
 
@@ -580,6 +580,10 @@ describe('阶段 4 Photoshop、文件位置与设置完善', () => {
   test('renders all four settings groups without exposing ToolId or manual cleanup', async () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /设置/ }));
+
+    expect(await screen.findByLabelText('写入安全状态')).toHaveTextContent(
+      'Import 与 Recycle 已开放',
+    );
 
     const sidebar = screen.getByRole('navigation', { name: '设置分组' });
     expect(

@@ -3,20 +3,25 @@ use std::sync::Arc;
 use crate::{
     domain::DomainError,
     import_execution::{ImportExecutionService, ImportExecutionStatus, ImportRecoverySummary},
+    safety::{FeatureGate, RuntimeSafetyGate},
 };
 
 #[tauri::command]
 pub fn start_import(
     draft_digest: String,
     service: tauri::State<'_, Arc<ImportExecutionService>>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportExecutionStatus, DomainError> {
-    service.start(&draft_digest)
+    let permit = safety_gate.require_feature(FeatureGate::Import)?;
+    service.start(permit, &draft_digest)
 }
 #[tauri::command]
 pub fn retry_import(
     service: tauri::State<'_, Arc<ImportExecutionService>>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportExecutionStatus, DomainError> {
-    service.retry()
+    let permit = safety_gate.require_feature(FeatureGate::Import)?;
+    service.retry(permit)
 }
 #[tauri::command]
 pub fn get_import_execution_status(

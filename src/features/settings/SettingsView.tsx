@@ -22,6 +22,7 @@ import {
 } from '../../shared/commands/settings';
 import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
+import type { SafetyStatus } from '../../shared/commands/safety';
 
 interface SettingsViewProps {
   readonly snapshot: LibrarySnapshot;
@@ -29,6 +30,7 @@ interface SettingsViewProps {
   readonly settingsButtonRef: RefObject<HTMLButtonElement | null>;
   readonly onBack: () => void;
   readonly onBindingStarted: (result: BindResult) => void;
+  readonly safetyStatus?: SafetyStatus | null;
 }
 
 export function SettingsView({
@@ -37,6 +39,7 @@ export function SettingsView({
   settingsButtonRef,
   onBack,
   onBindingStarted,
+  safetyStatus = null,
 }: SettingsViewProps) {
   const [section, setSection] = useState<
     'folder' | 'cache' | 'photoshop' | 'reports'
@@ -204,6 +207,34 @@ export function SettingsView({
           </button>
         </nav>
         <section className="tool-content">
+          <div className="continuous-panel" aria-label="写入安全状态">
+            <div className="setting-row">
+              <div className="setting-copy">
+                <span className="setting-label">
+                  写入安全状态 · {safetyStatus?.phase ?? '正在读取'}
+                </span>
+                <strong>
+                  {safetyStatus?.globalWriteGate === 'open'
+                    ? 'Import 与 Recycle 已开放'
+                    : 'Import 与 Recycle 已关闭'}
+                </strong>
+                <span role="status">
+                  {safetyStatus?.message ??
+                    '正在读取实时数据库与恢复协调状态。'}
+                </span>
+                {safetyStatus !== null && (
+                  <span>
+                    Import：
+                    {safetyStatus.importGate === 'open' ? '开放' : '关闭'} ·
+                    Recycle：
+                    {safetyStatus.recycleGate === 'open' ? '开放' : '关闭'} ·
+                    数据库：
+                    {safetyStatus.databaseMode}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
           {section === 'folder' ? (
             <>
               <div className="content-heading">

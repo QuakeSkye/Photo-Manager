@@ -182,10 +182,12 @@ fn disposable_card_preflight_is_read_only_and_creates_no_job_generation_or_targe
     libraries.bind(&target).unwrap();
     let service = ImportPreflightService::new(database.clone(), app_root.path());
 
-    let setup = service.select_source(&source).unwrap();
+    let setup = service
+        .select_source(&service.test_permit(), &source)
+        .unwrap();
     assert!(setup.can_start_preflight);
     seed_stale_import_history(&database, &source.join("DSCF0003.JPEG"), &unknown);
-    let draft = service.run_preflight().unwrap();
+    let draft = service.run_preflight(&service.test_permit()).unwrap();
     drop(locked);
 
     assert_eq!(snapshot_tree(&source), source_before);

@@ -15,6 +15,7 @@ interface TopBarProps {
   readonly onSortChange?: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenImport?: () => void;
+  readonly importEnabled?: boolean;
   readonly onBack?: () => void;
 }
 
@@ -31,6 +32,7 @@ export function TopBar({
   onSortChange,
   onOpenSettings,
   onOpenImport,
+  importEnabled = true,
   onBack,
 }: TopBarProps) {
   return (
@@ -93,7 +95,13 @@ export function TopBar({
       )}
       <div className="tool-actions">
         {onOpenImport !== undefined && (
-          <button className="tool-button" type="button" onClick={onOpenImport}>
+          <button
+            className="tool-button"
+            type="button"
+            onClick={onOpenImport}
+            disabled={!importEnabled}
+            title={!importEnabled ? 'Import 写入安全门已关闭' : undefined}
+          >
             导入照片
           </button>
         )}

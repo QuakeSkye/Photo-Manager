@@ -2,7 +2,7 @@ use std::{
     fs,
     path::Path,
     sync::{
-        Arc,
+        Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -11,11 +11,15 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    db::Database,
     domain::{DomainError, ErrorCode},
     recycle::shell::{
         REQUIRED_RECYCLE_FLAGS, RecycleCallbacks, ShellAsset, ShellPhoto, StaRecycleWorker,
     },
-    safety::PhaseEightRunRoot,
+    safety::{
+        FaultInjector, FaultPoint, FeatureGate, GateCloseReason, GateState, PhaseEightRunRoot,
+        RuntimeSafetyGate, SharedHealth,
+    },
 };
 
 #[derive(Debug, Serialize)]
@@ -25,6 +29,7 @@ pub struct SafetySuiteReport {
     run_id: uuid::Uuid,
     import: crate::import_execution::PhaseEightImportFileOpsReport,
     recycle: RecycleReport,
+    runtime_gate: RuntimeGateReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -38,20 +43,165 @@ struct RecycleReport {
     operations_aborted: bool,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeGateReport {
+    healthy_default_open: bool,
+    startup_closed_until_ready: bool,
+    unannounced_writer_poison_require_rejected: bool,
+    unannounced_writer_poison_revalidate_rejected: bool,
+    wrong_feature_rejected: bool,
+    wrong_instance_rejected: bool,
+    shared_fault_closes_both: bool,
+    fault_latch_monotonic: bool,
+    post_physical_latch_checkpoint_completed: bool,
+    stale_permit_rejected_after_latch: bool,
+    concurrent_fault_invalidates_issued_permits: bool,
+}
+
 pub fn run(root: &PhaseEightRunRoot) -> Result<SafetySuiteReport, DomainError> {
     root.verify_current_identity()?;
     let import_root = root.resolve_owned(Path::new("candidate-import-suite"))?;
     let import = crate::import_execution::phase_eight_file_ops_suite(&import_root)?;
     let recycle_root = root.resolve_owned(Path::new("candidate-recycle-suite"))?;
     let recycle = run_recycle(&recycle_root)?;
+    let gate_root = root.resolve_owned(Path::new("candidate-runtime-gate-suite"))?;
+    let runtime_gate = run_runtime_gate(&gate_root)?;
     root.verify_current_identity()?;
     root.ensure_allocation_within_limit(0)?;
     Ok(SafetySuiteReport {
-        report_version: 1,
+        report_version: 2,
         run_id: root.run_id(),
         import,
         recycle,
+        runtime_gate,
     })
+}
+
+fn run_runtime_gate(directory: &Path) -> Result<RuntimeGateReport, DomainError> {
+    fs::create_dir(directory).map_err(io_error)?;
+    let startup_directory = directory.join("startup");
+    fs::create_dir(&startup_directory).map_err(io_error)?;
+    let startup_database = Arc::new(Database::open(&startup_directory)?);
+    let startup_gate = RuntimeSafetyGate::new(startup_database);
+    let startup_closed_until_ready = startup_gate.status().global_write_gate == GateState::Closed
+        && startup_gate.require_feature(FeatureGate::Import).is_err();
+    startup_gate.mark_ready()?;
+
+    let database = Arc::new(Database::open(directory)?);
+    let gate = Arc::new(RuntimeSafetyGate::new(database.clone()));
+    gate.mark_ready()?;
+    let permit = gate.require_feature(FeatureGate::Import)?;
+    let healthy_default_open = gate.status().global_write_gate == GateState::Open;
+    let recycle_permit = gate.require_feature(FeatureGate::Recycle)?;
+    let wrong_feature_rejected = gate
+        .revalidate(&recycle_permit, FeatureGate::Import)
+        .is_err();
+    let foreign_gate = RuntimeSafetyGate::new(database.clone());
+    foreign_gate.mark_ready()?;
+    let foreign_permit = foreign_gate.require_feature(FeatureGate::Import)?;
+    let wrong_instance_rejected = gate
+        .revalidate(&foreign_permit, FeatureGate::Import)
+        .is_err();
+    let faults = FaultInjector::default();
+    faults.latch_gate_on_hit(
+        FaultPoint::ImportAfterPhysicalBeforeFact,
+        1,
+        gate.clone(),
+        GateCloseReason::CapabilityBoundary,
+    )?;
+    let post_physical_latch_checkpoint_completed = faults
+        .checkpoint(FaultPoint::ImportAfterPhysicalBeforeFact)
+        .is_ok();
+    let stale_permit_rejected_after_latch = gate.revalidate(&permit, FeatureGate::Import).is_err();
+    let fault_latch_monotonic =
+        gate.mark_ready().is_err() && gate.status().global_write_gate == GateState::Closed;
+
+    let poison_directory = directory.join("writer-poison");
+    fs::create_dir(&poison_directory).map_err(io_error)?;
+    let poison_database = Arc::new(Database::open(&poison_directory)?);
+    let poison_gate = RuntimeSafetyGate::new(poison_database.clone());
+    poison_gate.mark_ready()?;
+    let poison_permit = poison_gate.require_feature(FeatureGate::Recycle)?;
+    poison_database
+        .write_health_handle()
+        .store(false, Ordering::Release);
+    let unannounced_writer_poison_require_rejected =
+        poison_gate.require_feature(FeatureGate::Recycle).is_err();
+    let unannounced_writer_poison_revalidate_rejected = poison_gate
+        .revalidate(&poison_permit, FeatureGate::Recycle)
+        .is_err();
+
+    let shared_directory = directory.join("shared-fault");
+    fs::create_dir(&shared_directory).map_err(io_error)?;
+    let shared_database = Arc::new(Database::open(&shared_directory)?);
+    let shared_gate = RuntimeSafetyGate::new(shared_database);
+    shared_gate.mark_ready()?;
+    let mut health = SharedHealth::healthy();
+    health.reconciler = false;
+    shared_gate.set_shared_health(health);
+    let shared_status = shared_gate.status();
+    let shared_fault_closes_both = shared_status.import_gate == GateState::Closed
+        && shared_status.recycle_gate == GateState::Closed;
+
+    let concurrent_directory = directory.join("concurrent-fault");
+    fs::create_dir(&concurrent_directory).map_err(io_error)?;
+    let concurrent_database = Arc::new(Database::open(&concurrent_directory)?);
+    let concurrent_gate = Arc::new(RuntimeSafetyGate::new(concurrent_database));
+    concurrent_gate.mark_ready()?;
+    let barrier = Arc::new(Barrier::new(9));
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let worker_gate = concurrent_gate.clone();
+        let worker_barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            worker_barrier.wait();
+            worker_gate.require_feature(FeatureGate::Import).ok()
+        }));
+    }
+    barrier.wait();
+    concurrent_gate.latch_fault(GateCloseReason::CapabilityBoundary);
+    let concurrent_fault_invalidates_issued_permits = workers.into_iter().all(|worker| {
+        worker.join().is_ok_and(|permit| {
+            permit.is_none_or(|permit| {
+                concurrent_gate
+                    .revalidate(&permit, FeatureGate::Import)
+                    .is_err()
+            })
+        })
+    });
+
+    let report = RuntimeGateReport {
+        healthy_default_open,
+        startup_closed_until_ready,
+        unannounced_writer_poison_require_rejected,
+        unannounced_writer_poison_revalidate_rejected,
+        wrong_feature_rejected,
+        wrong_instance_rejected,
+        shared_fault_closes_both,
+        fault_latch_monotonic,
+        post_physical_latch_checkpoint_completed,
+        stale_permit_rejected_after_latch,
+        concurrent_fault_invalidates_issued_permits,
+    };
+    if !report.healthy_default_open
+        || !report.startup_closed_until_ready
+        || !report.unannounced_writer_poison_require_rejected
+        || !report.unannounced_writer_poison_revalidate_rejected
+        || !report.wrong_feature_rejected
+        || !report.wrong_instance_rejected
+        || !report.shared_fault_closes_both
+        || !report.fault_latch_monotonic
+        || !report.post_physical_latch_checkpoint_completed
+        || !report.stale_permit_rejected_after_latch
+        || !report.concurrent_fault_invalidates_issued_permits
+    {
+        return Err(DomainError::new(
+            ErrorCode::CapabilityDenied,
+            "阶段 8 运行时安全门候选套件未通过。",
+        ));
+    }
+    Ok(report)
 }
 
 fn run_recycle(directory: &Path) -> Result<RecycleReport, DomainError> {

@@ -75,6 +75,10 @@ assert(
   'DPI/UI matrix',
 );
 assert(reports.quality.passed === true, 'source quality gate');
+assert(reports.safety.reportVersion === 2, 'runtime safety report version 2');
+assert(manifest.reportVersion === 2, 'candidate manifest version 2');
+assert(manifest.appVersion === '1.0.1', 'candidate app version 1.0.1');
+assert(manifest.build.safetyReportVersion === 3, 'safety evidence version 3');
 
 const importResult = reports.safety.import;
 for (const [name, expected] of Object.entries({
@@ -97,6 +101,22 @@ for (const [name, expected] of Object.entries({
 }))
   assert(recycleResult[name] === expected, `Recycle ${name}`);
 assert(recycleResult.callbackCount === 2, 'Recycle per-file callbacks');
+
+const runtimeGate = reports.safety.runtimeGate;
+for (const name of [
+  'healthyDefaultOpen',
+  'startupClosedUntilReady',
+  'unannouncedWriterPoisonRequireRejected',
+  'unannouncedWriterPoisonRevalidateRejected',
+  'wrongFeatureRejected',
+  'wrongInstanceRejected',
+  'sharedFaultClosesBoth',
+  'faultLatchMonotonic',
+  'postPhysicalLatchCheckpointCompleted',
+  'stalePermitRejectedAfterLatch',
+  'concurrentFaultInvalidatesIssuedPermits',
+])
+  assert(runtimeGate[name] === true, `runtime gate ${name}`);
 
 const db = reports.database;
 for (const name of [
@@ -235,7 +255,7 @@ const defects = {
       summary:
         'A UI unit test once exceeded its one-second wait under parallel runner load.',
       disposition:
-        'The frozen quality gate runs the unchanged assertions with one Vitest worker; all 38 tests must pass.',
+        'The frozen quality gate runs the unchanged assertions with one Vitest worker; all 39 tests must pass.',
     },
   ],
   passed: true,
@@ -256,7 +276,7 @@ await create('acceptance-matrix.json', matrix);
 evidence.acceptance = await localFingerprint('acceptance-matrix.json');
 
 const importSafety = {
-  reportVersion: 2,
+  reportVersion: 3,
   feature: 'import',
   runId,
   candidateManifestSha256: manifestSha256,
@@ -267,13 +287,20 @@ const importSafety = {
   noOverwrite: importResult.noOverwriteRejected,
   faultInjectionPassed: importResult.faultBeforePublishRejected,
   permanentDeleteUsed: importResult.permanentDeleteUsed,
+  installedExeSha256: manifest.installedBinary.sha256,
+  packageLockSha256: manifest.build.packageLockSha256,
+  cargoLockSha256: manifest.build.cargoLockSha256,
+  schemaVersion: manifest.build.schemaVersion,
+  schemaChecksum: manifest.build.schemaChecksum,
+  migrationChainChecksum: manifest.build.migrationChainChecksum,
+  runtimeGate,
   evidence: [evidence.safety, evidence.quality, evidence.acceptance],
   passed: true,
 };
 await create('import-safety-report.json', importSafety);
 
 const recycleSafety = {
-  reportVersion: 2,
+  reportVersion: 3,
   feature: 'recycle',
   runId,
   candidateManifestSha256: manifestSha256,
@@ -282,6 +309,13 @@ const recycleSafety = {
   permanentDeleteFlagPresent: recycleResult.permanentDeleteFlagPresent,
   perFileCallbacks: recycleResult.callbackCount,
   restoredIdentical: recycleResult.restoredIdentical,
+  installedExeSha256: manifest.installedBinary.sha256,
+  packageLockSha256: manifest.build.packageLockSha256,
+  cargoLockSha256: manifest.build.cargoLockSha256,
+  schemaVersion: manifest.build.schemaVersion,
+  schemaChecksum: manifest.build.schemaChecksum,
+  migrationChainChecksum: manifest.build.migrationChainChecksum,
+  runtimeGate,
   evidence: [evidence.safety, evidence.quality, evidence.acceptance],
   passed: true,
 };
@@ -308,8 +342,8 @@ const summary = {
   importSafetyPassed: true,
   recycleSafetyPassed: true,
   remotePublished: false,
-  realPhotoImportEnabled: false,
-  realPhotoRecycleEnabled: false,
+  realPhotoImportEnabled: true,
+  realPhotoRecycleEnabled: true,
   passed: true,
 };
 await create('phase-eight-final-summary.json', summary);

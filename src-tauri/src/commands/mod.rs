@@ -6,9 +6,11 @@ pub(crate) mod library;
 pub(crate) mod pending_delete;
 pub(crate) mod recycle;
 
-use crate::safety::{SafetyState, SafetyStatus};
+use std::sync::Arc;
+
+use crate::safety::{RuntimeSafetyGate, SafetyStatus};
 
 #[tauri::command]
-pub fn get_safety_status(state: tauri::State<'_, SafetyState>) -> SafetyStatus {
+pub fn get_safety_status(state: tauri::State<'_, Arc<RuntimeSafetyGate>>) -> SafetyStatus {
     state.status()
 }

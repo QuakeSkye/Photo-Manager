@@ -12,6 +12,7 @@ use crate::{
     catalog::{CatalogService, LibraryScanner, ScanRequest, SortMode},
     domain::OperationId,
     roots::FujiLibraryService,
+    safety::TestRoot,
 };
 
 #[test]
@@ -156,6 +157,11 @@ struct Fixture {
 
 #[cfg(windows)]
 fn fixture() -> Fixture {
+    fixture_with_pair(false)
+}
+
+#[cfg(windows)]
+fn fixture_with_pair(include_second_photo: bool) -> Fixture {
     let parent = tempfile::tempdir().unwrap();
     let app_root = TestRoot::create_in(parent.path()).unwrap();
     let library_root = TestRoot::create_in(parent.path()).unwrap();
@@ -164,6 +170,13 @@ fn fixture() -> Fixture {
         b"phase-seven-fixture",
     )
     .unwrap();
+    if include_second_photo {
+        fs::write(
+            library_root.path().join("DSCF7002.JPG"),
+            b"phase-seven-second-jpg-fixture",
+        )
+        .unwrap();
+    }
     let database_faults = FaultInjector::default();
     let database =
         Arc::new(Database::open_with_injector(app_root.path(), database_faults.clone()).unwrap());
@@ -179,16 +192,18 @@ fn fixture() -> Fixture {
             root_path: library_root.path().to_path_buf(),
         })
         .unwrap();
-    let photo = catalog
+    let photos = catalog
         .timeline(binding.library_id, SortMode::CaptureDesc)
-        .unwrap()
-        .into_iter()
-        .find(|photo| photo.natural_name_display == "DSCF7001.JPG")
         .unwrap();
     let pending = Arc::new(PendingDeleteService::new(database.clone()));
-    pending
-        .toggle(photo.photo_id, photo.photo_version, OperationId::new())
-        .unwrap();
+    for photo in photos.into_iter().filter(|photo| {
+        photo.natural_name_display == "DSCF7001.JPG"
+            || (include_second_photo && photo.natural_name_display == "DSCF7002.JPG")
+    }) {
+        pending
+            .toggle(photo.photo_id, photo.photo_version, OperationId::new())
+            .unwrap();
+    }
     Fixture {
         _parent: parent,
         _app_root: app_root,
@@ -200,11 +215,30 @@ fn fixture() -> Fixture {
 
 #[cfg(windows)]
 fn service(fixture: &Fixture, shell: Arc<FakeShell>) -> RecycleService {
+    let safety_gate = Arc::new(RuntimeSafetyGate::new(fixture.database.clone()));
+    safety_gate.mark_ready().unwrap();
     RecycleService::with_shell(
         fixture.database.clone(),
         fixture.pending.clone(),
         shell,
+        safety_gate,
         FaultInjector::default(),
+    )
+}
+
+#[cfg(windows)]
+fn service_with_faults(
+    fixture: &Fixture,
+    shell: Arc<FakeShell>,
+    safety_gate: Arc<RuntimeSafetyGate>,
+    faults: FaultInjector,
+) -> RecycleService {
+    RecycleService::with_shell(
+        fixture.database.clone(),
+        fixture.pending.clone(),
+        shell,
+        safety_gate,
+        faults,
     )
 }
 
@@ -231,6 +265,7 @@ fn successful_callback_commits_fact_before_finishing_and_clears_pending_entry() 
 
     let status = service
         .start(
+            service.test_permit(),
             Uuid::new_v4(),
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
@@ -247,6 +282,39 @@ fn successful_callback_commits_fact_before_finishing_and_clears_pending_entry() 
 
 #[cfg(windows)]
 #[test]
+fn permit_from_another_gate_instance_cannot_start_recycle() {
+    let fixture = fixture();
+    let shell = Arc::new(FakeShell::new([FakeOutcome::Recycled]));
+    let service_gate = Arc::new(RuntimeSafetyGate::new(fixture.database.clone()));
+    service_gate.mark_ready().unwrap();
+    let foreign_gate = Arc::new(RuntimeSafetyGate::new(fixture.database.clone()));
+    foreign_gate.mark_ready().unwrap();
+    let foreign_permit = foreign_gate.require_feature(FeatureGate::Recycle).unwrap();
+    let service = service_with_faults(
+        &fixture,
+        shell.clone(),
+        service_gate,
+        FaultInjector::default(),
+    );
+    let confirmation = service.confirmation().unwrap();
+
+    let error = service
+        .start(
+            foreign_permit,
+            Uuid::new_v4(),
+            confirmation.logical_photo_count,
+            confirmation.physical_file_count,
+            confirmation.total_bytes,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::CapabilityDenied);
+    assert_eq!(count(&fixture.database, "deletion_batch"), 0);
+    assert_eq!(shell.calls.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(windows)]
+#[test]
 fn initial_transaction_fault_rolls_back_every_intent_and_never_calls_shell() {
     let fixture = fixture();
     let shell = Arc::new(FakeShell::new([FakeOutcome::Recycled]));
@@ -259,7 +327,13 @@ fn initial_transaction_fault_rolls_back_every_intent_and_never_calls_shell() {
 
     assert!(
         service
-            .start(Uuid::new_v4(), 1, 1, confirmation.total_bytes)
+            .start(
+                service.test_permit(),
+                Uuid::new_v4(),
+                1,
+                1,
+                confirmation.total_bytes,
+            )
             .is_err()
     );
     assert_eq!(count(&fixture.database, "deletion_batch"), 0);
@@ -276,7 +350,13 @@ fn ordinary_failure_is_retryable_and_retry_creates_a_new_attempt() {
     let service = service(&fixture, shell.clone());
     let confirmation = service.confirmation().unwrap();
     let first = service
-        .start(Uuid::new_v4(), 1, 1, confirmation.total_bytes)
+        .start(
+            service.test_permit(),
+            Uuid::new_v4(),
+            1,
+            1,
+            confirmation.total_bytes,
+        )
         .unwrap();
     assert_eq!(first.phase, RecyclePhase::AwaitingUser);
     assert_eq!(first.retryable_files, 1);
@@ -285,7 +365,13 @@ fn ordinary_failure_is_retryable_and_retry_creates_a_new_attempt() {
     let retry = service.confirmation().unwrap();
     assert!(retry.retry);
     let final_status = service
-        .retry(Uuid::new_v4(), 1, 1, retry.total_bytes)
+        .retry(
+            service.test_permit(),
+            Uuid::new_v4(),
+            1,
+            1,
+            retry.total_bytes,
+        )
         .unwrap();
     assert_eq!(final_status.phase, RecyclePhase::Completed);
     assert_eq!(count(&fixture.database, "deletion_attempt"), 2);
@@ -304,7 +390,13 @@ fn empty_recycle_object_and_predelete_replacement_stop_as_needs_attention() {
         let service = service(&fixture, shell);
         let confirmation = service.confirmation().unwrap();
         service
-            .start(Uuid::new_v4(), 1, 1, confirmation.total_bytes)
+            .start(
+                service.test_permit(),
+                Uuid::new_v4(),
+                1,
+                1,
+                confirmation.total_bytes,
+            )
             .unwrap();
         let status = service.status().unwrap();
         assert_eq!(status.phase, RecyclePhase::NeedsAttention);
@@ -325,12 +417,21 @@ fn postdelete_database_failure_stops_and_preserves_unknown_result() {
         .fail_on_hit(FaultPoint::SqliteBeforeCommit, 3)
         .unwrap();
 
-    service
-        .start(Uuid::new_v4(), 1, 1, confirmation.total_bytes)
-        .unwrap();
+    assert!(
+        service
+            .start(
+                service.test_permit(),
+                Uuid::new_v4(),
+                1,
+                1,
+                confirmation.total_bytes,
+            )
+            .is_err()
+    );
     let status = service.status().unwrap();
-    assert_eq!(status.phase, RecyclePhase::NeedsAttention);
+    assert_eq!(status.phase, RecyclePhase::Running);
     assert_eq!(count(&fixture.database, "deletion_recycled_fact"), 0);
+    assert_eq!(count(&fixture.database, "operation_reservation"), 1);
 }
 
 #[cfg(windows)]
@@ -349,4 +450,81 @@ fn interrupted_attempt_is_reconciled_without_automatic_shell_replay() {
     assert_eq!(shell.calls.load(Ordering::SeqCst), 0);
     assert_eq!(service.status().unwrap().phase, RecyclePhase::AwaitingUser);
     assert_eq!(count(&fixture.database, "deletion_recycled_fact"), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn gate_closing_after_shell_does_not_reject_recycled_fact_commit() {
+    let fixture = fixture();
+    let shell = Arc::new(FakeShell::new([FakeOutcome::Recycled]));
+    let gate = Arc::new(RuntimeSafetyGate::new(fixture.database.clone()));
+    gate.mark_ready().unwrap();
+    let faults = FaultInjector::default();
+    faults
+        .latch_gate_on_hit(
+            FaultPoint::RecycleAfterPhysicalBeforeFact,
+            1,
+            gate.clone(),
+            crate::safety::GateCloseReason::CapabilityBoundary,
+        )
+        .unwrap();
+    let service = service_with_faults(&fixture, shell.clone(), gate.clone(), faults);
+    let confirmation = service.confirmation().unwrap();
+
+    let status = service
+        .start(
+            service.test_permit(),
+            Uuid::new_v4(),
+            confirmation.logical_photo_count,
+            confirmation.physical_file_count,
+            confirmation.total_bytes,
+        )
+        .unwrap();
+
+    assert_eq!(status.phase, RecyclePhase::Completed);
+    assert_eq!(count(&fixture.database, "deletion_recycled_fact"), 1);
+    assert_eq!(shell.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        gate.status().global_write_gate,
+        crate::safety::GateState::Closed
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn gate_closing_after_first_asset_stops_before_second_shell_action() {
+    let fixture = fixture_with_pair(true);
+    let shell = Arc::new(FakeShell::new([
+        FakeOutcome::Recycled,
+        FakeOutcome::Recycled,
+    ]));
+    let gate = Arc::new(RuntimeSafetyGate::new(fixture.database.clone()));
+    gate.mark_ready().unwrap();
+    let faults = FaultInjector::default();
+    faults
+        .latch_gate_on_hit(
+            FaultPoint::RecycleAfterPhysicalBeforeFact,
+            1,
+            gate.clone(),
+            crate::safety::GateCloseReason::CapabilityBoundary,
+        )
+        .unwrap();
+    let service = service_with_faults(&fixture, shell.clone(), gate, faults);
+    let confirmation = service.confirmation().unwrap();
+    assert_eq!(confirmation.physical_file_count, 2);
+
+    let error = service
+        .start(
+            service.test_permit(),
+            Uuid::new_v4(),
+            confirmation.logical_photo_count,
+            confirmation.physical_file_count,
+            confirmation.total_bytes,
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code, ErrorCode::CapabilityDenied);
+    assert_eq!(count(&fixture.database, "deletion_recycled_fact"), 1);
+    assert_eq!(shell.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(shell.photos.lock().unwrap().as_slice(), &[1]);
 }

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Output = "artifacts\phase-eight-source-quality.json"
+    [string]$Output = "artifacts\phase-eight-v1.0.1\source-quality-report.json"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,7 +33,7 @@ Invoke-Gate "git-diff-check" { git.exe -c safe.directory=D:/A/MyProject/ai/Aifir
 $sourceFiles = @(
     Get-ChildItem src, src-tauri\src, src-tauri\migrations -Recurse -File
     Get-Item package.json, package-lock.json, src-tauri\Cargo.toml, src-tauri\Cargo.lock, src-tauri\tauri.conf.json
-    Get-ChildItem scripts -File | Where-Object { $_.Name -like "phase-eight-*" -or $_.Name -in @("safety-audit.mjs", "run-cargo.mjs", "run-tauri.mjs") }
+    Get-ChildItem scripts -File | Where-Object { $_.Name -like "phase-eight-*" -or $_.Name -in @("run-phase-eight.ps1", "safety-audit.mjs", "run-cargo.mjs", "run-tauri.mjs") }
 ) | Sort-Object FullName -Unique
 $digestText = foreach ($file in $sourceFiles) {
     if (-not $file.FullName.StartsWith("$repo\", [StringComparison]::OrdinalIgnoreCase)) {

@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::{
     domain::{DomainError, ErrorCode},
     recycle::{RecycleConfirmation, RecycleService, RecycleStatus},
+    safety::{FeatureGate, RuntimeSafetyGate},
 };
 
 #[tauri::command]
@@ -28,8 +29,11 @@ pub fn start_recycle(
     physical_file_count: usize,
     total_bytes: i64,
     service: tauri::State<'_, Arc<RecycleService>>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<RecycleStatus, DomainError> {
+    let permit = safety_gate.require_feature(FeatureGate::Recycle)?;
     service.start(
+        permit,
         parse_operation_id(&operation_id)?,
         logical_photo_count,
         physical_file_count,
@@ -44,8 +48,11 @@ pub fn retry_recycle(
     physical_file_count: usize,
     total_bytes: i64,
     service: tauri::State<'_, Arc<RecycleService>>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<RecycleStatus, DomainError> {
+    let permit = safety_gate.require_feature(FeatureGate::Recycle)?;
     service.retry(
+        permit,
         parse_operation_id(&operation_id)?,
         logical_photo_count,
         physical_file_count,

@@ -1,0 +1,68 @@
+{
+    "reportVersion":  1,
+    "generatedAtUtc":  "2026-08-09T08:40:57.6888255Z",
+    "sourceTreeSha256":  "94f32a75439f0adc7337b97fdfd7cf82390d2896121f4541e4e8a76cd27f80e7",
+    "commands":  [
+                     {
+                         "name":  "prettier",
+                         "exitCode":  0,
+                         "durationMs":  2431,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "cargo-fmt",
+                         "exitCode":  0,
+                         "durationMs":  1072,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "eslint",
+                         "exitCode":  0,
+                         "durationMs":  5152,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "typescript",
+                         "exitCode":  0,
+                         "durationMs":  3039,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "frontend-tests",
+                         "exitCode":  0,
+                         "durationMs":  13910,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "e2e-tests",
+                         "exitCode":  0,
+                         "durationMs":  2701,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "rust-all-targets",
+                         "exitCode":  0,
+                         "durationMs":  40974,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "clippy-deny-warnings",
+                         "exitCode":  0,
+                         "durationMs":  7803,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "safety-audit",
+                         "exitCode":  0,
+                         "durationMs":  247,
+                         "passed":  true
+                     },
+                     {
+                         "name":  "git-diff-check",
+                         "exitCode":  0,
+                         "durationMs":  239,
+                         "passed":  true
+                     }
+                 ],
+    "passed":  true
+}

@@ -28,6 +28,7 @@ import {
   type RecycleConfirmation,
   type RecycleStatus,
 } from '../shared/commands/recycle';
+import { getSafetyStatus, type SafetyStatus } from '../shared/commands/safety';
 
 type Route = 'library' | 'pending-delete' | 'settings' | 'scan' | 'import';
 
@@ -47,6 +48,7 @@ export function App() {
     null,
   );
   const [recycleExecuting, setRecycleExecuting] = useState(false);
+  const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
   const mutationInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const restoreAfterSettings = useRef<{
@@ -54,6 +56,28 @@ export function App() {
     route: Route;
   } | null>(null);
   const scanReturnRoute = useRef<'library' | 'import'>('library');
+
+  const refreshSafetyStatus = useCallback(async () => {
+    try {
+      setSafetyStatus(await getSafetyStatus());
+    } catch (reason) {
+      setSafetyStatus({
+        phase: 'v1.0.1',
+        globalWriteGate: 'closed',
+        importGate: 'closed',
+        recycleGate: 'closed',
+        databaseMode: 'unavailable',
+        reason: 'fault_latched',
+        message: readError(reason),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshSafetyStatus();
+    const timer = window.setInterval(() => void refreshSafetyStatus(), 2000);
+    return () => window.clearInterval(timer);
+  }, [refreshSafetyStatus]);
 
   const load = useCallback(
     async (mode: SortMode, preserveSelection = false) => {
@@ -398,6 +422,12 @@ export function App() {
 
   const openRecycleConfirmation = async () => {
     if (mutationInFlight.current) return;
+    if (safetyStatus?.recycleGate !== 'open') {
+      setError(
+        safetyStatus?.message ?? 'Recycle 写入安全状态尚未就绪，请稍后重试。',
+      );
+      return;
+    }
     mutationInFlight.current = true;
     setMutationPending(true);
     setError(null);
@@ -444,6 +474,7 @@ export function App() {
       }
     } catch (reason) {
       setError(readError(reason));
+      void refreshSafetyStatus();
     } finally {
       setRecycleExecuting(false);
       mutationInFlight.current = false;
@@ -546,6 +577,7 @@ export function App() {
           onSortChange={changeSort}
           onOpenSettings={openSettings}
           onOpenImport={openImport}
+          importEnabled={safetyStatus?.importGate === 'open'}
           onOpenScan={() => setRoute('scan')}
           mutationPending={mutationPending}
           onToggleDeletion={() => void performToggle()}
@@ -574,6 +606,9 @@ export function App() {
           onRetryRemaining={() => void openRecycleConfirmation()}
           onCancelRemaining={() => void cancelRecycleRemaining()}
           recycleMessage={recycleStatus?.message ?? null}
+          importEnabled={safetyStatus?.importGate === 'open'}
+          recycleEnabled={safetyStatus?.recycleGate === 'open'}
+          safetyMessage={safetyStatus?.message}
         />
       )}
       {route === 'settings' && (
@@ -583,6 +618,7 @@ export function App() {
           settingsButtonRef={settingsButtonRef}
           onBack={closeSettings}
           onBindingStarted={(result) => void bindingStarted(result)}
+          safetyStatus={safetyStatus}
         />
       )}
       {route === 'import' && (
@@ -596,6 +632,8 @@ export function App() {
             const result = await bindLibraryFolder(path);
             await bindingStarted(result, 'import');
           }}
+          writeEnabled={safetyStatus?.importGate === 'open'}
+          safetyMessage={safetyStatus?.message}
         />
       )}
       {route === 'scan' && snapshot.scan !== null && (
@@ -638,6 +676,7 @@ export function App() {
             recycleConfirmation.retry ? '重试剩余文件' : '移入回收站'
           }
           busy={recycleExecuting}
+          confirmDisabled={safetyStatus?.recycleGate !== 'open'}
           onConfirm={() => void confirmRecycle()}
           onCancel={closeRecycleConfirmation}
         >

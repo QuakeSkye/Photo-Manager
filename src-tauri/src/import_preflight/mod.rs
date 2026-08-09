@@ -22,6 +22,7 @@ use crate::{
     io_scheduler::{IoPriority, IoScheduler},
     media,
     roots::{DirectoryProbe, FileProbe, path_is_reparse, path_key, probe_directory},
+    safety::{FeatureGate, RuntimeSafetyGate, SafetyPermit},
 };
 
 use proof::{AuditSide, ProcessIoAudit, ProcessIoAuditReport, StableReadHandle};
@@ -154,6 +155,7 @@ struct RuntimeState {
 #[derive(Debug, Clone)]
 pub struct ImportPreflightService {
     database: Arc<Database>,
+    safety_gate: Arc<RuntimeSafetyGate>,
     app_data_directory: PathBuf,
     state: Arc<Mutex<RuntimeState>>,
     cancel_requested: Arc<AtomicBool>,
@@ -232,11 +234,15 @@ struct ProfileRecord {
 }
 
 impl ImportPreflightService {
+    #[cfg(test)]
     pub fn new(database: Arc<Database>, app_data_directory: impl Into<PathBuf>) -> Self {
+        let safety_gate = Arc::new(RuntimeSafetyGate::new(database.clone()));
+        safety_gate.mark_ready().expect("test safety gate");
         Self::with_scheduler(
             database,
             app_data_directory,
             Arc::new(IoScheduler::for_rotational()),
+            safety_gate,
         )
     }
 
@@ -244,14 +250,23 @@ impl ImportPreflightService {
         database: Arc<Database>,
         app_data_directory: impl Into<PathBuf>,
         scheduler: Arc<IoScheduler>,
+        safety_gate: Arc<RuntimeSafetyGate>,
     ) -> Self {
         Self {
             database,
+            safety_gate,
             app_data_directory: app_data_directory.into(),
             state: Arc::new(Mutex::new(RuntimeState::default())),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             scheduler,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_permit(&self) -> SafetyPermit {
+        self.safety_gate
+            .require_feature(FeatureGate::Import)
+            .expect("healthy test import gate")
     }
 
     pub fn setup_snapshot(&self) -> Result<ImportSetupSnapshot, DomainError> {
@@ -291,8 +306,10 @@ impl ImportPreflightService {
 
     pub fn select_source(
         &self,
+        permit: &SafetyPermit,
         selected_directory: &Path,
     ) -> Result<ImportSetupSnapshot, DomainError> {
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         if let Some(reason) = self.active_task_reason()? {
             return Err(DomainError::new(ErrorCode::LeaseUnavailable, reason));
         }
@@ -320,7 +337,11 @@ impl ImportPreflightService {
         Ok(())
     }
 
-    pub fn run_preflight(&self) -> Result<ImportPreflightDraft, DomainError> {
+    pub fn run_preflight(
+        &self,
+        permit: &SafetyPermit,
+    ) -> Result<ImportPreflightDraft, DomainError> {
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         {
             let mut state = self.state()?;
             if matches!(

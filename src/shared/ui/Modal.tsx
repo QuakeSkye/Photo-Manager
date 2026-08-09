@@ -5,6 +5,7 @@ interface ModalProps {
   readonly children: ReactNode;
   readonly confirmLabel: string;
   readonly busy?: boolean;
+  readonly confirmDisabled?: boolean;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }
@@ -14,6 +15,7 @@ export function Modal({
   children,
   confirmLabel,
   busy = false,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: ModalProps) {
@@ -68,7 +70,7 @@ export function Modal({
             className="button-primary"
             type="button"
             onClick={onConfirm}
-            disabled={busy}
+            disabled={busy || confirmDisabled}
           >
             {busy ? '正在确认…' : confirmLabel}
           </button>

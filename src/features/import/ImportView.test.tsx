@@ -1,6 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { createRef } from 'react';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import { ImportView } from './ImportView';
 
@@ -13,7 +19,32 @@ const pendingDeleteSummary = {
   executableBytes: 0,
 };
 
+afterEach(() => cleanup());
+
 describe('phase six import execution UI', () => {
+  test('shows a closed safety reason and disables every write entry', async () => {
+    render(
+      <ImportView
+        pendingDeleteSummary={pendingDeleteSummary}
+        settingsButtonRef={createRef<HTMLButtonElement>()}
+        onOpenLibrary={vi.fn()}
+        onOpenPendingDelete={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onBindTarget={vi.fn()}
+        writeEnabled={false}
+        safetyMessage="数据库 writer 已失效"
+      />,
+    );
+
+    expect(
+      await screen.findByText(/Import 写入安全门已关闭/),
+    ).toHaveTextContent('数据库 writer 已失效');
+    expect(screen.getByRole('button', { name: '开始只读预检' })).toBeDisabled();
+    expect(
+      screen.getAllByRole('button', { name: /选择文件夹|更改/ })[0],
+    ).toBeDisabled();
+  });
+
   test('keeps the draft non-executing until the final Start Import confirmation', async () => {
     render(
       <ImportView

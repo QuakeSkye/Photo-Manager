@@ -28,6 +28,9 @@ interface PendingDeleteViewProps {
   readonly onRetryRemaining: () => void;
   readonly onCancelRemaining: () => void;
   readonly recycleMessage: string | null;
+  readonly importEnabled?: boolean;
+  readonly recycleEnabled?: boolean;
+  readonly safetyMessage?: string;
 }
 
 export function PendingDeleteView({
@@ -50,6 +53,9 @@ export function PendingDeleteView({
   onRetryRemaining,
   onCancelRemaining,
   recycleMessage,
+  importEnabled = true,
+  recycleEnabled = true,
+  safetyMessage,
 }: PendingDeleteViewProps) {
   const current = snapshot.items[selectedIndex] ?? null;
   const wheelAccumulator = useRef(0);
@@ -85,6 +91,7 @@ export function PendingDeleteView({
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
         onOpenImport={onOpenImport}
+        importEnabled={importEnabled}
       />
       <main className="photo-workspace">
         <VirtualFilmstrip
@@ -169,7 +176,7 @@ export function PendingDeleteView({
                   <button
                     className="secondary-button"
                     type="button"
-                    disabled={mutationPending}
+                    disabled={mutationPending || !recycleEnabled}
                     onClick={onRescan}
                   >
                     重新扫描确认
@@ -225,16 +232,24 @@ export function PendingDeleteView({
                   className="execute-delete-button"
                   type="button"
                   disabled={
-                    mutationPending || snapshot.summary.executableCount === 0
+                    mutationPending ||
+                    !recycleEnabled ||
+                    snapshot.summary.executableCount === 0
                   }
                   onClick={onExecute}
                 >
                   执行删除…
                 </button>
                 <p>
-                  仅在应用生成的可丢弃 NTFS 测试 Root 上强制移入 Windows
+                  仅对身份已验证的 NTFS Fuji 图库强制移入 Windows
                   回收站；不提供永久删除或降级。
                 </p>
+                {!recycleEnabled && safetyMessage !== undefined && (
+                  <div className="problem-panel" role="status">
+                    <strong>Recycle 写入安全门已关闭</strong>
+                    <span>{safetyMessage}</span>
+                  </div>
+                )}
                 {recycleMessage !== null && (
                   <div className="problem-panel" role="status">
                     <strong>本次删除结果</strong>

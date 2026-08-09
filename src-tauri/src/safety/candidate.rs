@@ -8,7 +8,7 @@ use crate::domain::{DomainError, ErrorCode};
 
 use super::{BuildFingerprint, FeatureGate};
 
-pub const CANDIDATE_MANIFEST_VERSION: u32 = 1;
+pub const CANDIDATE_MANIFEST_VERSION: u32 = 2;
 pub const FEATURE_ADMISSION_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +42,7 @@ impl ArtifactFingerprint {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CandidateManifest {
     pub report_version: u32,
+    pub app_version: String,
     pub installer: ArtifactFingerprint,
     pub installed_binary: ArtifactFingerprint,
     pub build: BuildFingerprint,
@@ -55,6 +56,7 @@ impl CandidateManifest {
     ) -> Result<Self, DomainError> {
         Ok(Self {
             report_version: CANDIDATE_MANIFEST_VERSION,
+            app_version: env!("CARGO_PKG_VERSION").into(),
             installer: ArtifactFingerprint::capture(installer)?,
             installed_binary: ArtifactFingerprint::capture(installed_binary)?,
             build: BuildFingerprint::for_binary(installed_binary, connection)?,
@@ -62,7 +64,9 @@ impl CandidateManifest {
     }
 
     pub fn verify(&self, connection: &Connection) -> Result<(), DomainError> {
-        if self.report_version != CANDIDATE_MANIFEST_VERSION {
+        if self.report_version != CANDIDATE_MANIFEST_VERSION
+            || self.app_version != env!("CARGO_PKG_VERSION")
+        {
             return Err(candidate_mismatch());
         }
         self.installer.verify()?;

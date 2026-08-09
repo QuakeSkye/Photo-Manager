@@ -14,11 +14,28 @@ $qualityPath = (Resolve-Path -LiteralPath $QualityReport).Path
 if ($exe -like "$repo\src-tauri\target\*") {
     throw "The release-tree executable cannot substitute for an installed candidate."
 }
+$frozenExeSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+$frozenInstallerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant()
+$frozenQualitySha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $qualityPath).Hash.ToLowerInvariant()
+
+function Assert-FrozenInputs {
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -ne $frozenExeSha256) {
+        throw "Installed candidate EXE changed; all candidate evidence is invalid."
+    }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash.ToLowerInvariant() -ne $frozenInstallerSha256) {
+        throw "Candidate installer changed; all candidate evidence is invalid."
+    }
+    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $qualityPath).Hash.ToLowerInvariant() -ne $frozenQualitySha256) {
+        throw "Frozen source-quality evidence changed; all candidate evidence is invalid."
+    }
+}
 
 function Invoke-CandidateJson {
     param([string[]]$Arguments)
+    Assert-FrozenInputs
     $output = & $exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Candidate command failed ($LASTEXITCODE): $($Arguments -join ' ')" }
+    Assert-FrozenInputs
     return ($output -join "`n" | ConvertFrom-Json)
 }
 
@@ -39,6 +56,7 @@ Invoke-CandidateJson @("--phase8-self-test", "performance", "--run-root", $runRo
 
 $uiOutput = node.exe (Join-Path $PSScriptRoot "phase-eight-ui-check.mjs") --installed-exe $exe --run-root $runRoot
 if ($LASTEXITCODE -ne 0) { throw "Candidate UI matrix failed ($LASTEXITCODE)." }
+Assert-FrozenInputs
 $ui = $uiOutput -join "`n" | ConvertFrom-Json
 if (-not $ui.passed) { throw "Candidate UI report did not pass." }
 if (-not $ui.evidenceDirectory.StartsWith("$runRoot\", [StringComparison]::OrdinalIgnoreCase)) {
@@ -48,6 +66,7 @@ $uiReportRelative = Join-Path $ui.evidenceDirectory.Substring($runRoot.Length + 
 
 node.exe (Join-Path $PSScriptRoot "phase-eight-report.mjs") --run-root $runRoot | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Phase 8 report generation failed ($LASTEXITCODE)." }
+Assert-FrozenInputs
 
 $commonEvidence = @(
     "--evidence", "acceptance-matrix.json",
@@ -78,10 +97,12 @@ Invoke-CandidateJson @(
     "--manifest", "candidate-manifest.json", "--import", "import-admission.json",
     "--recycle", "recycle-admission.json", "--output", "admission-verification.json"
 ) | Out-Null
+Assert-FrozenInputs
 Invoke-CandidateJson @(
     "--phase8-self-test", "verify-candidate", "--run-root", $runRoot,
     "--manifest", "candidate-manifest.json", "--output", "candidate-verification.json"
 ) | Out-Null
+Assert-FrozenInputs
 
 $result = [ordered]@{
     runRoot = $runRoot

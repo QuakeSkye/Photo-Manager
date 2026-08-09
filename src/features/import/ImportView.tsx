@@ -35,6 +35,8 @@ interface ImportViewProps {
   readonly onOpenPendingDelete: () => void;
   readonly onOpenSettings: () => void;
   readonly onBindTarget: (path: string) => Promise<void>;
+  readonly writeEnabled?: boolean;
+  readonly safetyMessage?: string;
 }
 
 export function ImportView({
@@ -44,6 +46,8 @@ export function ImportView({
   onOpenPendingDelete,
   onOpenSettings,
   onBindTarget,
+  writeEnabled = true,
+  safetyMessage,
 }: ImportViewProps) {
   const [setup, setSetup] = useState<ImportSetupSnapshot | null>(null);
   const [draft, setDraft] = useState<ImportPreflightDraft | null>(null);
@@ -282,6 +286,11 @@ export function ImportView({
           )}
           {!loading && !preflightRunning && draft === null && (
             <>
+              {!writeEnabled && safetyMessage !== undefined && (
+                <div className="inline-error" role="status">
+                  Import 写入安全门已关闭：{safetyMessage}
+                </div>
+              )}
               <div className="content-heading">
                 <p className="eyebrow">导入 · 第 1 步</p>
                 <h1>选择导入位置</h1>
@@ -317,8 +326,9 @@ export function ImportView({
                     type="button"
                     onClick={() => void chooseSource()}
                     disabled={
-                      setup?.blockedReason !== null &&
-                      setup?.blockedReason !== undefined
+                      !writeEnabled ||
+                      (setup?.blockedReason !== null &&
+                        setup?.blockedReason !== undefined)
                     }
                   >
                     {setup?.source === null || setup?.source === undefined
@@ -340,8 +350,9 @@ export function ImportView({
                     type="button"
                     onClick={() => void chooseTarget()}
                     disabled={
-                      setup?.blockedReason !== null &&
-                      setup?.blockedReason !== undefined
+                      !writeEnabled ||
+                      (setup?.blockedReason !== null &&
+                        setup?.blockedReason !== undefined)
                     }
                   >
                     {setup?.target === null || setup?.target === undefined
@@ -418,6 +429,7 @@ export function ImportView({
                 className="button-primary"
                 type="button"
                 onClick={() => setConfirmImport(true)}
+                disabled={!writeEnabled}
               >
                 重新确认并导入…
               </button>
@@ -427,6 +439,7 @@ export function ImportView({
                 className="button-primary"
                 type="button"
                 onClick={() => void resumeImport()}
+                disabled={!writeEnabled}
               >
                 {execution?.phase === 'awaitingSpace'
                   ? '重新检查空间'
@@ -449,7 +462,7 @@ export function ImportView({
                   className="button-primary"
                   type="button"
                   onClick={() => void startPreflight()}
-                  disabled={!setup?.canStartPreflight}
+                  disabled={!writeEnabled || !setup?.canStartPreflight}
                 >
                   开始只读预检
                 </button>
@@ -463,6 +476,7 @@ export function ImportView({
                   className="button-primary"
                   type="button"
                   onClick={() => setConfirmImport(true)}
+                  disabled={!writeEnabled}
                 >
                   确认并导入…
                 </button>

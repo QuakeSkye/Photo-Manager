@@ -33,8 +33,13 @@ use crate::{
             prove_duplicate_and_commit, prove_duplicate_guard,
         },
     },
-    roots::{FileProbe, FilesystemKind, path_key, resolve_contained_path},
-    safety::{FaultInjector, FaultPoint, TestRoot},
+    roots::{
+        DirectoryProbe, FileProbe, FilesystemKind, path_key, probe_directory,
+        resolve_contained_path,
+    },
+    safety::{
+        FaultInjector, FaultPoint, FeatureGate, GateCloseReason, RuntimeSafetyGate, SafetyPermit,
+    },
 };
 
 use file_ops::{PartialWriteHandle, VerifiedPartialHandle, disk_space, hash_and_compare};
@@ -573,10 +578,20 @@ fn bound_target(seed: &ExecutionDraftSeed, relative: &str) -> BoundPath {
 }
 fn ensure_parent_directories(
     root: &Path,
+    expected_root: &DirectoryProbe,
     final_path: &Path,
     faults: FaultInjector,
 ) -> Result<(), DomainError> {
-    TestRoot::verify(root)?;
+    let current_root = probe_directory(root)?;
+    if current_root != *expected_root
+        || current_root.filesystem_kind != FilesystemKind::Ntfs
+        || crate::roots::path_is_reparse(root)?
+    {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "Fuji 图库 Root 身份或 NTFS 能力已变化。",
+        ));
+    }
     let parent = final_path
         .parent()
         .ok_or_else(|| DomainError::new(ErrorCode::UnsafePath, "目标路径缺少父目录。"))?;
@@ -596,7 +611,7 @@ fn ensure_parent_directories(
         } else {
             faults.checkpoint(FaultPoint::Win32BeforeCall)?;
             fs::create_dir(&current).map_err(|error| {
-                DomainError::new(ErrorCode::Internal, "无法创建测试目标目录。")
+                DomainError::new(ErrorCode::Internal, "无法创建 Fuji 图库目标目录。")
                     .with_diagnostic(error.to_string())
             })?;
             faults.checkpoint(FaultPoint::Win32AfterCall)?;
@@ -766,6 +781,7 @@ pub struct ImportRecoverySummary {
 #[derive(Debug, Clone)]
 pub struct ImportExecutionService {
     database: Arc<Database>,
+    safety_gate: Arc<RuntimeSafetyGate>,
     preflight: Arc<ImportPreflightService>,
     catalog: Arc<CatalogService>,
     status: Arc<Mutex<ImportExecutionStatus>>,
@@ -852,23 +868,40 @@ struct PendingCleanupRecovery {
     deleted_snapshot_id: Vec<u8>,
 }
 
+struct BoundTargetRecoveryRoot {
+    display_path: String,
+    path_key: Vec<u8>,
+    directory_file_id: Option<Vec<u8>>,
+    filesystem: String,
+    volume_key: Option<Vec<u8>>,
+}
+
 impl ImportExecutionService {
     pub fn new(
         database: Arc<Database>,
         preflight: Arc<ImportPreflightService>,
         catalog: Arc<CatalogService>,
+        safety_gate: Arc<RuntimeSafetyGate>,
     ) -> Self {
-        Self::with_faults(database, preflight, catalog, FaultInjector::default())
+        Self::with_faults(
+            database,
+            preflight,
+            catalog,
+            safety_gate,
+            FaultInjector::default(),
+        )
     }
 
     pub fn with_faults(
         database: Arc<Database>,
         preflight: Arc<ImportPreflightService>,
         catalog: Arc<CatalogService>,
+        safety_gate: Arc<RuntimeSafetyGate>,
         faults: FaultInjector,
     ) -> Self {
         Self {
             database,
+            safety_gate,
             preflight,
             catalog,
             status: Arc::new(Mutex::new(ImportExecutionStatus::default())),
@@ -876,6 +909,13 @@ impl ImportExecutionService {
             cancel_requested: Arc::new(AtomicBool::new(false)),
             faults,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_permit(&self) -> SafetyPermit {
+        self.safety_gate
+            .require_feature(FeatureGate::Import)
+            .expect("healthy test import gate")
     }
 
     pub fn status(&self) -> Result<ImportExecutionStatus, DomainError> {
@@ -901,13 +941,19 @@ impl ImportExecutionService {
         Ok(())
     }
 
-    pub fn start(&self, draft_digest: &str) -> Result<ImportExecutionStatus, DomainError> {
+    pub fn start(
+        &self,
+        permit: SafetyPermit,
+        draft_digest: &str,
+    ) -> Result<ImportExecutionStatus, DomainError> {
+        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         self.cancel_requested.store(false, Ordering::Release);
         let existing = self.active_job_id()?;
         let (job_id, seed) = match existing {
             None => {
                 let seed = self.preflight.confirmed_seed(draft_digest)?;
-                self.require_disposable_target(&seed)?;
+                self.require_safe_target(&seed)?;
+                self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
                 let job_id = self.create_initial_intent(&seed)?;
                 (job_id, seed)
             }
@@ -952,7 +998,7 @@ impl ImportExecutionService {
             }
             Err(error) => return Err(error),
         };
-        self.require_disposable_target(&refreshed)?;
+        self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         let validation = self.validate_generation(&job_id, &refreshed)?;
         let Some(job) = validation else {
@@ -961,19 +1007,21 @@ impl ImportExecutionService {
         let Some(space_check_id) = self.check_space(&job)? else {
             return self.status();
         };
+        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         let attempt = self.create_attempt(&job, &space_check_id, "Initial")?;
         self.execute_attempt(attempt, &refreshed)?;
         self.status()
     }
 
-    pub fn retry(&self) -> Result<ImportExecutionStatus, DomainError> {
+    pub fn retry(&self, permit: SafetyPermit) -> Result<ImportExecutionStatus, DomainError> {
+        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         let job_id = self.active_job_id()?.ok_or_else(|| {
             DomainError::new(ErrorCode::InvalidTransition, "没有可重试的导入任务。")
         })?;
         self.cancel_requested.store(false, Ordering::Release);
         self.close_interrupted_attempt(&job_id)?;
         let refreshed = self.preflight.refresh_active_import(&job_id)?;
-        self.require_disposable_target(&refreshed)?;
+        self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         self.set_phase(
             ImportExecutionPhase::ValidatingPlan,
@@ -990,6 +1038,7 @@ impl ImportExecutionService {
             "SELECT EXISTS(SELECT 1 FROM import_plan_validation_item WHERE validation_id=?1 AND disposition IN ('ReverifyOwnedPartial','IndexPublished'))",
             [&job.validation_id],|row|row.get(0),
         ).map_err(map_sqlite_error)?;
+        self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         let attempt = self.create_attempt(
             &job,
             &space_check_id,
@@ -1111,22 +1160,44 @@ impl ImportExecutionService {
         })
     }
 
-    fn require_disposable_target(&self, seed: &ExecutionDraftSeed) -> Result<(), DomainError> {
-        TestRoot::verify(&seed.target.root_path)?;
-        if seed.target.root_probe.filesystem_kind != FilesystemKind::Ntfs {
-            return Err(DomainError::new(
-                ErrorCode::CapabilityDenied,
-                "阶段 6 真实文件动作只允许本机 NTFS 测试 Fuji Root。",
-            ));
-        }
-        if seed.source.root_probe.volume_identity_key == seed.target.root_probe.volume_identity_key
-        {
-            return Err(DomainError::new(
-                ErrorCode::RootConflict,
-                "来源卷与测试 Fuji Root 必须是不同卷。",
-            ));
+    pub fn reconcile_startup(&self) -> Result<(), DomainError> {
+        if let Some(job_id) = self.active_job_id()? {
+            self.close_interrupted_attempt(&job_id)?;
         }
         Ok(())
+    }
+
+    fn require_safe_target(&self, seed: &ExecutionDraftSeed) -> Result<(), DomainError> {
+        let result = (|| {
+            let current = probe_directory(&seed.target.root_path)?;
+            if current != seed.target.root_probe
+                || current.filesystem_kind != FilesystemKind::Ntfs
+                || crate::roots::path_is_reparse(&seed.target.root_path)?
+            {
+                return Err(DomainError::new(
+                    ErrorCode::IdentityMismatch,
+                    "Fuji 图库 Root 身份或 NTFS 能力已变化。",
+                ));
+            }
+            if seed.source.root_probe.volume_identity_key
+                == seed.target.root_probe.volume_identity_key
+            {
+                return Err(DomainError::new(
+                    ErrorCode::RootConflict,
+                    "来源卷与 Fuji 图库必须是不同卷。",
+                ));
+            }
+            Ok(())
+        })();
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.code,
+                ErrorCode::IdentityMismatch | ErrorCode::RootOffline | ErrorCode::UnsafePath
+            )
+        }) {
+            self.safety_gate.latch_fault(GateCloseReason::RootIdentity);
+        }
+        result
     }
 
     fn create_initial_intent(&self, seed: &ExecutionDraftSeed) -> Result<Vec<u8>, DomainError> {
@@ -1624,6 +1695,7 @@ impl ImportExecutionService {
                 self.cancel_unstarted(&attempt, index)?;
                 break;
             }
+            let permit = self.safety_gate.require_feature(FeatureGate::Import)?;
             self.update_progress(step, "正在验证")?;
             let result = match step.disposition.as_str() {
                 "Unreadable" => {
@@ -1633,10 +1705,10 @@ impl ImportExecutionService {
                     self.finish_simple_step(&attempt, step, "AlreadyResolved", None)
                 }
                 "SkipWithCurrentProof" => self.execute_skip(&attempt, step, seed, &source_by_path),
-                "CopyNewBytes" => self.execute_copy(&attempt, step, seed, &source_by_path),
+                "CopyNewBytes" => self.execute_copy(&attempt, step, seed, &source_by_path, &permit),
                 "IndexPublished" => self.index_existing_published(&attempt, step, seed),
                 "ReverifyOwnedPartial" => {
-                    self.reconcile_owned(&attempt, step, seed, &source_by_path)
+                    self.reconcile_owned(&attempt, step, seed, &source_by_path, &permit)
                 }
                 _ => Err(DomainError::new(
                     ErrorCode::Internal,
@@ -1651,6 +1723,7 @@ impl ImportExecutionService {
                         ErrorCode::DatabaseBusy
                             | ErrorCode::DatabaseDurability
                             | ErrorCode::DatabaseCorrupt
+                            | ErrorCode::CapabilityDenied
                             | ErrorCode::FaultInjected
                     ) =>
                 {
@@ -1789,6 +1862,7 @@ impl ImportExecutionService {
         step: &AttemptStep,
         seed: &ExecutionDraftSeed,
         sources: &HashMap<String, SourceFile>,
+        permit: &SafetyPermit,
     ) -> Result<(), DomainError> {
         self.transition_step(
             &attempt.attempt_id,
@@ -1807,7 +1881,13 @@ impl ImportExecutionService {
         let final_relative = step.final_relative_path.as_ref().unwrap();
         let final_path =
             resolve_contained_path(&attempt.job.target_path, Path::new(final_relative))?;
-        ensure_parent_directories(&attempt.job.target_path, &final_path, self.faults.clone())?;
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
+        ensure_parent_directories(
+            &attempt.job.target_path,
+            &seed.target.root_probe,
+            &final_path,
+            self.faults.clone(),
+        )?;
         let audit = ProcessIoAudit::default();
         let mut source = StableReadHandle::open(&source_path, AuditSide::Source, &audit)?;
         let source_before = source.probe(&audit)?;
@@ -1823,6 +1903,7 @@ impl ImportExecutionService {
             "Validating",
             "Copying",
         )?;
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         let mut writer = PartialWriteHandle::create_new(&partial_path, &self.faults)?;
         let created = writer.probe()?;
         let file_id = created.file_id.clone().ok_or_else(|| {
@@ -1908,7 +1989,10 @@ impl ImportExecutionService {
         attempt_fence(&self.database, attempt, step)?;
         let intent_publish = intent.clone();
         self.database.writer()?.transaction(move|transaction|{let changed=transaction.execute("UPDATE import_publish_intent SET intent_state='Publishing' WHERE publish_intent_id=?1 AND intent_state='Prepared'",[&intent_publish]).map_err(map_sqlite_error)?;require_one(changed,"publish intent")?;Ok(())})?;
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         partial.publish_no_replace(&final_path, &self.faults)?;
+        self.faults
+            .checkpoint(FaultPoint::ImportAfterPhysicalBeforeFact)?;
         let target_probe = partial.probe()?;
         let published = id();
         let attempt_clone = attempt.clone();
@@ -2040,6 +2124,7 @@ impl ImportExecutionService {
         step: &AttemptStep,
         seed: &ExecutionDraftSeed,
         sources: &HashMap<String, SourceFile>,
+        permit: &SafetyPermit,
     ) -> Result<(), DomainError> {
         self.transition_step(
             &attempt.attempt_id,
@@ -2128,7 +2213,10 @@ impl ImportExecutionService {
         }
         let intent_c = intent.clone();
         self.database.writer()?.transaction(move|transaction|{require_one(transaction.execute("UPDATE import_publish_intent SET intent_state='Publishing' WHERE publish_intent_id=?1 AND intent_state='Prepared'",[&intent_c]).map_err(map_sqlite_error)?,"publish intent")?;Ok(())})?;
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         partial.publish_no_replace(&final_path, &self.faults)?;
+        self.faults
+            .checkpoint(FaultPoint::ImportAfterPhysicalBeforeFact)?;
         let target_probe = partial.probe()?;
         let published = id();
         let attempt_c = attempt.clone();
@@ -2176,6 +2264,9 @@ impl ImportExecutionService {
         let ownership = step.ownership_id.as_ref().unwrap().clone();
         let deleted_snapshot_tx = deleted_snapshot.clone();
         self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt_c,&step_c)?;insert_snapshot_with_id(transaction,&deleted_snapshot_tx,&attempt_c.job.target_root_id,&attempt_c.job.target_binding_id,&attempt_c.job.target_volume_id,step_c.partial_relative_path.as_ref().unwrap(),&path_key(Path::new(step_c.partial_relative_path.as_ref().unwrap())),&observed,None,now_micros())?;require_one(transaction.execute("UPDATE import_partial_ownership SET state='CleaningOwnedPartial' WHERE ownership_id=?1 AND state='Owned'",[&ownership]).map_err(map_sqlite_error)?,"owned partial")?;require_one(transaction.execute("UPDATE import_attempt_step SET step_state='CleaningOwnedPartial',row_version=row_version+1 WHERE attempt_step_id=?1 AND step_state IN ('Copying','ValidatingOwnedPartial')",[&step_c.attempt_step_id]).map_err(map_sqlite_error)?,"cleaning attempt step")?;Ok(())})?;
+        let cleanup_permit = self.safety_gate.require_feature(FeatureGate::Import)?;
+        self.safety_gate
+            .revalidate(&cleanup_permit, FeatureGate::Import)?;
         handle.delete_owned(&self.faults)?;
         let cleanup = id();
         let attempt_c = attempt.clone();
@@ -2415,14 +2506,36 @@ impl ImportExecutionService {
         let Some(attempt_id) = active else {
             return Ok(());
         };
-        let target_path: String = connection.query_row(
-            "SELECT binding.absolute_path_display FROM import_job AS job JOIN root_binding AS binding ON binding.binding_id=job.target_binding_id WHERE job.job_id=?1",
+        let target = connection.query_row(
+            "SELECT binding.absolute_path_display,binding.absolute_path_key,binding.root_directory_file_id,binding.filesystem_kind,volume.strong_identity_key
+             FROM import_job AS job
+             JOIN root_binding AS binding ON binding.binding_id=job.target_binding_id
+             JOIN volume_identity AS volume ON volume.volume_id=binding.volume_id
+             WHERE job.job_id=?1 AND binding.binding_state='Active'",
             [job_id],
-            |row| row.get(0),
+            |row| Ok(BoundTargetRecoveryRoot {
+                display_path: row.get(0)?,
+                path_key: row.get(1)?,
+                directory_file_id: row.get(2)?,
+                filesystem: row.get(3)?,
+                volume_key: row.get(4)?,
+            }),
         ).map_err(map_sqlite_error)?;
         drop(connection);
-        let target_path = PathBuf::from(target_path);
-        TestRoot::verify(&target_path)?;
+        let target_path = PathBuf::from(target.display_path);
+        let current = probe_directory(&target_path)?;
+        if target.filesystem != "NTFS"
+            || current.filesystem_kind != FilesystemKind::Ntfs
+            || current.absolute_path_key != target.path_key
+            || current.directory_file_id != target.directory_file_id
+            || target.volume_key.as_deref() != Some(current.volume_identity_key.as_slice())
+            || crate::roots::path_is_reparse(&target_path)?
+        {
+            return Err(DomainError::new(
+                ErrorCode::IdentityMismatch,
+                "未终结 Import 的 Fuji 图库 Root 身份无法证明。",
+            ));
+        }
         self.reconcile_publish_intents(&attempt_id, &target_path)?;
         self.reconcile_cleaning_partials(&attempt_id, &target_path)?;
         let job = job_id.to_vec();

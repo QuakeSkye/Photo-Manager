@@ -13,7 +13,7 @@ use crate::{
 
 const PACKAGE_LOCK: &[u8] = include_bytes!("../../../package-lock.json");
 const CARGO_LOCK: &[u8] = include_bytes!("../../Cargo.lock");
-pub const SAFETY_REPORT_VERSION: u32 = 2;
+pub const SAFETY_REPORT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,12 +73,6 @@ fn sha256(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AdmissionRecord {
-    pub feature: FeatureGate,
-    pub fingerprint: BuildFingerprint,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SharedHealth {
     pub root_identity: bool,
@@ -108,176 +102,9 @@ impl SharedHealth {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GateDecision {
-    Open,
-    Closed,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct GateEvaluator {
-    import_compiled: bool,
-    recycle_compiled: bool,
-}
-
-impl GateEvaluator {
-    #[cfg(test)]
-    pub const fn for_test(import_compiled: bool, recycle_compiled: bool) -> Self {
-        Self {
-            import_compiled,
-            recycle_compiled,
-        }
-    }
-
-    pub fn global_decision(
-        &self,
-        database_mode: DatabaseMode,
-        health: SharedHealth,
-    ) -> GateDecision {
-        if database_mode == DatabaseMode::ReadWrite && health.all_healthy() {
-            GateDecision::Open
-        } else {
-            GateDecision::Closed
-        }
-    }
-
-    pub fn feature_decision(
-        &self,
-        feature: FeatureGate,
-        database_mode: DatabaseMode,
-        health: SharedHealth,
-        current: &BuildFingerprint,
-        admission: Option<&AdmissionRecord>,
-    ) -> GateDecision {
-        let compiled = match feature {
-            FeatureGate::Import => self.import_compiled,
-            FeatureGate::Recycle => self.recycle_compiled,
-        };
-        let exact_admission = admission
-            .is_some_and(|record| record.feature == feature && record.fingerprint == *current);
-
-        if compiled
-            && exact_admission
-            && self.global_decision(database_mode, health) == GateDecision::Open
-        {
-            GateDecision::Open
-        } else {
-            GateDecision::Closed
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fingerprint() -> BuildFingerprint {
-        BuildFingerprint {
-            binary_sha256: "binary".into(),
-            package_lock_sha256: "package".into(),
-            cargo_lock_sha256: "cargo".into(),
-            schema_version: 1,
-            schema_checksum: "schema".into(),
-            migration_chain_checksum: "migration-chain".into(),
-            migrations: vec![MigrationFingerprint {
-                version: 1,
-                filename: "0001.sql".into(),
-                sha256: "migration".into(),
-            }],
-            safety_report_version: 1,
-        }
-    }
-
-    #[test]
-    fn phase_zero_features_are_closed_even_when_shared_health_is_good() {
-        let gates = GateEvaluator::default();
-        let current = fingerprint();
-        let admission = AdmissionRecord {
-            feature: FeatureGate::Import,
-            fingerprint: current.clone(),
-        };
-
-        assert_eq!(
-            gates.feature_decision(
-                FeatureGate::Import,
-                DatabaseMode::ReadWrite,
-                SharedHealth::healthy(),
-                &current,
-                Some(&admission),
-            ),
-            GateDecision::Closed
-        );
-        assert_eq!(
-            gates.feature_decision(
-                FeatureGate::Recycle,
-                DatabaseMode::ReadWrite,
-                SharedHealth::healthy(),
-                &current,
-                None,
-            ),
-            GateDecision::Closed
-        );
-    }
-
-    #[test]
-    fn exact_build_binding_is_required_when_a_feature_is_test_enabled() {
-        let gates = GateEvaluator::for_test(true, false);
-        let current = fingerprint();
-        let mut stale = current.clone();
-        stale.schema_version = 2;
-        let stale_admission = AdmissionRecord {
-            feature: FeatureGate::Import,
-            fingerprint: stale,
-        };
-
-        assert_eq!(
-            gates.feature_decision(
-                FeatureGate::Import,
-                DatabaseMode::ReadWrite,
-                SharedHealth::healthy(),
-                &current,
-                Some(&stale_admission),
-            ),
-            GateDecision::Closed
-        );
-    }
-
-    #[test]
-    fn any_shared_safety_fault_closes_both_features() {
-        let gates = GateEvaluator::for_test(true, true);
-        let current = fingerprint();
-        let mut health = SharedHealth::healthy();
-        health.reconciler = false;
-        let import_admission = AdmissionRecord {
-            feature: FeatureGate::Import,
-            fingerprint: current.clone(),
-        };
-        let recycle_admission = AdmissionRecord {
-            feature: FeatureGate::Recycle,
-            fingerprint: current.clone(),
-        };
-
-        assert_eq!(
-            gates.feature_decision(
-                FeatureGate::Import,
-                DatabaseMode::ReadWrite,
-                health,
-                &current,
-                Some(&import_admission),
-            ),
-            GateDecision::Closed
-        );
-        assert_eq!(
-            gates.feature_decision(
-                FeatureGate::Recycle,
-                DatabaseMode::ReadWrite,
-                health,
-                &current,
-                Some(&recycle_admission),
-            ),
-            GateDecision::Closed
-        );
-    }
 
     #[test]
     fn current_build_fingerprint_binds_binary_locks_schema_and_migration() {
@@ -301,54 +128,5 @@ mod tests {
         );
         assert_eq!(fingerprint.migrations, migration_manifest());
         assert_eq!(fingerprint.safety_report_version, SAFETY_REPORT_VERSION);
-    }
-
-    #[test]
-    fn every_fingerprint_component_invalidates_admission() {
-        let gates = GateEvaluator::for_test(true, true);
-        let current = fingerprint();
-        let mut variants = Vec::new();
-
-        let mut changed = current.clone();
-        changed.binary_sha256.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.package_lock_sha256.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.cargo_lock_sha256.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.schema_version += 1;
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.schema_checksum.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.migration_chain_checksum.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.migrations[0].sha256.push('x');
-        variants.push(changed);
-        let mut changed = current.clone();
-        changed.safety_report_version += 1;
-        variants.push(changed);
-
-        for stale in variants {
-            let record = AdmissionRecord {
-                feature: FeatureGate::Import,
-                fingerprint: stale,
-            };
-            assert_eq!(
-                gates.feature_decision(
-                    FeatureGate::Import,
-                    DatabaseMode::ReadWrite,
-                    SharedHealth::healthy(),
-                    &current,
-                    Some(&record),
-                ),
-                GateDecision::Closed
-            );
-        }
     }
 }

@@ -6,6 +6,7 @@ use crate::{
     import_preflight::{
         ImportPreflightDraft, ImportPreflightService, ImportPreflightStatus, ImportSetupSnapshot,
     },
+    safety::{FeatureGate, RuntimeSafetyGate},
 };
 
 #[tauri::command]
@@ -20,6 +21,7 @@ pub fn select_import_source(
     path: String,
     service: tauri::State<'_, Arc<ImportPreflightService>>,
     scans: tauri::State<'_, ScanCoordinator>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportSetupSnapshot, DomainError> {
     if scans.is_active() {
         return Err(DomainError::new(
@@ -27,13 +29,15 @@ pub fn select_import_source(
             "请先完成或取消当前图库扫描。",
         ));
     }
-    service.select_source(Path::new(&path))
+    let permit = safety_gate.require_feature(FeatureGate::Import)?;
+    service.select_source(&permit, Path::new(&path))
 }
 
 #[tauri::command]
 pub fn start_import_preflight(
     service: tauri::State<'_, Arc<ImportPreflightService>>,
     scans: tauri::State<'_, ScanCoordinator>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<ImportPreflightDraft, DomainError> {
     if scans.is_active() {
         return Err(DomainError::new(
@@ -41,7 +45,8 @@ pub fn start_import_preflight(
             "请先完成或取消当前图库扫描。",
         ));
     }
-    service.run_preflight()
+    let permit = safety_gate.require_feature(FeatureGate::Import)?;
+    service.run_preflight(&permit)
 }
 
 #[tauri::command]

@@ -32,11 +32,14 @@ pub fn run() {
         .setup(|application| {
             let app_data_directory = resolve_app_data_directory(application)?;
             let database = db::Database::open(&app_data_directory)?;
-            let safety_state = safety::SafetyState::from_database(&database);
             let database = std::sync::Arc::new(database);
+            let runtime_safety_gate =
+                std::sync::Arc::new(safety::RuntimeSafetyGate::new(database.clone()));
             let io_scheduler = std::sync::Arc::new(io_scheduler::IoScheduler::for_rotational());
             let catalog = std::sync::Arc::new(catalog::CatalogService::new(database.clone()));
-            catalog.recover_interrupted_scans()?;
+            if catalog.recover_interrupted_scans().is_err() {
+                runtime_safety_gate.latch_fault(safety::GateCloseReason::Reconciler);
+            }
             let scan_coordinator =
                 catalog::ScanCoordinator::with_scheduler(catalog.clone(), io_scheduler.clone());
             let library_service = std::sync::Arc::new(roots::FujiLibraryService::new(
@@ -48,19 +51,26 @@ pub fn run() {
                     database.clone(),
                     app_data_directory.clone(),
                     io_scheduler.clone(),
+                    runtime_safety_gate.clone(),
                 ));
             let import_execution_service =
                 std::sync::Arc::new(import_execution::ImportExecutionService::new(
                     database.clone(),
                     import_preflight_service.clone(),
                     catalog.clone(),
+                    runtime_safety_gate.clone(),
                 ));
+            if import_execution_service.reconcile_startup().is_err() {
+                runtime_safety_gate.latch_fault(safety::GateCloseReason::Reconciler);
+            }
             let cache_service = std::sync::Arc::new(cache::CacheService::new(
                 database.clone(),
                 app_data_directory,
                 safety::FaultInjector::default(),
             ));
-            let _ = cache_service.ensure_default_root();
+            if cache_service.ensure_default_root().is_err() {
+                runtime_safety_gate.latch_fault(safety::GateCloseReason::RootIdentity);
+            }
             let preview_service = std::sync::Arc::new(cache::PreviewService::with_scheduler(
                 database.clone(),
                 cache_service.clone(),
@@ -71,7 +81,11 @@ pub fn run() {
             let recycle_service = std::sync::Arc::new(recycle::RecycleService::new(
                 database.clone(),
                 pending_delete_service.clone(),
+                runtime_safety_gate.clone(),
             )?);
+            if recycle_service.reconcile_startup().is_err() {
+                runtime_safety_gate.latch_fault(safety::GateCloseReason::Reconciler);
+            }
             let external_tool_service =
                 std::sync::Arc::new(external_tools::ExternalToolService::new(database.clone()));
             let phase_eight_ui_fixture = std::env::var_os("FPM_TEST_ROOT").is_some()
@@ -79,6 +93,7 @@ pub fn run() {
             if !phase_eight_ui_fixture {
                 let _ = scan_coordinator.start_background_if_bound();
             }
+            let _ = runtime_safety_gate.mark_ready();
             application.manage(database);
             application.manage(catalog);
             application.manage(library_service);
@@ -91,7 +106,7 @@ pub fn run() {
             application.manage(external_tool_service);
             application.manage(scan_coordinator);
             application.manage(io_scheduler);
-            application.manage(safety_state);
+            application.manage(runtime_safety_gate);
             commands::cache::start_cache_maintenance(cache_service);
             Ok(())
         })

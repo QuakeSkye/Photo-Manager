@@ -36,6 +36,7 @@ interface LibraryViewProps {
   readonly onSortChange: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenImport: () => void;
+  readonly importEnabled?: boolean;
   readonly onOpenScan: () => void;
   readonly mutationPending: boolean;
   readonly onToggleDeletion: () => void;
@@ -54,6 +55,7 @@ export function LibraryView({
   onSortChange,
   onOpenSettings,
   onOpenImport,
+  importEnabled = true,
   onOpenScan,
   mutationPending,
   onToggleDeletion,
@@ -192,6 +194,7 @@ export function LibraryView({
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
         onOpenImport={onOpenImport}
+        importEnabled={importEnabled}
       />
       {rootOffline && (
         <div className="offline-banner" role="status">

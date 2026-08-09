@@ -22,7 +22,9 @@ use crate::{
         FilesystemKind, open_read_only, path_key, probe_directory, probe_file,
         resolve_contained_path,
     },
-    safety::{FaultInjector, FaultPoint, TestRoot},
+    safety::{
+        FaultInjector, FaultPoint, FeatureGate, GateCloseReason, RuntimeSafetyGate, SafetyPermit,
+    },
 };
 
 pub use shell::REQUIRED_RECYCLE_FLAGS;
@@ -153,6 +155,7 @@ struct NewAttempt<'a> {
 
 pub struct RecycleService {
     database: Arc<Database>,
+    safety_gate: Arc<RuntimeSafetyGate>,
     pending_delete: Arc<PendingDeleteService>,
     shell: Arc<dyn RecycleShell>,
     status: Arc<Mutex<RecycleStatus>>,
@@ -172,10 +175,16 @@ impl RecycleService {
     pub fn new(
         database: Arc<Database>,
         pending_delete: Arc<PendingDeleteService>,
+        safety_gate: Arc<RuntimeSafetyGate>,
     ) -> Result<Self, DomainError> {
         let shell = Arc::new(StaRecycleWorker::spawn()?);
-        let service = Self::with_shell(database, pending_delete, shell, FaultInjector::default());
-        service.reconcile_interrupted()?;
+        let service = Self::with_shell(
+            database,
+            pending_delete,
+            shell,
+            safety_gate,
+            FaultInjector::default(),
+        );
         Ok(service)
     }
 
@@ -183,16 +192,25 @@ impl RecycleService {
         database: Arc<Database>,
         pending_delete: Arc<PendingDeleteService>,
         shell: Arc<dyn RecycleShell>,
+        safety_gate: Arc<RuntimeSafetyGate>,
         faults: FaultInjector,
     ) -> Self {
         Self {
             database,
+            safety_gate,
             pending_delete,
             shell,
             status: Arc::new(Mutex::new(RecycleStatus::default())),
             execution_gate: Mutex::new(()),
             faults,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_permit(&self) -> SafetyPermit {
+        self.safety_gate
+            .require_feature(FeatureGate::Recycle)
+            .expect("healthy test recycle gate")
     }
 
     pub fn confirmation(&self) -> Result<RecycleConfirmation, DomainError> {
@@ -212,13 +230,19 @@ impl RecycleService {
         Ok(status)
     }
 
+    pub fn reconcile_startup(&self) -> Result<(), DomainError> {
+        self.reconcile_interrupted()
+    }
+
     pub fn start(
         &self,
+        permit: SafetyPermit,
         operation_id: Uuid,
         expected_photos: usize,
         expected_files: usize,
         expected_bytes: i64,
     ) -> Result<RecycleStatus, DomainError> {
+        self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let _gate = self.execution_gate.try_lock().map_err(|_| {
             DomainError::new(ErrorCode::LeaseUnavailable, "已有回收站任务正在执行。")
         })?;
@@ -235,6 +259,7 @@ impl RecycleService {
             retry: false,
             can_execute: true,
         };
+        self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let attempt = self.create_initial_attempt(operation_id, expected)?;
         self.pending_delete.clear_session_history()?;
         self.execute_attempt(attempt)?;
@@ -243,11 +268,13 @@ impl RecycleService {
 
     pub fn retry(
         &self,
+        permit: SafetyPermit,
         operation_id: Uuid,
         expected_photos: usize,
         expected_files: usize,
         expected_bytes: i64,
     ) -> Result<RecycleStatus, DomainError> {
+        self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let _gate = self.execution_gate.try_lock().map_err(|_| {
             DomainError::new(ErrorCode::LeaseUnavailable, "已有回收站任务正在执行。")
         })?;
@@ -265,6 +292,7 @@ impl RecycleService {
                 "剩余照片数量或容量已变化，请重新确认。",
             ));
         }
+        self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let attempt = self.create_retry_attempt(operation_id, &batch_id)?;
         self.execute_attempt(attempt)?;
         self.status()
@@ -328,11 +356,10 @@ impl RecycleService {
                 ));
             }
             let root = common_root(&photos)?;
-            TestRoot::verify(&root.root_path)?;
             if root.root_filesystem()? != FilesystemKind::Ntfs {
                 return Err(DomainError::new(
-                    ErrorCode::TestRootRequired,
-                    "阶段 7 回收站执行只允许可丢弃 NTFS 测试 Root。",
+                    ErrorCode::CapabilityDenied,
+                    "Windows 回收站动作只允许身份已验证的 NTFS Fuji 图库。",
                 ));
             }
             let now = now_micros();
@@ -442,37 +469,58 @@ impl RecycleService {
                 .collect(),
         });
         let mut critical = None;
-        for photo in &attempt.photos {
-            if let Err(error) = self.prepare_photo(photo) {
-                self.record_preparation_failure(photo, &error)?;
-                if is_critical(&error) {
-                    critical = Some(error);
-                    break;
+        'photos: for photo in &attempt.photos {
+            for asset in &photo.assets {
+                let single = AttemptPhotoWork {
+                    assets: vec![asset.clone()],
+                };
+                if let Err(error) = self.prepare_photo(&single) {
+                    self.record_preparation_failure(&single, &error)?;
+                    if is_critical(&error) {
+                        self.latch_critical_error(&error);
+                        critical = Some(error);
+                        break 'photos;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            let shell_photo = ShellPhoto {
-                assets: photo
-                    .assets
-                    .iter()
-                    .map(|asset| ShellAsset {
+                let permit = self.safety_gate.require_feature(FeatureGate::Recycle)?;
+                self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
+                let shell_photo = ShellPhoto {
+                    assets: vec![ShellAsset {
                         attempt_asset_id: asset.attempt_asset_id.clone(),
                         absolute_path: absolute_path(&asset.frozen)
                             .unwrap_or_else(|_| asset.frozen.root_path.clone()),
-                    })
-                    .collect(),
-            };
-            match self.shell.recycle_photo(shell_photo, callbacks.clone()) {
-                Ok(result) => {
-                    self.record_shell_summary(photo, result)?;
-                    if result.operations_aborted {
-                        self.reconcile_unreported(photo, "ShellCancelled")?;
+                    }],
+                };
+                match self.shell.recycle_photo(shell_photo, callbacks.clone()) {
+                    Ok(result) => {
+                        self.record_shell_summary(&single, result)?;
+                        if result.operations_aborted {
+                            self.reconcile_unreported(&single, "ShellCancelled")?;
+                        }
                     }
-                }
-                Err(error) => {
-                    let _ = self.reconcile_unreported(photo, "ShellOrCommitFailure");
-                    critical = Some(error);
-                    break;
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::DatabaseBusy
+                                | ErrorCode::DatabaseDurability
+                                | ErrorCode::DatabaseCorrupt
+                                | ErrorCode::ReadOnlySafeMode
+                                | ErrorCode::CapabilityDenied
+                                | ErrorCode::FaultInjected
+                        ) =>
+                    {
+                        // The Shell action may already have completed. Preserve the committed
+                        // intent, reservation, lease and nonterminal callback state so startup
+                        // reconciliation can observe the outcome. Never overwrite it here.
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        self.latch_critical_error(&error);
+                        let _ = self.reconcile_unreported(&single, "ShellOrCommitFailure");
+                        critical = Some(error);
+                        break 'photos;
+                    }
                 }
             }
         }
@@ -481,6 +529,20 @@ impl RecycleService {
         }
         self.close_attempt(&attempt)?;
         Ok(())
+    }
+
+    fn latch_critical_error(&self, error: &DomainError) {
+        let reason = match error.code {
+            ErrorCode::IdentityMismatch | ErrorCode::RootOffline | ErrorCode::UnsafePath => {
+                GateCloseReason::RootIdentity
+            }
+            ErrorCode::DatabaseBusy
+            | ErrorCode::DatabaseDurability
+            | ErrorCode::DatabaseCorrupt
+            | ErrorCode::ReadOnlySafeMode => GateCloseReason::WriterUnhealthy,
+            _ => GateCloseReason::CapabilityBoundary,
+        };
+        self.safety_gate.latch_fault(reason);
     }
 
     fn prepare_photo(&self, photo: &AttemptPhotoWork) -> Result<(), DomainError> {
@@ -720,6 +782,8 @@ impl RecycleCallbacks for CallbackBarrier {
         evidence: Option<Vec<u8>>,
     ) -> Result<(), DomainError> {
         self.faults.checkpoint(FaultPoint::ShellBeforeCallback)?;
+        self.faults
+            .checkpoint(FaultPoint::RecycleAfterPhysicalBeforeFact)?;
         let work = self
             .by_attempt_asset
             .get(&asset.attempt_asset_id)
@@ -809,15 +873,14 @@ fn observe_source(asset: &FrozenAsset) -> SourceObservation {
 }
 
 fn validate_frozen_asset(asset: &FrozenAsset) -> Result<(), DomainError> {
-    let test_root = TestRoot::verify(&asset.root_path)?;
-    let root = probe_directory(test_root.path())?;
+    let root = probe_directory(&asset.root_path)?;
     if root.filesystem_kind != FilesystemKind::Ntfs
         || root.absolute_path_key != asset.root_path_key
         || root.directory_file_id != asset.root_directory_file_id
     {
         return Err(DomainError::new(
             ErrorCode::IdentityMismatch,
-            "测试 Root 身份或 NTFS 能力已变化。",
+            "Fuji 图库 Root 身份或 NTFS 能力已变化。",
         ));
     }
     let path = absolute_path(asset)?;
