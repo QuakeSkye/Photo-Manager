@@ -1039,13 +1039,13 @@ impl ImportExecutionService {
         permit: SafetyPermit,
         job_id: &[u8],
     ) -> Result<ImportExecutionStatus, DomainError> {
-        let refreshed = match self.preflight.refresh_active_import(&job_id) {
+        let refreshed = match self.preflight.refresh_active_import(job_id) {
             Ok(seed) => seed,
             Err(error) if error.code == ErrorCode::RootOffline => {
-                self.record_validation_wait(&job_id, "AwaitingSource")?;
+                self.record_validation_wait(job_id, "AwaitingSource")?;
                 self.set_phase(
                     ImportExecutionPhase::AwaitingSource,
-                    Some(&job_id),
+                    Some(job_id),
                     Some("等待原始内存卡；不会自动继续。"),
                 )?;
                 return self.status();
@@ -1054,7 +1054,7 @@ impl ImportExecutionService {
         };
         self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
-        let validation = self.validate_generation(&job_id, &refreshed)?;
+        let validation = self.validate_generation(job_id, &refreshed)?;
         let Some(job) = validation else {
             return self.status();
         };
@@ -1117,10 +1117,10 @@ impl ImportExecutionService {
         permit: SafetyPermit,
         job_id: &[u8],
     ) -> Result<ImportExecutionStatus, DomainError> {
-        let refreshed = self.preflight.refresh_active_import(&job_id)?;
+        let refreshed = self.preflight.refresh_active_import(job_id)?;
         self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
-        let Some(job) = self.validate_generation(&job_id, &refreshed)? else {
+        let Some(job) = self.validate_generation(job_id, &refreshed)? else {
             return self.status();
         };
         let Some(space_check_id) = self.check_space(&job)? else {
