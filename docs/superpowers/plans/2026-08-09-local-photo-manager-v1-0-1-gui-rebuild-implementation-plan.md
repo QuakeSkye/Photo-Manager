@@ -1,6 +1,6 @@
 # Fuji 照片管理器 v1.0.1 GUI 重构建实施计划
 
-日期：2026-08-09  
+日期：2026-08-09
 依据：`docs/superpowers/specs/2026-08-09-local-photo-manager-v1-0-1-gui-rebuild-design.md`
 
 ## 1. 边界
