@@ -13,3 +13,6 @@ src-tauri/icons/Square*.png
 !docs/**/*.log
 .DS_Store
 Thumbs.db
+
+.superpowers/
+local-test-install/
