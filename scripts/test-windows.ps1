@@ -12,6 +12,7 @@ $previousRecycleParent = $env:FPM_RECYCLE_NTFS_TEST_PARENT
 $env:FPM_RECYCLE_NTFS_TEST_PARENT = $resolvedTestBase
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $results = @()
+$cleanupWarning = $null
 try {
     & node (Join-Path $PSScriptRoot 'run-cargo.mjs') test --manifest-path (Join-Path $repoRoot 'src-tauri\Cargo.toml') real_sta_worker_recycles_pair_and_restores_identical_content -- --ignored --nocapture
     if ($LASTEXITCODE -ne 0) {
@@ -77,7 +78,32 @@ finally {
     $resolvedBase = (Resolve-Path -LiteralPath $testBase).Path
     $resolvedParent = (Resolve-Path -LiteralPath $testParent).Path
     if ($resolvedParent.StartsWith($resolvedBase + [System.IO.Path]::DirectorySeparatorChar)) {
-        Remove-Item -LiteralPath $testParent -Recurse -Force
+        $cleanupParent = Join-Path $resolvedBase ('fpm-cleanup-' + [guid]::NewGuid())
+        [System.IO.Directory]::Move($resolvedParent, $cleanupParent)
+        foreach ($cleanupTarget in @($cleanupParent, $resolvedParent)) {
+            for ($attempt = 0; $attempt -lt 40 -and (Test-Path -LiteralPath $cleanupTarget); $attempt++) {
+                try {
+                    [System.IO.Directory]::Delete($cleanupTarget, $true)
+                }
+                catch [System.IO.DirectoryNotFoundException] {
+                    # A cache-maintenance worker may remove a child between enumeration and
+                    # deletion. Retry the already-validated disposable parent itself.
+                }
+                catch {
+                    if ($attempt -eq 39) {
+                        $cleanupWarning = $_.Exception.Message
+                    }
+                }
+                if (Test-Path -LiteralPath $cleanupTarget) {
+                    Start-Sleep -Milliseconds 250
+                }
+            }
+            if (Test-Path -LiteralPath $cleanupTarget) {
+                $cleanupWarning = "Generated fixture cleanup is pending: $cleanupTarget"
+                Write-Warning $cleanupWarning
+                break
+            }
+        }
     }
 }
 
@@ -89,5 +115,6 @@ New-Item -ItemType Directory -Path $artifacts -Force | Out-Null
     test_root_only = $true
     filesystem = 'NTFS'
     real_fuji_library_admission_created = $false
+    cleanup_warning = $cleanupWarning
     tests = $results
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $artifacts 'phase-seven-windows-results.json') -Encoding utf8

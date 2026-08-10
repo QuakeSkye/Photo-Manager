@@ -4,6 +4,7 @@ import type {
   PendingDeleteSnapshot,
   SortMode,
 } from '../../shared/commands/library';
+import type { DuplicateReviewStatus } from '../../shared/commands/duplicate-review';
 import { TopBar } from '../../shared/ui/TopBar';
 import { PhotoCanvas } from '../library/PhotoCanvas';
 import { VirtualFilmstrip } from '../library/VirtualFilmstrip';
@@ -21,6 +22,8 @@ interface PendingDeleteViewProps {
   readonly onOpenLibrary: () => void;
   readonly onOpenSettings: () => void;
   readonly onOpenImport: () => void;
+  readonly duplicateReviewStatus?: DuplicateReviewStatus;
+  readonly onOpenDuplicateReview?: () => void;
   readonly onCancelCurrent: () => void;
   readonly onUndoDeletion: () => void;
   readonly onRescan: () => void;
@@ -46,6 +49,8 @@ export function PendingDeleteView({
   onOpenLibrary,
   onOpenSettings,
   onOpenImport,
+  duplicateReviewStatus,
+  onOpenDuplicateReview,
   onCancelCurrent,
   onUndoDeletion,
   onRescan,
@@ -91,6 +96,8 @@ export function PendingDeleteView({
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
         onOpenImport={onOpenImport}
+        duplicateReviewStatus={duplicateReviewStatus}
+        onOpenDuplicateReview={onOpenDuplicateReview}
         importEnabled={importEnabled}
       />
       <main className="photo-workspace">
@@ -119,9 +126,11 @@ export function PendingDeleteView({
               <div className="inspector-scroll">
                 <section className="photo-identity">
                   <p className="section-label">
-                    {current.problem === null
-                      ? '待删除 · 已持久化'
-                      : '待删除 · 需要处理'}
+                    {current.markScope === 'DuplicateSubset'
+                      ? '重复清理'
+                      : current.problem === null
+                        ? '待删除 · 已持久化'
+                        : '待删除 · 需要处理'}
                   </p>
                   <h2 title={current.fileName}>{current.fileName}</h2>
                   <div className="format-badges" aria-label="照片格式">
@@ -155,6 +164,21 @@ export function PendingDeleteView({
                       <dd>{formatBytes(current.totalSizeBytes)}</dd>
                     </div>
                   </dl>
+                  {current.markScope === 'DuplicateSubset' && (
+                    <div className="pending-file-list">
+                      {(current.files ?? []).map((file) => (
+                        <div key={file.assetId} className="pending-file-row">
+                          <strong>
+                            {file.role.toUpperCase()} ·{' '}
+                            {formatBytes(file.sizeBytes)}
+                          </strong>
+                          <code>将回收：{file.fullPath}</code>
+                          <code>所在目录：{file.directory}</code>
+                          <code>保留副本：{file.retainedFullPath}</code>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </section>
               </div>
               <div className="inspector-spacer" />

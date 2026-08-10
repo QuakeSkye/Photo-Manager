@@ -1,4 +1,5 @@
 pub(crate) mod cache;
+pub(crate) mod duplicate_review;
 pub(crate) mod external_tools;
 pub(crate) mod import_execution;
 pub(crate) mod import_preflight;

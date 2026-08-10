@@ -248,15 +248,13 @@ describe('阶段 3 图库与既有只读能力', () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  test('keeps unknown capture dates last and labels file time separately', async () => {
+  test('keeps unknown capture dates last and hides unavailable time fields', async () => {
     window.history.replaceState(null, '', '/?scenario=unknown');
     render(<App />);
 
-    expect(await screen.findByText('拍摄时间未知')).toBeInTheDocument();
-    expect(screen.getByText('文件时间')).toBeInTheDocument();
-    expect(
-      screen.getByText('文件时间仅供参考，不参与照片排序。'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('照片大小')).toBeInTheDocument();
+    expect(screen.queryByText('拍摄时间未知')).not.toBeInTheDocument();
+    expect(screen.queryByText('文件时间')).not.toBeInTheDocument();
     expect(screen.getByLabelText('当前照片日期')).toHaveTextContent('日期未知');
   });
 
@@ -756,7 +754,11 @@ describe('Root 与扫描视觉状态', () => {
     window.history.replaceState(null, '', '/?scenario=scan-incremental');
     render(<App />);
 
-    expect(await screen.findByText('正在更新图库')).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', {
+        name: /正在更新图库.*已检查.*查看进度/,
+      }),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('当前照片')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: /查看进度/ }),
@@ -777,7 +779,9 @@ describe('Root 与扫描视觉状态', () => {
       );
       render(<App />);
 
-      expect(await screen.findByText(message)).toBeInTheDocument();
+      expect(
+        await screen.findByRole('button', { name: new RegExp(message) }),
+      ).toBeInTheDocument();
       expect(screen.getByLabelText('当前照片')).toBeInTheDocument();
     },
   );

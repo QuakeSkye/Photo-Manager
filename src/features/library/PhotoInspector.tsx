@@ -20,6 +20,7 @@ interface PhotoInspectorProps {
   readonly onOpenFileLocation: () => void;
   readonly onOpenSettings: () => void;
   readonly onToggleDeletion: () => void;
+  readonly onUndoDeletion?: () => void;
 }
 
 export function PhotoInspector({
@@ -35,6 +36,7 @@ export function PhotoInspector({
   onOpenFileLocation,
   onOpenSettings,
   onToggleDeletion,
+  onUndoDeletion,
 }: PhotoInspectorProps) {
   const [timeExpanded, setTimeExpanded] = useState(true);
   const [parametersExpanded, setParametersExpanded] = useState(true);
@@ -81,22 +83,7 @@ export function PhotoInspector({
               onToggle={() => setTimeExpanded((current) => !current)}
             >
               <dl>
-                {detail.captureLocalKey === null ? (
-                  <>
-                    <MetadataRow
-                      label="拍摄时间"
-                      value="拍摄时间未知"
-                      emphasis
-                    />
-                    <MetadataRow
-                      label="文件时间"
-                      value={formatFileTime(detail.fileTimeMs)}
-                    />
-                    <p className="metadata-note">
-                      文件时间仅供参考，不参与照片排序。
-                    </p>
-                  </>
-                ) : (
+                {detail.captureLocalKey !== null && (
                   <>
                     <MetadataRow
                       label="拍摄日期"
@@ -106,15 +93,10 @@ export function PhotoInspector({
                       label="相机本地时间"
                       value={detail.captureLocalKey.slice(11, 19)}
                     />
-                    <MetadataRow
-                      label="文件时间"
-                      value={formatFileTime(detail.fileTimeMs)}
-                    />
-                    <p className="metadata-note">按相机记录的本地时间显示</p>
                   </>
                 )}
                 <MetadataRow
-                  label="容量"
+                  label="照片大小"
                   value={formatBytes(detail.totalSizeBytes)}
                 />
               </dl>
@@ -133,6 +115,7 @@ export function PhotoInspector({
                 <MetadataRow
                   label="镜头"
                   value={detail.lensModel ?? '未记录'}
+                  valueClassName="lens-value"
                 />
                 <MetadataRow
                   label="光圈"
@@ -175,7 +158,7 @@ export function PhotoInspector({
           </div>
         )}
         <button
-          className="button-primary"
+          className="button-primary photoshop-action"
           type="button"
           disabled={
             detail?.raf === null ||
@@ -221,6 +204,16 @@ export function PhotoInspector({
           {mutationPending ? '正在提交…' : marked ? '取消待删除' : '标记待删除'}
           <kbd>D</kbd>
         </button>
+        <p className="inspector-shortcuts">
+          ← → 浏览 · <kbd className="keycap-centered">D</kbd> 标记 ·{' '}
+          <button
+            className="inline-link"
+            type="button"
+            onClick={onUndoDeletion}
+          >
+            <kbd>R</kbd> 撤销
+          </button>
+        </p>
         <p>D 只保存复核标记，不会移动或修改照片。</p>
       </section>
     </aside>
@@ -276,15 +269,17 @@ function MetadataRow({
   label,
   value,
   emphasis = false,
+  valueClassName,
 }: {
   label: string;
   value: string;
   emphasis?: boolean;
+  valueClassName?: string;
 }) {
   return (
     <div className={emphasis ? 'metadata-row is-emphasis' : 'metadata-row'}>
       <dt>{label}</dt>
-      <dd>{value}</dd>
+      <dd className={valueClassName}>{value}</dd>
     </div>
   );
 }
@@ -311,15 +306,6 @@ function formatBytes(bytes: number): string {
     unit += 1;
   }
   return `${value.toFixed(unit < 2 ? 0 : 1)} ${units[unit]}`;
-}
-
-function formatFileTime(value: number | null): string {
-  if (value === null) return '未记录';
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-    hour12: false,
-  }).format(new Date(value));
 }
 
 function formatFNumber(value: RationalValue | null): string {

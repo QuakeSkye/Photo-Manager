@@ -207,7 +207,7 @@ p {
   display: grid;
   grid-template-columns:
     clamp(160px, 15vw, 180px) minmax(0, 1fr)
-    clamp(220px, 18vw, 260px);
+    clamp(300px, 20vw, 360px);
 }
 .filmstrip {
   min-width: 0;
@@ -549,7 +549,7 @@ p {
 }
 .metadata-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
+  grid-template-columns: 58px minmax(0, 1fr);
   gap: 8px;
   min-height: 24px;
   align-items: baseline;
@@ -563,6 +563,13 @@ p {
   margin: 0;
   text-align: right;
   overflow-wrap: anywhere;
+}
+.metadata-row dd.lens-value {
+  overflow: hidden;
+  font-size: 10px;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .metadata-row.is-emphasis dd {
   color: #384250;
@@ -601,6 +608,19 @@ p {
 }
 .library-actions .compact-error {
   margin: 0 0 2px;
+}
+.library-actions .photoshop-action {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.inspector-shortcuts {
+  text-align: center;
+  white-space: nowrap;
+}
+.keycap-centered {
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
 }
 .inline-link {
   min-height: 0;
@@ -764,6 +784,151 @@ p {
   color: inherit;
   background: transparent;
   font: inherit;
+}
+.scan-status-center {
+  justify-self: center;
+}
+
+.duplicate-review-main {
+  min-height: 0;
+  overflow: auto;
+  padding: 24px clamp(20px, 4vw, 64px) 90px;
+  background: var(--canvas);
+}
+.duplicate-review-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+.duplicate-review-heading h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+.duplicate-review-heading p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.duplicate-progress,
+.duplicate-empty {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.duplicate-progress code,
+.duplicate-member code,
+.pending-file-row code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.duplicate-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0;
+}
+.duplicate-summary div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.duplicate-summary dt {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.duplicate-summary dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+.duplicate-family-list {
+  display: grid;
+  gap: 14px;
+}
+.duplicate-family-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.duplicate-family-card h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.duplicate-family-card > p {
+  color: var(--text-secondary);
+}
+.duplicate-set {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.duplicate-set-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+}
+.duplicate-set-heading button {
+  min-height: 28px;
+  font-size: 10px;
+}
+.duplicate-member {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid #edf0f3;
+}
+.duplicate-member > div {
+  display: grid;
+  gap: 3px;
+}
+.duplicate-member span {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.duplicate-member .suggestion {
+  color: #39714d;
+  font-weight: 700;
+}
+.duplicate-selection-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: rgb(255 255 255 / 96%);
+}
+.selection-warning {
+  color: var(--danger);
+}
+.duplicate-confirm-list,
+.pending-file-list {
+  display: grid;
+  gap: 10px;
+}
+.duplicate-confirm-list li,
+.pending-file-row {
+  display: grid;
+  gap: 4px;
+}
+.pending-file-list {
+  margin-top: 12px;
+}
+.pending-file-row {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
 }
 .pending-status {
   justify-self: end;

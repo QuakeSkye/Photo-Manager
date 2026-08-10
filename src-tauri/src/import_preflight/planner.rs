@@ -7,8 +7,9 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
+    catalog::{CandidateLookupInput, find_import_candidates},
     db::Database,
-    domain::{DomainError, ErrorCode},
+    domain::{DomainError, ErrorCode, LibraryId, RootId},
     roots::{path_is_reparse, path_key, resolve_contained_path},
 };
 
@@ -353,6 +354,7 @@ where
     F: FnMut() -> Result<(), DomainError>,
 {
     let mut candidates = history_candidates(database, source_context, target_context, &source)?;
+    candidates.extend(catalog_candidates(database, target_context, &source)?);
     let family =
         enumerate_complete_suffix_family(target_context, &target_directory, &source, audit)?;
     let occupied_suffixes = family
@@ -422,6 +424,43 @@ where
         duplicate,
         occupied_suffixes,
         warning,
+    })
+}
+
+fn catalog_candidates(
+    database: &Database,
+    target_context: &TargetContext,
+    source: &SourceFile,
+) -> Result<Vec<Candidate>, DomainError> {
+    let library_id = LibraryId::from_uuid(crate::catalog::uuid_from(&target_context.library_id)?);
+    let root_id = RootId::from_uuid(crate::catalog::uuid_from(&target_context.root_id)?);
+    find_import_candidates(
+        database,
+        CandidateLookupInput {
+            library_id,
+            root_id,
+            original_filename: source.file_name.clone(),
+            size_bytes: i64::try_from(source.size_bytes).unwrap_or(i64::MAX),
+            capture_local_key: source.capture_local_key.clone(),
+        },
+    )
+    .map(|rows| {
+        rows.into_iter()
+            .map(|row| {
+                let relative_path = PathBuf::from(row.relative_path);
+                Candidate {
+                    suffix: suffix_for_name(
+                        relative_path
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or_default(),
+                        &source.stem,
+                        &source.extension,
+                    ),
+                    relative_path,
+                }
+            })
+            .collect()
     })
 }
 

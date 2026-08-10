@@ -1,6 +1,7 @@
 import type { RefObject } from 'react';
 
 import type { PendingDeleteSummary, SortMode } from '../commands/library';
+import type { DuplicateReviewStatus } from '../commands/duplicate-review';
 
 interface TopBarProps {
   readonly context?: string;
@@ -15,6 +16,8 @@ interface TopBarProps {
   readonly onSortChange?: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenImport?: () => void;
+  readonly duplicateReviewStatus?: DuplicateReviewStatus;
+  readonly onOpenDuplicateReview?: () => void;
   readonly importEnabled?: boolean;
   readonly onBack?: () => void;
 }
@@ -32,6 +35,8 @@ export function TopBar({
   onSortChange,
   onOpenSettings,
   onOpenImport,
+  duplicateReviewStatus,
+  onOpenDuplicateReview,
   importEnabled = true,
   onBack,
 }: TopBarProps) {
@@ -105,6 +110,19 @@ export function TopBar({
             导入照片
           </button>
         )}
+        {onOpenDuplicateReview !== undefined && (
+          <button
+            className={
+              duplicateReviewStatus?.state === 'expired'
+                ? 'tool-button duplicate-entry is-expired'
+                : 'tool-button duplicate-entry'
+            }
+            type="button"
+            onClick={onOpenDuplicateReview}
+          >
+            {duplicateEntryLabel(duplicateReviewStatus)}
+          </button>
+        )}
         <button
           ref={settingsButtonRef}
           className="tool-button"
@@ -121,4 +139,12 @@ export function TopBar({
       </div>
     </header>
   );
+}
+
+function duplicateEntryLabel(status?: DuplicateReviewStatus): string {
+  if (status?.state === 'expired') return '重复检查过期';
+  if (status?.state === 'completedWithDuplicates')
+    return `重复文件 ${status.familyCount}`;
+  if (status?.state === 'running') return '正在检查重复';
+  return '检查重复';
 }

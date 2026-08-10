@@ -2,8 +2,9 @@
 // Self-contained: starts Vite, drives headless Edge via CDP to capture the
 // snapshot matrix from the UI spec (section 10), measures the filmstrip
 // overflow constraint, then shuts everything down.
+/* global Buffer, WebSocket, clearInterval, setInterval, setTimeout */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +17,7 @@ const OUT_DIR = join(ROOT, 'artifacts', 'ui-check');
 const DEV_URL = 'http://127.0.0.1:1420';
 const DEBUG_PORT = 9333 + (process.pid % 500);
 const START_MS = Date.now();
-const DEADLINE_MS = 280000;
+const DEADLINE_MS = 700000;
 
 const report = {
   generatedAt: new Date().toISOString(),
@@ -642,11 +643,7 @@ async function main() {
   viteProc.stderr.on('data', (chunk) => (viteLogs += chunk));
   viteProc.on('exit', (code) => log(`vite exited with code ${code}`));
 
-  await waitFor(
-    () => httpReady(`${DEV_URL}/`),
-    30000,
-    'vite to serve /',
-  );
+  await waitFor(() => httpReady(`${DEV_URL}/`), 30000, 'vite to serve /');
   log('vite is serving');
 
   edgeProfile = join(tmpdir(), `ui-check-edge-${process.pid}-${Date.now()}`);
@@ -691,10 +688,15 @@ async function main() {
   log('cdp connected');
 
   const sizes = [
-    { name: '1440x900-100', width: 1440, height: 900, scale: 1 },
-    { name: '1280x720-100', width: 1280, height: 720, scale: 1 },
-    { name: '1440x900-150', width: 1440, height: 900, scale: 1.5 },
     { name: '1100x700-100', width: 1100, height: 700, scale: 1 },
+    { name: '1100x700-125', width: 1100, height: 700, scale: 1.25 },
+    { name: '1100x700-150', width: 1100, height: 700, scale: 1.5 },
+    { name: '1366x768-100', width: 1366, height: 768, scale: 1 },
+    { name: '1366x768-125', width: 1366, height: 768, scale: 1.25 },
+    { name: '1366x768-150', width: 1366, height: 768, scale: 1.5 },
+    { name: '1920x1080-100', width: 1920, height: 1080, scale: 1 },
+    { name: '1920x1080-125', width: 1920, height: 1080, scale: 1.25 },
+    { name: '1920x1080-150', width: 1920, height: 1080, scale: 1.5 },
   ];
 
   for (const size of sizes) {
@@ -771,9 +773,7 @@ async function main() {
 
   const measurements = [];
   for (const size of sizes) {
-    measurements.push(
-      await measure(cdp, size.width, size.height, size.scale),
-    );
+    measurements.push(await measure(cdp, size.width, size.height, size.scale));
   }
   const screenshotViolations = report.screenshots.filter(
     (s) => s.violations.length > 0,
@@ -782,16 +782,11 @@ async function main() {
     measurements.every(Boolean) && screenshotViolations.length === 0;
   report.pass = allPass && report.failures.length === 0;
   report.screenshotViolationCount = screenshotViolations.length;
-  writeFileSync(
-    join(OUT_DIR, 'report.json'),
-    JSON.stringify(report, null, 2),
-  );
+  writeFileSync(join(OUT_DIR, 'report.json'), JSON.stringify(report, null, 2));
   log(`wrote ${report.screenshots.length} screenshots and report.json`);
   log(`filmstrip measurements: ${allPass ? 'ALL PASS' : 'FAILURES'}`);
   for (const violation of screenshotViolations) {
-    log(
-      `VIOLATION ${violation.file}: ${violation.violations.join('; ')}`,
-    );
+    log(`VIOLATION ${violation.file}: ${violation.violations.join('; ')}`);
   }
   await cleanup(allPass ? 0 : 1);
 }

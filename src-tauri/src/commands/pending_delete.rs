@@ -3,7 +3,10 @@ use std::{str::FromStr, sync::Arc};
 use crate::{
     catalog::SortMode,
     domain::{DomainError, ErrorCode, OperationId, PhotoId},
-    pending_delete::{DeletionMutationResult, PendingDeleteService, PendingDeleteSnapshot},
+    pending_delete::{
+        AddDuplicateSubsetRequest, DeletionMutationResult, PendingDeleteService,
+        PendingDeleteSnapshot,
+    },
 };
 
 #[tauri::command]
@@ -39,6 +42,14 @@ pub fn undo_deletion_mark(
     pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
 ) -> Result<DeletionMutationResult, DomainError> {
     pending_delete.undo(OperationId::from_str(&operation_id)?)
+}
+
+#[tauri::command]
+pub fn add_duplicate_subset_to_pending_delete(
+    request: AddDuplicateSubsetRequest,
+    pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
+) -> Result<DeletionMutationResult, DomainError> {
+    pending_delete.add_duplicate_subset(request)
 }
 
 fn parse_sort_mode(value: &str) -> Result<SortMode, DomainError> {

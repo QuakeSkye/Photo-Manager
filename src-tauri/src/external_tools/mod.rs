@@ -34,6 +34,16 @@ pub struct ExternalToolService {
     database: Arc<Database>,
 }
 
+type AssetLocationRow = (
+    String,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    String,
+    Option<Vec<u8>>,
+    i64,
+    i64,
+);
+
 impl ExternalToolService {
     pub fn new(database: Arc<Database>) -> Self {
         Self { database }
@@ -162,6 +172,59 @@ impl ExternalToolService {
         let photo_handle = verify_photo_target(&photo)?;
         reveal_in_explorer(&photo.absolute_path)?;
         drop(photo_handle);
+        Ok(())
+    }
+
+    pub fn open_asset_location(
+        &self,
+        asset_id: crate::domain::AssetId,
+        asset_version: i64,
+    ) -> Result<(), DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let row: AssetLocationRow = connection
+            .query_row(
+                "SELECT binding.absolute_path_display, binding.root_directory_file_id,
+                            volume.strong_identity_key, revision.relative_path,
+                            revision.file_id, revision.size_bytes, revision.mtime_filetime
+                     FROM current_library AS current
+                     JOIN asset ON asset.library_id=current.library_id
+                     JOIN asset_revision AS revision
+                       ON revision.asset_id=asset.asset_id
+                      AND revision.asset_version=asset.current_version
+                     JOIN root ON root.root_id=asset.root_id
+                     JOIN root_binding AS binding ON binding.binding_id=root.current_binding_id
+                     JOIN volume_identity AS volume ON volume.volume_id=binding.volume_id
+                     WHERE current.slot=1 AND asset.asset_id=?1
+                       AND asset.current_version=?2 AND asset.presence_state='Present'
+                       AND revision.presence_state='Present' AND root.lifecycle='Online'
+                       AND binding.binding_state='Active'",
+                (asset_id.as_bytes().as_slice(), asset_version),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .map_err(map_sqlite_error)?;
+        let root_path = PathBuf::from(row.0);
+        let target = ResolvedPhotoTarget {
+            absolute_path: resolve_contained_path(&root_path, Path::new(&row.3))?,
+            root_path,
+            root_file_id: row.1,
+            volume_key: row.2,
+            file_id: row.4,
+            size_bytes: row.5,
+            mtime_filetime: row.6,
+        };
+        let handle = verify_photo_target(&target)?;
+        reveal_in_explorer(&target.absolute_path)?;
+        drop(handle);
         Ok(())
     }
 

@@ -474,6 +474,13 @@ impl RecycleService {
                 let single = AttemptPhotoWork {
                     assets: vec![asset.clone()],
                 };
+                if let Err(error) = self
+                    .pending_delete
+                    .reprove_batch_retention(&asset.batch_asset_id)
+                {
+                    self.record_preparation_failure(&single, &error)?;
+                    continue;
+                }
                 if let Err(error) = self.prepare_photo(&single) {
                     self.record_preparation_failure(&single, &error)?;
                     if is_critical(&error) {
@@ -971,7 +978,36 @@ fn insert_attempt(
         };
         let mut assets = Vec::new();
         for frozen in &photo.assets {
-            let batch_asset_id:Vec<u8>=if let Some(id)=transaction.query_row("SELECT batch_asset_id FROM deletion_batch_asset WHERE batch_photo_id=?1 AND asset_id=?2",params![&batch_photo_id,&frozen.asset_id],|row|row.get(0)).optional().map_err(map_sqlite_error)?{id}else{let id=new_id();transaction.execute("INSERT INTO deletion_batch_asset(batch_asset_id,batch_photo_id,asset_id,role,asset_version,mark_asset_snapshot_id,resolution_state) VALUES(?1,?2,?3,?4,?5,?6,'Pending')",params![&id,&batch_photo_id,&frozen.asset_id,&frozen.role,frozen.asset_version,&frozen.mark_snapshot_id]).map_err(map_sqlite_error)?;id};
+            let batch_asset_id: Vec<u8> = if let Some(id) = transaction
+                .query_row(
+                    "SELECT batch_asset_id FROM deletion_batch_asset WHERE batch_photo_id=?1 AND asset_id=?2",
+                    params![&batch_photo_id, &frozen.asset_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(map_sqlite_error)?
+            {
+                id
+            } else {
+                let id = new_id();
+                transaction.execute(
+                    "INSERT INTO deletion_batch_asset(batch_asset_id,batch_photo_id,asset_id,role,asset_version,mark_asset_snapshot_id,resolution_state)
+                     VALUES(?1,?2,?3,?4,?5,?6,'Pending')",
+                    params![&id, &batch_photo_id, &frozen.asset_id, &frozen.role, frozen.asset_version, &frozen.mark_snapshot_id],
+                ).map_err(map_sqlite_error)?;
+                id
+            };
+            transaction
+                .execute(
+                    "INSERT OR IGNORE INTO deletion_batch_retention_guard(
+                    batch_guard_id,batch_asset_id,source_guard_id,retained_asset_id,
+                    retained_asset_version,retained_snapshot_id,equivalence_proof_id)
+                 SELECT ?1,?2,guard_id,retained_asset_id,retained_asset_version,
+                        retained_snapshot_id,equivalence_proof_id
+                 FROM duplicate_retention_guard WHERE mark_asset_snapshot_id=?3",
+                    params![new_id(), &batch_asset_id, &frozen.mark_snapshot_id],
+                )
+                .map_err(map_sqlite_error)?;
             let attempt_asset_id = new_id();
             transaction.execute("INSERT INTO deletion_attempt_asset(attempt_asset_id,attempt_id,batch_asset_id,asset_state) VALUES(?1,?2,?3,'Prepared')",params![&attempt_asset_id,&attempt_id,&batch_asset_id]).map_err(map_sqlite_error)?;
             transaction.execute("INSERT INTO operation_reservation(reservation_id,owner_kind,task_id,attempt_id,lease_generation,reservation_kind,root_id,root_binding_id,asset_id,file_id,path_key,created_at) VALUES(?1,'TaskAttempt',?2,?3,?4,'RecycleAsset',?5,?6,?7,?8,?9,?10)",params![new_id(),batch_id,&attempt_id,lease_generation,&frozen.root_id,&frozen.root_binding_id,&frozen.asset_id,&frozen.file_id,&frozen.path_key,now]).map_err(map_sqlite_error)?;
@@ -1012,7 +1048,7 @@ fn assert_callback_chain(
 }
 
 fn load_eligible_marks(connection: &Connection) -> Result<Vec<FrozenPhoto>, DomainError> {
-    let mut statement=connection.prepare("SELECT mark.mark_id,mark.photo_id,mark.photo_version,photo.photo_version,photo.lifecycle,snapshot.mark_asset_snapshot_id,snapshot.asset_id,snapshot.asset_version,snapshot.role,snapshot.file_identity_snapshot_id,identity.root_id,identity.root_binding_id,identity.volume_id,identity.relative_path,identity.path_key,identity.path_key_version,identity.file_id,identity.size_bytes,identity.mtime_filetime,asset.library_id,asset.current_version,asset.presence_state,asset.deletion_supported,revision.root_id,revision.root_binding_id,revision.relative_path,revision.path_key,revision.path_key_version,revision.file_id,revision.size_bytes,revision.mtime_filetime,revision.hard_link_count,relation.role,root.lifecycle,root.current_binding_id,root.capability_mask,binding.binding_state,binding.absolute_path_display,binding.absolute_path_key,binding.root_directory_file_id,binding.filesystem_kind,binding.reparse_checked,(SELECT COUNT(*) FROM photo_asset current_member WHERE current_member.photo_id=mark.photo_id AND current_member.to_photo_version IS NULL) FROM deletion_mark mark JOIN photo ON photo.photo_id=mark.photo_id JOIN deletion_mark_asset_snapshot snapshot ON snapshot.mark_id=mark.mark_id JOIN file_identity_snapshot identity ON identity.snapshot_id=snapshot.file_identity_snapshot_id JOIN asset ON asset.asset_id=snapshot.asset_id JOIN asset_revision revision ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version LEFT JOIN photo_asset relation ON relation.photo_id=mark.photo_id AND relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL JOIN root ON root.root_id=identity.root_id JOIN root_binding binding ON binding.binding_id=identity.root_binding_id WHERE mark.released_at IS NULL AND NOT EXISTS(SELECT 1 FROM deletion_batch_photo consumed WHERE consumed.mark_id=mark.mark_id) ORDER BY mark.mark_id,snapshot.role").map_err(map_sqlite_error)?;
+    let mut statement=connection.prepare("SELECT mark.mark_id,mark.photo_id,mark.photo_version,photo.photo_version,photo.lifecycle,snapshot.mark_asset_snapshot_id,snapshot.asset_id,snapshot.asset_version,snapshot.role,snapshot.file_identity_snapshot_id,identity.root_id,identity.root_binding_id,identity.volume_id,identity.relative_path,identity.path_key,identity.path_key_version,identity.file_id,identity.size_bytes,identity.mtime_filetime,asset.library_id,asset.current_version,asset.presence_state,asset.deletion_supported,revision.root_id,revision.root_binding_id,revision.relative_path,revision.path_key,revision.path_key_version,revision.file_id,revision.size_bytes,revision.mtime_filetime,revision.hard_link_count,relation.role,root.lifecycle,root.current_binding_id,root.capability_mask,binding.binding_state,binding.absolute_path_display,binding.absolute_path_key,binding.root_directory_file_id,binding.filesystem_kind,binding.reparse_checked,(CASE WHEN mark.mark_scope='DuplicateSubset' THEN (SELECT COUNT(*) FROM deletion_mark_asset_snapshot selected_snapshot WHERE selected_snapshot.mark_id=mark.mark_id) ELSE (SELECT COUNT(*) FROM photo_asset current_member WHERE current_member.photo_id=mark.photo_id AND current_member.to_photo_version IS NULL) END) FROM deletion_mark mark JOIN photo ON photo.photo_id=mark.photo_id JOIN deletion_mark_asset_snapshot snapshot ON snapshot.mark_id=mark.mark_id JOIN file_identity_snapshot identity ON identity.snapshot_id=snapshot.file_identity_snapshot_id JOIN asset ON asset.asset_id=snapshot.asset_id JOIN asset_revision revision ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version LEFT JOIN photo_asset relation ON relation.photo_id=mark.photo_id AND relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL JOIN root ON root.root_id=identity.root_id JOIN root_binding binding ON binding.binding_id=identity.root_binding_id WHERE mark.released_at IS NULL AND NOT EXISTS(SELECT 1 FROM deletion_batch_photo consumed WHERE consumed.mark_id=mark.mark_id) ORDER BY mark.mark_id,snapshot.role").map_err(map_sqlite_error)?;
     let rows = statement
         .query_map((), |row| {
             Ok((

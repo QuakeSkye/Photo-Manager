@@ -1,3 +1,4 @@
+mod candidate_lookup;
 mod coordinator;
 mod pairing;
 mod scanner;
@@ -18,6 +19,8 @@ use crate::{
     media::{CaptureMetadata, MEDIA_PARSER_VERSION, PreviewState},
 };
 
+pub(crate) use candidate_lookup::find_candidates as find_import_candidates;
+pub use candidate_lookup::{CandidateLookup, CandidateLookupInput, ImportCandidate};
 pub use coordinator::{BackgroundScan, ScanCoordinator, ScanKind, ScanPhase, ScanStatus};
 pub use scanner::{LibraryScanner, ScanIssue, ScanProgress, ScanReport, ScanRequest};
 pub use timeline::{SortMode, TimelinePhoto, ViewingCursor};
@@ -231,6 +234,7 @@ impl CatalogService {
                 ));
             }
             let now = now_micros();
+            candidate_lookup::ensure_catalog_revision(transaction, library_id, root_binding_id)?;
             transaction
                 .execute(
                     "INSERT INTO scan_run(
@@ -692,6 +696,12 @@ fn update_existing(
         ensure_metadata(transaction, &id_bytes, current.version, observation)?;
         let capture_metadata_inserted =
             ensure_capture_metadata(transaction, &id_bytes, current.version, observation)?;
+        candidate_lookup::ensure_candidate_key(
+            transaction,
+            &id_bytes,
+            current.version,
+            observation,
+        )?;
         let (photo_id, photo_version) = match current_photo {
             Some(value) => value,
             None => create_photo_for_asset(
@@ -733,6 +743,7 @@ fn update_existing(
     insert_metadata(transaction, &id_bytes, next_version, observation)?;
     let capture_metadata_inserted =
         ensure_capture_metadata(transaction, &id_bytes, next_version, observation)?;
+    candidate_lookup::ensure_candidate_key(transaction, &id_bytes, next_version, observation)?;
     let (photo_id, photo_version) = match current_photo {
         Some((photo_id, version)) => {
             let next_photo_version = bump_photo(transaction, photo_id, version)?;
@@ -746,6 +757,11 @@ fn update_existing(
             observation,
         )?,
     };
+    candidate_lookup::bump_catalog_revision(
+        transaction,
+        observation.asset.library_id,
+        observation.asset.root_binding_id,
+    )?;
     Ok(ObserveAssetResult {
         asset_id,
         asset_version: next_version,
@@ -784,11 +800,17 @@ fn insert_new(
     insert_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
     let capture_metadata_inserted =
         ensure_capture_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
+    candidate_lookup::ensure_candidate_key(transaction, asset_id.as_bytes(), 1, observation)?;
     let (photo_id, photo_version) = create_photo_for_asset(
         transaction,
         observation.asset.library_id,
         asset_id.as_bytes(),
         observation,
+    )?;
+    candidate_lookup::bump_catalog_revision(
+        transaction,
+        observation.asset.library_id,
+        observation.asset.root_binding_id,
     )?;
     Ok(ObserveAssetResult {
         asset_id,
@@ -1180,6 +1202,20 @@ fn mark_missing_assets(
             bump_photo(transaction, photo_id, photo_version)?;
         }
     }
+    if !rows.is_empty() {
+        let library_bytes: Vec<u8> = transaction
+            .query_row(
+                "SELECT library_id FROM root WHERE root_id=?1",
+                [root_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        candidate_lookup::bump_catalog_revision(
+            transaction,
+            library_id_from(&library_bytes)?,
+            binding_id,
+        )?;
+    }
     Ok(rows.len())
 }
 
@@ -1341,7 +1377,7 @@ fn to_i64(value: usize) -> Result<i64, DomainError> {
     i64::try_from(value).map_err(|_| DomainError::new(ErrorCode::Internal, "扫描计数溢出。"))
 }
 
-pub(super) fn uuid_from(bytes: &[u8]) -> Result<uuid::Uuid, DomainError> {
+pub(crate) fn uuid_from(bytes: &[u8]) -> Result<uuid::Uuid, DomainError> {
     uuid::Uuid::from_slice(bytes)
         .map_err(|_| DomainError::new(ErrorCode::DatabaseCorrupt, "数据库对象标识损坏。"))
 }

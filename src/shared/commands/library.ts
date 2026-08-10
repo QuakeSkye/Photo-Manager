@@ -56,7 +56,20 @@ export interface PendingDeleteItem extends PhotoSummary {
   readonly relativeDirectory: string;
   readonly physicalFileCount: number;
   readonly totalSizeBytes: number;
+  readonly markScope?: 'WholePhoto' | 'DuplicateSubset';
+  readonly sourceLabel?: string;
+  readonly files?: readonly PendingDeleteFile[];
   readonly problem: DeletionProblem | null;
+}
+
+export interface PendingDeleteFile {
+  readonly assetId: string;
+  readonly assetVersion: number;
+  readonly role: 'Jpg' | 'Raf';
+  readonly fullPath: string;
+  readonly directory: string;
+  readonly sizeBytes: number;
+  readonly retainedFullPath: string | null;
 }
 
 export interface PendingDeleteSnapshot {

@@ -14,7 +14,9 @@ use crate::{
     safety::TestRoot,
 };
 
-use super::{CatalogService, LibraryScanner, ScanRequest, SortMode};
+use super::{
+    CandidateLookup, CandidateLookupInput, CatalogService, LibraryScanner, ScanRequest, SortMode,
+};
 
 struct Fixture {
     _parent: tempfile::TempDir,
@@ -422,6 +424,50 @@ fn hard_link_is_browsable_but_never_deletion_supported() {
         .unwrap();
     assert_eq!(row.0, 0);
     assert!(row.1 >= 2);
+}
+
+#[test]
+fn candidate_lookup_spans_subdirectories_and_catalog_revision_only_tracks_changes() {
+    let fixture = fixture();
+    let historical = fixture.library_path.join("2026").join("20260809");
+    fs::create_dir_all(&historical).unwrap();
+    let bytes = generated_jpeg(Some("2026:08:10 12:34:56"));
+    fs::write(historical.join("DSCF1234.JPG"), &bytes).unwrap();
+
+    let catalog = Arc::new(CatalogService::new(fixture.database.clone()));
+    let scanner = LibraryScanner::new(catalog);
+    scanner.scan(request(&fixture)).unwrap();
+    let revision_after_first = CandidateLookup::new(fixture.database.clone())
+        .catalog_revision(fixture.binding.library_id)
+        .unwrap();
+    let candidates = CandidateLookup::new(fixture.database.clone())
+        .find(CandidateLookupInput {
+            library_id: fixture.binding.library_id,
+            root_id: fixture.binding.root_id,
+            original_filename: "dScF1234.JpG".into(),
+            size_bytes: i64::try_from(bytes.len()).unwrap(),
+            capture_local_key: Some("2026-08-10T12:34:56".into()),
+        })
+        .unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].relative_path, "2026\\20260809\\DSCF1234.JPG");
+
+    scanner.scan(request(&fixture)).unwrap();
+    assert_eq!(
+        CandidateLookup::new(fixture.database.clone())
+            .catalog_revision(fixture.binding.library_id)
+            .unwrap(),
+        revision_after_first
+    );
+
+    fs::write(historical.join("DSCF1235.JPG"), generated_jpeg(None)).unwrap();
+    scanner.scan(request(&fixture)).unwrap();
+    assert_eq!(
+        CandidateLookup::new(fixture.database.clone())
+            .catalog_revision(fixture.binding.library_id)
+            .unwrap(),
+        revision_after_first + 1
+    );
 }
 
 #[test]

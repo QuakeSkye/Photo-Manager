@@ -33,6 +33,7 @@ pub fn reconcile_library(
     transaction: &Transaction<'_>,
     library_id: LibraryId,
 ) -> Result<(), DomainError> {
+    backfill_complete_import_resolutions(transaction, library_id)?;
     let mut present = load_present_assets(transaction, library_id)?;
     let imported = load_same_import_pairs(transaction, library_id)?;
     let desired = combined_desired_pairs(&present, &imported);
@@ -60,6 +61,7 @@ pub fn reconcile_import_groups(
     transaction: &Transaction<'_>,
     library_id: LibraryId,
 ) -> Result<(), DomainError> {
+    backfill_complete_import_resolutions(transaction, library_id)?;
     let present = load_present_assets(transaction, library_id)?;
     let imported = load_same_import_pairs(transaction, library_id)?;
     merge_desired_pairs(
@@ -76,8 +78,83 @@ fn combined_desired_pairs(
     imported: &HashSet<(AssetId, AssetId)>,
 ) -> HashSet<(AssetId, AssetId)> {
     let mut desired = desired_pairs(present);
+    let explicitly_resolved_assets = imported
+        .iter()
+        .flat_map(|(jpg, raf)| [*jpg, *raf])
+        .collect::<HashSet<_>>();
+    desired.retain(|pair| {
+        imported.contains(pair)
+            || (!explicitly_resolved_assets.contains(&pair.0)
+                && !explicitly_resolved_assets.contains(&pair.1))
+    });
     desired.extend(imported.iter().copied());
     desired
+}
+
+fn backfill_complete_import_resolutions(
+    transaction: &Transaction<'_>,
+    library_id: LibraryId,
+) -> Result<(), DomainError> {
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO import_asset_resolution_fact(
+                resolution_fact_id, step_id, asset_id, asset_version,
+                resolution_kind, indexed_fact_id, duplicate_proof_id,
+                evidence_snapshot_id, resolved_at
+             )
+             SELECT randomblob(16), published.step_id, asset.asset_id,
+                    asset.current_version, 'PublishedIndexed', indexed.indexed_fact_id,
+                    NULL, published.target_snapshot_id, ?2
+             FROM import_indexed_fact AS indexed
+             JOIN import_published_fact AS published
+               ON published.published_fact_id=indexed.published_fact_id
+             JOIN asset ON asset.asset_id=indexed.asset_id
+             JOIN asset_revision AS revision
+               ON revision.asset_id=asset.asset_id
+              AND revision.asset_version=asset.current_version
+             JOIN file_identity_snapshot AS snapshot
+               ON snapshot.snapshot_id=published.target_snapshot_id
+             WHERE asset.library_id=?1 AND asset.presence_state='Present'
+               AND revision.presence_state='Present'
+               AND revision.root_id=snapshot.root_id
+               AND revision.root_binding_id=snapshot.root_binding_id
+               AND revision.path_key=snapshot.path_key
+               AND revision.file_id IS snapshot.file_id
+               AND revision.size_bytes=snapshot.size_bytes
+               AND revision.mtime_filetime=snapshot.mtime_filetime",
+            (library_id.as_bytes().as_slice(), now_micros()),
+        )
+        .map_err(map_sqlite_error)?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO import_asset_resolution_fact(
+                resolution_fact_id, step_id, asset_id, asset_version,
+                resolution_kind, indexed_fact_id, duplicate_proof_id,
+                evidence_snapshot_id, resolved_at
+             )
+             SELECT randomblob(16), proof.step_id, asset.asset_id,
+                    asset.current_version, 'SkippedDuplicate', NULL,
+                    proof.duplicate_proof_id, proof.target_after_snapshot_id, ?2
+             FROM import_duplicate_proof AS proof
+             JOIN asset ON asset.asset_id=proof.target_asset_id
+             JOIN asset_revision AS revision
+               ON revision.asset_id=asset.asset_id
+              AND revision.asset_version=asset.current_version
+             JOIN file_identity_snapshot AS snapshot
+               ON snapshot.snapshot_id=proof.target_after_snapshot_id
+             WHERE proof.proof_scope='Execution'
+               AND asset.library_id=?1 AND asset.presence_state='Present'
+               AND revision.presence_state='Present'
+               AND revision.root_id=snapshot.root_id
+               AND revision.root_binding_id=snapshot.root_binding_id
+               AND revision.path_key=snapshot.path_key
+               AND revision.file_id IS snapshot.file_id
+               AND revision.size_bytes=snapshot.size_bytes
+               AND revision.mtime_filetime=snapshot.mtime_filetime",
+            (library_id.as_bytes().as_slice(), now_micros()),
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(())
 }
 
 fn merge_desired_pairs(
@@ -173,22 +250,18 @@ fn load_same_import_pairs(
 ) -> Result<HashSet<(AssetId, AssetId)>, DomainError> {
     let mut statement = transaction
         .prepare(
-            "SELECT jpg_index.asset_id, raf_index.asset_id
+            "SELECT jpg_resolution.asset_id, raf_resolution.asset_id
              FROM import_group AS import_pair
              JOIN import_asset_step AS jpg_step
                ON jpg_step.group_id=import_pair.group_id AND jpg_step.role='Jpg'
              JOIN import_asset_step AS raf_step
                ON raf_step.group_id=import_pair.group_id AND raf_step.role='Raf'
-             JOIN import_published_fact AS jpg_published
-               ON jpg_published.step_id=jpg_step.step_id
-             JOIN import_published_fact AS raf_published
-               ON raf_published.step_id=raf_step.step_id
-             JOIN import_indexed_fact AS jpg_index
-               ON jpg_index.published_fact_id=jpg_published.published_fact_id
-             JOIN import_indexed_fact AS raf_index
-               ON raf_index.published_fact_id=raf_published.published_fact_id
-             JOIN asset AS jpg_asset ON jpg_asset.asset_id=jpg_index.asset_id
-             JOIN asset AS raf_asset ON raf_asset.asset_id=raf_index.asset_id
+             JOIN import_asset_resolution_fact AS jpg_resolution
+               ON jpg_resolution.step_id=jpg_step.step_id
+             JOIN import_asset_resolution_fact AS raf_resolution
+               ON raf_resolution.step_id=raf_step.step_id
+             JOIN asset AS jpg_asset ON jpg_asset.asset_id=jpg_resolution.asset_id
+             JOIN asset AS raf_asset ON raf_asset.asset_id=raf_resolution.asset_id
              JOIN asset_revision AS jpg_current
                ON jpg_current.asset_id=jpg_asset.asset_id
               AND jpg_current.asset_version=jpg_asset.current_version
@@ -196,13 +269,22 @@ fn load_same_import_pairs(
                ON raf_current.asset_id=raf_asset.asset_id
               AND raf_current.asset_version=raf_asset.current_version
              JOIN file_identity_snapshot AS jpg_snapshot
-               ON jpg_snapshot.snapshot_id=jpg_published.target_snapshot_id
+               ON jpg_snapshot.snapshot_id=jpg_resolution.evidence_snapshot_id
              JOIN file_identity_snapshot AS raf_snapshot
-               ON raf_snapshot.snapshot_id=raf_published.target_snapshot_id
+               ON raf_snapshot.snapshot_id=raf_resolution.evidence_snapshot_id
+             LEFT JOIN asset_media_metadata AS jpg_metadata
+               ON jpg_metadata.asset_id=jpg_asset.asset_id
+              AND jpg_metadata.asset_version=jpg_asset.current_version
+             LEFT JOIN asset_media_metadata AS raf_metadata
+               ON raf_metadata.asset_id=raf_asset.asset_id
+              AND raf_metadata.asset_version=raf_asset.current_version
              WHERE import_pair.pair_evidence='SameImportGroup'
                AND jpg_asset.library_id=?1 AND raf_asset.library_id=?1
+               AND jpg_asset.media_kind='Jpg' AND raf_asset.media_kind='Raf'
                AND jpg_asset.presence_state='Present'
                AND raf_asset.presence_state='Present'
+               AND jpg_asset.current_version=jpg_resolution.asset_version
+               AND raf_asset.current_version=raf_resolution.asset_version
                AND jpg_current.root_id=jpg_snapshot.root_id
                AND jpg_current.root_binding_id=jpg_snapshot.root_binding_id
                AND jpg_current.path_key=jpg_snapshot.path_key
@@ -214,7 +296,10 @@ fn load_same_import_pairs(
                AND raf_current.path_key=raf_snapshot.path_key
                AND raf_current.file_id IS raf_snapshot.file_id
                AND raf_current.size_bytes=raf_snapshot.size_bytes
-               AND raf_current.mtime_filetime=raf_snapshot.mtime_filetime",
+               AND raf_current.mtime_filetime=raf_snapshot.mtime_filetime
+               AND (jpg_metadata.capture_local_key IS NULL
+                    OR raf_metadata.capture_local_key IS NULL
+                    OR jpg_metadata.capture_local_key=raf_metadata.capture_local_key)",
         )
         .map_err(map_sqlite_error)?;
     let rows = statement

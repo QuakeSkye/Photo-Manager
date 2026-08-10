@@ -72,6 +72,7 @@ impl Default for SchedulerState {
 #[derive(Debug)]
 pub struct IoScheduler {
     state: Mutex<SchedulerState>,
+    bulk_io: Mutex<()>,
     changed: Condvar,
     rotational: bool,
     concurrency_limit: usize,
@@ -94,6 +95,7 @@ impl IoScheduler {
     ) -> Self {
         Self {
             state: Mutex::new(SchedulerState::default()),
+            bulk_io: Mutex::new(()),
             changed: Condvar::new(),
             rotational,
             concurrency_limit: concurrency_limit.max(1),
@@ -163,6 +165,36 @@ impl IoScheduler {
             running: state.running,
         })
     }
+
+    pub fn acquire_bulk_io<C>(&self, mut cancelled: C) -> Result<BulkIoPermit<'_>, DomainError>
+    where
+        C: FnMut() -> bool,
+    {
+        loop {
+            match self.bulk_io.try_lock() {
+                Ok(guard) => return Ok(BulkIoPermit { _guard: guard }),
+                Err(std::sync::TryLockError::WouldBlock) if cancelled() => {
+                    return Err(DomainError::new(
+                        ErrorCode::InvalidTransition,
+                        "批量文件任务在等待期间已取消。",
+                    ));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(WAIT_SLICE);
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(DomainError::new(
+                        ErrorCode::Internal,
+                        "批量文件任务串行器不可用。",
+                    ));
+                }
+            }
+        }
+    }
+}
+
+pub struct BulkIoPermit<'a> {
+    _guard: std::sync::MutexGuard<'a, ()>,
 }
 
 fn can_acquire(
