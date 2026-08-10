@@ -122,7 +122,7 @@ pub fn apply_pending_migrations(
     if current > LATEST_SCHEMA_VERSION {
         return Err(DomainError::new(
             ErrorCode::ReadOnlySafeMode,
-            "数据库来自更新版本，当前应用只能进入只读安全模式。",
+            "数据库由更新版本的应用创建；当前程序版本过旧，请安装最新版本后继续。",
         ));
     }
     if current == LATEST_SCHEMA_VERSION {

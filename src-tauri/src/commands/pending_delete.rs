@@ -7,11 +7,16 @@ use crate::{
 };
 
 #[tauri::command]
-pub fn get_pending_delete_snapshot(
+pub async fn get_pending_delete_snapshot(
     sort_mode: String,
     pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
 ) -> Result<PendingDeleteSnapshot, DomainError> {
-    pending_delete.snapshot(parse_sort_mode(&sort_mode)?)
+    let pending_delete = Arc::clone(pending_delete.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        pending_delete.snapshot(parse_sort_mode(&sort_mode)?)
+    })
+    .await
+    .map_err(|_| DomainError::new(ErrorCode::Internal, "待删除快照后台任务意外终止，请重试。"))?
 }
 
 #[tauri::command]

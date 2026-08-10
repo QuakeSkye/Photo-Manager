@@ -29,10 +29,22 @@ import {
   type RecycleStatus,
 } from '../shared/commands/recycle';
 import { getSafetyStatus, type SafetyStatus } from '../shared/commands/safety';
+import { APP_VERSION } from '../shared/version';
 
 type Route = 'library' | 'pending-delete' | 'settings' | 'scan' | 'import';
 
 export function App() {
+  return (
+    <>
+      <AppContent />
+      <div className="app-version" aria-label={`应用版本 v${APP_VERSION}`}>
+        v{APP_VERSION}
+      </div>
+    </>
+  );
+}
+
+function AppContent() {
   const [sortMode, setSortMode] = useState<SortMode>('captureDesc');
   const [snapshot, setSnapshot] = useState<LibrarySnapshot | null>(null);
   const [pendingSnapshot, setPendingSnapshot] =
@@ -50,6 +62,7 @@ export function App() {
   const [recycleExecuting, setRecycleExecuting] = useState(false);
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
   const mutationInFlight = useRef(false);
+  const sortInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const restoreAfterSettings = useRef<{
     photoId: string | null;
@@ -62,7 +75,7 @@ export function App() {
       setSafetyStatus(await getSafetyStatus());
     } catch (reason) {
       setSafetyStatus({
-        phase: 'v1.0.1',
+        phase: `v${APP_VERSION}`,
         globalWriteGate: 'closed',
         importGate: 'closed',
         recycleGate: 'closed',
@@ -235,31 +248,35 @@ export function App() {
   };
 
   const changeSort = (mode: SortMode) => {
-    if (mutationInFlight.current || mode === sortMode) return;
+    if (mutationInFlight.current || sortInFlight.current || mode === sortMode)
+      return;
     void changeSortMode(mode);
   };
 
   const changeSortMode = async (mode: SortMode) => {
+    sortInFlight.current = true;
     setLoading(true);
     setError(null);
     try {
-      const [nextLibrary, nextPending] = await Promise.all([
-        getLibrarySnapshot(mode),
-        getPendingDeleteSnapshot(mode),
-      ]);
-      setSortMode(mode);
-      setSnapshot(nextLibrary);
-      setPendingSnapshot(nextPending);
-      const list =
-        route === 'pending-delete' ? nextPending.items : nextLibrary.photos;
-      setSelectedPhotoId((current) =>
-        current !== null && list.some((photo) => photo.photoId === current)
-          ? current
-          : (list[0]?.photoId ?? null),
-      );
+      if (route === 'pending-delete') {
+        const [nextLibrary, nextPending] = await Promise.all([
+          getLibrarySnapshot(mode),
+          getPendingDeleteSnapshot(mode),
+        ]);
+        setSortMode(mode);
+        setSnapshot(nextLibrary);
+        setPendingSnapshot(nextPending);
+        setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+      } else {
+        const nextLibrary = await getLibrarySnapshot(mode);
+        setSortMode(mode);
+        setSnapshot(nextLibrary);
+        setSelectedPhotoId(nextLibrary.photos[0]?.photoId ?? null);
+      }
     } catch (reason) {
       setError(readError(reason));
     } finally {
+      sortInFlight.current = false;
       setLoading(false);
     }
   };
@@ -639,6 +656,7 @@ export function App() {
       {route === 'scan' && snapshot.scan !== null && (
         <ScanView
           scan={snapshot.scan}
+          safetyStatus={safetyStatus}
           settingsButtonRef={settingsButtonRef}
           onBack={() =>
             setRoute(

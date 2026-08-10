@@ -731,12 +731,25 @@ p {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 74px 0 12px;
   border-top: 1px solid var(--border);
   color: #636d7a;
   background: var(--surface);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
+}
+
+.app-version {
+  position: fixed;
+  right: 12px;
+  bottom: 4px;
+  z-index: 20;
+  color: #7a8390;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  pointer-events: none;
+  user-select: none;
 }
 .shortcut-hint {
   display: flex;
@@ -1033,6 +1046,13 @@ kbd {
 }
 .tool-status span:nth-child(2) {
   justify-self: center;
+}
+
+.scan-retry-message {
+  margin: 0 0 2px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .import-location-panel {

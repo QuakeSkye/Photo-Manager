@@ -874,6 +874,10 @@ fn unfinished_attempts_remain_reconcilable_but_newer_schema_is_read_only() {
     let newer = Database::open(second_root.path()).unwrap();
     assert_eq!(newer.mode(), DatabaseMode::ReadOnlySafe);
     assert!(newer.writer().is_err());
+    let error = newer.require_write_access().unwrap_err();
+    assert_eq!(error.code, ErrorCode::ReadOnlySafeMode);
+    assert!(error.user_message.contains("当前程序版本过旧"));
+    assert!(error.user_message.contains("安装最新版本"));
 }
 
 #[test]

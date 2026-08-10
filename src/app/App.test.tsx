@@ -46,6 +46,9 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
       'captureDesc',
     );
+    expect(screen.getByLabelText('应用版本 v1.0.2')).toHaveTextContent(
+      'v1.0.2',
+    );
     expect(
       screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
@@ -128,17 +131,41 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 
-  test('switches oldest/newest order while keeping unknown dates last', async () => {
+  test('switches oldest/newest order and selects the first photo in each order', async () => {
     render(<App />);
     const sort = await screen.findByRole('combobox', { name: '照片排序' });
 
     fireEvent.change(sort, { target: { value: 'captureAsc' } });
 
     await waitFor(() => expect(sort).toHaveValue('captureAsc'));
-    for (let index = 0; index < 20; index += 1)
-      fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(
       await screen.findByRole('button', { name: '第 1 张：DSCF0942.RAF' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.change(sort, { target: { value: 'captureDesc' } });
+
+    await waitFor(() => expect(sort).toHaveValue('captureDesc'));
+    expect(
+      await screen.findByRole('button', { name: '第 1 张：DSCF1042.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
+  test('keeps the committed order and selection when a sort request fails', async () => {
+    window.history.replaceState(null, '', '/?scenario=sort-failure');
+    render(<App />);
+    const sort = await screen.findByRole('combobox', { name: '照片排序' });
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.change(sort, { target: { value: 'captureAsc' } });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '切换照片排序失败，请重试。',
+    );
+    expect(sort).toHaveValue('captureDesc');
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
   });
 
@@ -709,6 +736,21 @@ describe('Root 与扫描视觉状态', () => {
       expect(screen.queryByLabelText('当前照片')).not.toBeInTheDocument();
     },
   );
+
+  test('disables scan retry and explains when the database is newer than the app', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/?scenario=scan-failed&safety=database-readonly',
+    );
+    render(<App />);
+
+    const retry = await screen.findByRole('button', { name: '继续扫描' });
+    await waitFor(() => expect(retry).toBeDisabled());
+    expect(
+      screen.getByText(/当前程序版本过旧，请安装最新版本后继续/),
+    ).toBeInTheDocument();
+  });
 
   test('keeps incremental scan visible while allowing an immediate return to the library', async () => {
     window.history.replaceState(null, '', '/?scenario=scan-incremental');

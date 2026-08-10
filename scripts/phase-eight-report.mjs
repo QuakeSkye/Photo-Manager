@@ -77,7 +77,7 @@ assert(
 assert(reports.quality.passed === true, 'source quality gate');
 assert(reports.safety.reportVersion === 2, 'runtime safety report version 2');
 assert(manifest.reportVersion === 2, 'candidate manifest version 2');
-assert(manifest.appVersion === '1.0.1', 'candidate app version 1.0.1');
+assert(manifest.appVersion === '1.0.2', 'candidate app version 1.0.2');
 assert(manifest.build.safetyReportVersion === 3, 'safety evidence version 3');
 
 const importResult = reports.safety.import;

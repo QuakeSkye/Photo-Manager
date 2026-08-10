@@ -167,13 +167,17 @@ impl RuntimeSafetyGate {
 
     pub fn status(&self) -> SafetyStatus {
         let Ok(mut core) = self.core.lock() else {
-            return closed_status(self.database.mode(), GateCloseReason::FaultLatched);
+            return closed_status(
+                self.database.mode(),
+                GateCloseReason::FaultLatched,
+                GateCloseReason::FaultLatched.message().into(),
+            );
         };
         self.refresh_database_health(&mut core);
         let reason = derived_close_reason(&core, self.database.mode());
         match reason {
             None => SafetyStatus {
-                phase: "v1.0.1",
+                phase: concat!("v", env!("CARGO_PKG_VERSION")),
                 global_write_gate: GateState::Open,
                 import_gate: GateState::Open,
                 recycle_gate: GateState::Open,
@@ -181,8 +185,19 @@ impl RuntimeSafetyGate {
                 reason: None,
                 message: "写入安全状态正常；Import 与 Recycle 可用。".into(),
             },
-            Some(reason) => closed_status(self.database.mode(), reason),
+            Some(reason) => closed_status(self.database.mode(), reason, self.close_message(reason)),
         }
+    }
+
+    fn close_message(&self, reason: GateCloseReason) -> String {
+        if reason == GateCloseReason::DatabaseReadOnly {
+            return self
+                .database
+                .safe_mode_reason()
+                .map(|error| error.user_message.clone())
+                .unwrap_or_else(|| reason.message().into());
+        }
+        reason.message().into()
     }
 
     fn lock_core(&self) -> Result<MutexGuard<'_, GateCore>, DomainError> {
@@ -253,21 +268,27 @@ fn gate_closed_error(reason: Option<GateCloseReason>) -> DomainError {
     DomainError::new(ErrorCode::CapabilityDenied, reason.message())
 }
 
-fn closed_status(database_mode: DatabaseMode, reason: GateCloseReason) -> SafetyStatus {
+fn closed_status(
+    database_mode: DatabaseMode,
+    reason: GateCloseReason,
+    message: String,
+) -> SafetyStatus {
     SafetyStatus {
-        phase: "v1.0.1",
+        phase: concat!("v", env!("CARGO_PKG_VERSION")),
         global_write_gate: GateState::Closed,
         import_gate: GateState::Closed,
         recycle_gate: GateState::Closed,
         database_mode,
         reason: Some(reason),
-        message: reason.message().into(),
+        message,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Barrier, atomic::Ordering};
+
+    use rusqlite::Connection;
 
     use super::*;
 
@@ -360,6 +381,28 @@ mod tests {
         assert!(gate.require_feature(FeatureGate::Import).is_err());
         gate.mark_ready().unwrap();
         assert_eq!(gate.status().global_write_gate, GateState::Open);
+    }
+
+    #[test]
+    fn newer_database_message_reaches_the_runtime_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let connection = Connection::open(directory.path().join("catalog.sqlite3")).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                crate::db::migration::LATEST_SCHEMA_VERSION + 1,
+            )
+            .unwrap();
+        drop(connection);
+        let database = Arc::new(Database::open(directory.path()).unwrap());
+        let gate = RuntimeSafetyGate::new(database);
+
+        let status = gate.status();
+
+        assert_eq!(status.reason, Some(GateCloseReason::DatabaseReadOnly));
+        assert!(status.message.contains("当前程序版本过旧"));
+        assert!(status.message.contains("安装最新版本"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Output = "artifacts\phase-eight-v1.0.1\source-quality-report.json"
+    [string]$Output = "artifacts\phase-eight-v1.0.2\source-quality-report.json"
 )
 
 $ErrorActionPreference = "Stop"

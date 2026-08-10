@@ -200,12 +200,30 @@ pub struct BindResult {
 }
 
 #[tauri::command]
-pub fn get_library_snapshot(
+pub async fn get_library_snapshot(
     sort_mode: String,
     database: tauri::State<'_, Arc<Database>>,
     catalog: tauri::State<'_, Arc<crate::catalog::CatalogService>>,
     scans: tauri::State<'_, ScanCoordinator>,
     pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
+) -> Result<LibrarySnapshot, DomainError> {
+    let database = Arc::clone(database.inner());
+    let catalog = Arc::clone(catalog.inner());
+    let scans = scans.inner().clone();
+    let pending_delete = Arc::clone(pending_delete.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        load_library_snapshot(sort_mode, database, catalog, scans, pending_delete)
+    })
+    .await
+    .map_err(|_| background_task_error("图库快照"))?
+}
+
+fn load_library_snapshot(
+    sort_mode: String,
+    database: Arc<Database>,
+    catalog: Arc<crate::catalog::CatalogService>,
+    scans: ScanCoordinator,
+    pending_delete: Arc<PendingDeleteService>,
 ) -> Result<LibrarySnapshot, DomainError> {
     let sort_mode = parse_sort_mode(&sort_mode)?;
     let connection = database.open_read_connection()?;
@@ -328,10 +346,23 @@ pub fn get_library_snapshot(
 }
 
 #[tauri::command]
-pub fn get_photo_detail(
+pub async fn get_photo_detail(
     photo_id: String,
     photo_version: i64,
     database: tauri::State<'_, Arc<Database>>,
+) -> Result<PhotoDetail, DomainError> {
+    let database = Arc::clone(database.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        load_photo_detail(photo_id, photo_version, database)
+    })
+    .await
+    .map_err(|_| background_task_error("照片详情"))?
+}
+
+fn load_photo_detail(
+    photo_id: String,
+    photo_version: i64,
+    database: Arc<Database>,
 ) -> Result<PhotoDetail, DomainError> {
     let photo_id = PhotoId::from_str(&photo_id)?;
     let connection = database.open_read_connection()?;
@@ -483,10 +514,23 @@ pub fn get_photo_detail(
 }
 
 #[tauri::command]
-pub fn get_photo_preview(
+pub async fn get_photo_preview(
     asset_id: String,
     asset_version: i64,
     previews: tauri::State<'_, Arc<PreviewService>>,
+) -> Result<PreviewPayload, DomainError> {
+    let previews = Arc::clone(previews.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        load_photo_preview(asset_id, asset_version, previews)
+    })
+    .await
+    .map_err(|_| background_task_error("照片预览"))?
+}
+
+fn load_photo_preview(
+    asset_id: String,
+    asset_version: i64,
+    previews: Arc<PreviewService>,
 ) -> Result<PreviewPayload, DomainError> {
     let asset_id = AssetId::from_str(&asset_id)?;
     let bytes = previews.read_controlled(asset_id, asset_version)?;
@@ -499,11 +543,26 @@ pub fn get_photo_preview(
 }
 
 #[tauri::command]
-pub fn save_viewing_cursor(
+pub async fn save_viewing_cursor(
     sort_mode: String,
     photo_id: String,
     catalog: tauri::State<'_, Arc<crate::catalog::CatalogService>>,
     database: tauri::State<'_, Arc<Database>>,
+) -> Result<(), DomainError> {
+    let catalog = Arc::clone(catalog.inner());
+    let database = Arc::clone(database.inner());
+    tauri::async_runtime::spawn_blocking(move || {
+        persist_viewing_cursor(sort_mode, photo_id, catalog, database)
+    })
+    .await
+    .map_err(|_| background_task_error("浏览位置"))?
+}
+
+fn persist_viewing_cursor(
+    sort_mode: String,
+    photo_id: String,
+    catalog: Arc<crate::catalog::CatalogService>,
+    database: Arc<Database>,
 ) -> Result<(), DomainError> {
     let sort_mode = parse_sort_mode(&sort_mode)?;
     let photo_id = PhotoId::from_str(&photo_id)?;
@@ -567,7 +626,11 @@ pub fn cancel_library_scan(scans: tauri::State<'_, ScanCoordinator>) -> Result<(
 }
 
 #[tauri::command]
-pub fn retry_library_scan(scans: tauri::State<'_, ScanCoordinator>) -> Result<(), DomainError> {
+pub fn retry_library_scan(
+    scans: tauri::State<'_, ScanCoordinator>,
+    database: tauri::State<'_, Arc<Database>>,
+) -> Result<(), DomainError> {
+    database.require_write_access()?;
     let kind = scans
         .status()?
         .map(|status| status.kind)
@@ -582,6 +645,13 @@ fn parse_sort_mode(value: &str) -> Result<SortMode, DomainError> {
         "captureAsc" => Ok(SortMode::CaptureAsc),
         _ => Err(DomainError::new(ErrorCode::InvalidId, "排序方式无效。")),
     }
+}
+
+fn background_task_error(label: &str) -> DomainError {
+    DomainError::new(
+        ErrorCode::Internal,
+        format!("{label}后台任务意外终止，请重试。"),
+    )
 }
 
 fn load_scan_reports(

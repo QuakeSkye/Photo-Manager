@@ -162,7 +162,11 @@ const previewCache = new Map<string, Promise<string>>();
 export async function getLibrarySnapshot(
   sortMode: SortMode,
 ): Promise<LibrarySnapshot> {
-  if (useDemoBackend()) return demoSnapshot(sortMode);
+  if (useDemoBackend()) {
+    if (scenario() === 'sort-failure' && sortMode === 'captureAsc')
+      throw demoError('切换照片排序失败，请重试。');
+    return demoSnapshot(sortMode);
+  }
   return invoke<LibrarySnapshot>('get_library_snapshot', { sortMode });
 }
 

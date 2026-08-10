@@ -8,9 +8,11 @@ import {
 } from '../../shared/commands/library';
 import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
+import type { SafetyStatus } from '../../shared/commands/safety';
 
 interface ScanViewProps {
   readonly scan: ScanStatus;
+  readonly safetyStatus: SafetyStatus | null;
   readonly settingsButtonRef: RefObject<HTMLButtonElement | null>;
   readonly onBack: () => void;
   readonly onEnterLibrary: () => void;
@@ -20,6 +22,7 @@ interface ScanViewProps {
 
 export function ScanView({
   scan,
+  safetyStatus,
   settingsButtonRef,
   onBack,
   onEnterLibrary,
@@ -32,6 +35,10 @@ export function ScanView({
   const cancelButtonRef = useRef<HTMLButtonElement>(null);
   const isActive = scan.phase === 'running' || scan.phase === 'cancelling';
   const isFullGate = scan.kind === 'full';
+  const retryBlocked =
+    safetyStatus !== null &&
+    (safetyStatus.databaseMode !== 'read_write' ||
+      safetyStatus.reason === 'writer_unhealthy');
 
   const cancel = async () => {
     setBusy(true);
@@ -177,14 +184,21 @@ export function ScanView({
               </button>
             )}
             {(scan.phase === 'cancelled' || scan.phase === 'failed') && (
-              <button
-                className="button-primary"
-                type="button"
-                onClick={() => void retry()}
-                disabled={busy}
-              >
-                {busy ? '正在启动…' : '继续扫描'}
-              </button>
+              <>
+                {retryBlocked && (
+                  <p className="scan-retry-message" role="status">
+                    {safetyStatus.message}
+                  </p>
+                )}
+                <button
+                  className="button-primary"
+                  type="button"
+                  onClick={() => void retry()}
+                  disabled={busy || retryBlocked}
+                >
+                  {busy ? '正在启动…' : '继续扫描'}
+                </button>
+              </>
             )}
             {(scan.phase === 'cancelled' || scan.phase === 'failed') && (
               <button type="button" onClick={onOpenSettings}>

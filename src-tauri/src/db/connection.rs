@@ -192,6 +192,7 @@ impl Database {
     }
 
     pub(crate) fn writer(&self) -> Result<Arc<DbWriter>, DomainError> {
+        self.require_write_access()?;
         self.writer.clone().ok_or_else(|| {
             DomainError::new(
                 ErrorCode::ReadOnlySafeMode,
@@ -239,6 +240,24 @@ impl Database {
 
     pub fn safe_mode_reason(&self) -> Option<&DomainError> {
         self.safe_mode_reason.as_ref()
+    }
+
+    pub fn require_write_access(&self) -> Result<(), DomainError> {
+        if self.mode != DatabaseMode::ReadWrite {
+            return Err(self.safe_mode_reason.clone().unwrap_or_else(|| {
+                DomainError::new(
+                    ErrorCode::ReadOnlySafeMode,
+                    "应用数据库处于只读安全模式，照片写入功能已关闭。",
+                )
+            }));
+        }
+        if !self.is_write_healthy() {
+            return Err(DomainError::new(
+                ErrorCode::DatabaseDurability,
+                "数据库写入器不可用；请安全退出应用并重新启动。",
+            ));
+        }
+        Ok(())
     }
 
     pub fn write_health_handle(&self) -> Arc<AtomicBool> {
