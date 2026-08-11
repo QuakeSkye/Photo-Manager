@@ -1,7 +1,10 @@
 # 导入去重、配对与历史重复复核实施计划
 
 日期：2026-08-10  
-依据：`docs/superpowers/specs/2026-08-10-import-dedup-pairing-and-duplicate-review-design.md`
+依据：
+
+- `docs/superpowers/specs/2026-08-10-import-dedup-pairing-and-duplicate-review-design.md`
+- `docs/superpowers/specs/2026-08-11-duplicate-review-delete-selection-ui-design.md`
 
 ## 1. 实施边界与顺序
 
@@ -367,6 +370,8 @@ npm run safety:audit
 - `src/shared/commands/recycle.ts`
 - `src/features/duplicate-review/DuplicateReviewView.tsx`（新增）
 - `src/features/duplicate-review/DuplicateReviewView.test.tsx`（新增）
+- `src/features/duplicate-review/selection.ts`（新增）
+- `src/features/duplicate-review/selection.test.ts`（新增）
 - `src/features/pending-delete/PendingDeleteView.tsx`
 - `src/features/pending-delete/PendingDeleteView.test.tsx`
 - `src/shared/ui/TopBar.tsx`
@@ -381,24 +386,34 @@ npm run safety:audit
 3. 进入页面和打开 expired 结果不自动调用 start command；只有“开始检测”触发扫描。
 4. 运行态显示阶段、已检查数、候选数、当前路径和取消；完成态显示规格要求的六项摘要。
 5. 结果卡显示 `JPG：n 份（重复 n-1 份）`、RAF 数量、两种都重复状态和所有完整路径。
-6. 建议保留不产生 checkbox 默认值；证据过期/离线成员不可选择。
-7. “选择这一整套副本”和单 JPG/RAF 选择都生成正确确认摘要；选择全部成员时按钮禁用并解释原因。
-8. 加入待删除确认列出每个删除路径、保留路径、角色、文件数和总大小。
-9. PendingDeleteView 用“重复清理”区分 DuplicateSubset，并同时展示待删目录和保留目录；普通 WholePhoto 视觉保持不变。
-10. 所有按钮具备可访问名称、键盘焦点和错误状态；路径使用换行/复制友好展示，不把路径字符串回传为授权。
+6. 每个文件行只渲染一个“标记为待删除”复选框，不再渲染“保留”文字或单选框；未勾选项使用正常样式。
+7. 建议项默认未勾选，文件名右侧显示绿色“建议保留”徽章；证据过期、离线或无可靠保留项集合不可批量选择。
+8. 勾选文件后行背景变为淡红、主文件名显示中划线并出现“待删除”文字；完整路径保持可读，JPG/RAF 的复选框、状态和资源管理器按钮纵向对齐。
+9. 手动勾选建议项时仍禁止选中同一 JPG 或 RAF 等价集合的全部成员，并给出“每组重复文件至少需要保留一份”的可访问错误消息。
+10. 全页面按钮按选择状态显示 `勾选全部非建议保留（N）`、`勾选剩余非建议保留（N）` 或 `取消全部勾选（N）`；首次点击覆盖当前有效结果的全部逻辑照片族，再次点击清除页面全部选择。
+11. 批量选择跳过建议保留、证据失效、离线和无可靠建议项的集合，按物理文件计算改变数量；不得只处理当前视口或已展开卡片。
+12. 根级操作栏固定在窗口底部，实时显示已选物理文件数和总容量；滚动容器保留等高底部空间，最后一行不被遮挡，零选择时栏位不跳动且提交按钮禁用。
+13. 加入待删除确认列出每个删除路径、保留路径、角色、文件数和总大小；确认前仍重新验证选择端与保留端。
+14. PendingDeleteView 用“重复清理”区分 DuplicateSubset，并同时展示待删目录和保留目录；普通 WholePhoto 视觉保持不变。
+15. 所有按钮具备可访问名称、键盘焦点和错误状态；复选框名称包含完整路径，批量按钮暴露 pressed 状态，路径显示可换行/复制且不把路径字符串回传为授权。
 
 实现步骤：
 
 1. App 新增 `duplicate-review` route 和状态轮询，离开页面时不取消用户明确启动的后台检测。
 2. TopBar 增加 duplicate entry DTO/handler，按按钮数组顺序渲染在 Import 后。
-3. DuplicateReviewView 分离 ScanState、Summary、FamilyCard、LocationSet 和 AddToPendingDialog，避免单组件持有所有状态。
-4. 待删除数据模型从单一目录摘要扩展为可渲染 Asset 清单和 retention 清单。
-5. 结果变 Expired 时立即清空未提交选择并显示原因；用户点击后仍需手动开始。
+3. DuplicateReviewView 分离 ScanState、Summary、FamilyCard、DuplicateFileRow、BulkSelectionAction、DuplicateReviewActionBar 和 AddToPendingDialog，避免单组件持有所有状态。
+4. 在 `selection.ts` 用纯函数实现可选成员派生、手动切换保护、全页面非建议项批量选择、全量清除以及物理文件数/容量统计；状态键使用内部 AssetId/version，不使用展示路径。
+5. 每行复选框是唯一选择控件；“建议保留”只渲染徽章。移除原“选择这一整套副本”和“保留”单选控件，不保留两套兼容入口。
+6. 批量按钮根据当前选择和合格非建议项派生文案、计数与 `aria-pressed`。部分选择时先补齐剩余合格项；全部合格项选中时下一次点击清除所有选择，包括手动选择的建议项。
+7. 将选择摘要和提交动作放到结果页根级固定操作栏；结果滚动区以共享 CSS 高度变量或实测布局值预留底部空间，确认对话框层级高于操作栏。
+8. 待删除数据模型从单一目录摘要扩展为可渲染 Asset 清单和 retention 清单；AddToPendingDialog 只消费已选内部 ID/version 与服务返回的重新验证摘要。
+9. 结果变 Expired 时立即清空未提交选择并显示原因；用户点击后仍需手动开始。提交成功后清空已提交选择并刷新待删除摘要，失败时移除已失效项但保留其他仍有效选择。
 
 验证命令：
 
 ```powershell
 npm test -- src/features/duplicate-review/DuplicateReviewView.test.tsx
+npm test -- src/features/duplicate-review/selection.test.ts
 npm test -- src/features/pending-delete/PendingDeleteView.test.tsx
 npm test -- src/app/App.test.tsx
 npm run lint
@@ -461,7 +476,7 @@ npm run lint
 2. 仅历史 JPG + 来源 JPG/RAF：JPG Skip、RAF Copy、一个可靠配对 Photo。
 3. 仅历史 RAF 的反向场景。
 4. 已有两套逐字节重复照片：手动检测显示 JPG/RAF 份数和全部目录，不自动选择。
-5. 用户选择一个旧目录整套副本，确认页和待删除页显示删除/保留完整路径；回收后只保留选择的规范路径文件。
+5. 用户点击“勾选全部非建议保留”，所有安全集合只留下建议项；固定底栏统计与确认页、待删除页的删除/保留路径一致，回收后只保留未选择的可靠副本。
 6. 在待删除后替换或移走保留副本：回收停止，待删副本仍存在并进入 NeedsAttention。
 
 ### 性能验收
@@ -511,7 +526,8 @@ npm run test:windows
 
 - 重复检测只由用户启动，只发布完整 SHA-256 + 逐字节相同且身份稳定的结果。
 - 结果准确显示 JPG/RAF 份数、全部位置、冗余份数和理论空间。
-- 建议保留不自动勾选；不能选择删除最后一份。
+- 文件行只有“勾选即待删除”一种选择语义；建议保留只显示提示徽章，不能选择删除最后一份。
+- 全页面批量按钮只选择合格的非建议保留副本，可再次清除全部选择；选中态和固定底部操作栏符合批准规格。
 - DuplicateSubset 先进入待删除复核，执行前重新证明保留副本。
 - 最终处理只进入 Windows 回收站，任何不确定性均保留待删文件。
 - 顶部入口、底部扫描状态、快捷键位置、照片大小、EXIF 显示、镜头单行和 Photoshop 按钮布局符合批准规格。
