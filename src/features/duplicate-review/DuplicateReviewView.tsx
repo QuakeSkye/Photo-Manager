@@ -6,14 +6,21 @@ import {
   getDuplicateReviewResults,
   openDuplicateAssetLocation,
   startDuplicateReviewScan,
+  type DuplicateMemberResult,
   type DuplicateReviewResults,
   type DuplicateReviewStatus,
   type DuplicateSetResult,
-  type DuplicateSubsetSelection,
 } from '../../shared/commands/duplicate-review';
 import type { PendingDeleteSummary } from '../../shared/commands/library';
 import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
+import {
+  applyBulkSelection,
+  buildDuplicateSelections,
+  getBulkSelectionState,
+  selectionBytes,
+  toggleMemberSelection,
+} from './selection';
 
 interface DuplicateReviewViewProps {
   readonly status: DuplicateReviewStatus;
@@ -36,9 +43,7 @@ export function DuplicateReviewView({
 }: DuplicateReviewViewProps) {
   const [results, setResults] = useState<DuplicateReviewResults | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
-  const [retained, setRetained] = useState<ReadonlyMap<string, string>>(
-    new Map(),
-  );
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,17 +83,15 @@ export function DuplicateReviewView({
       ),
     [sets],
   );
-  const invalidWholeSet = sets.some(
-    (set) =>
-      set.members.length > 0 &&
-      set.members.every((member) => selected.has(member.assetId)),
-  );
-  const selections = buildSelections(sets, selected, retained);
+  const selections = buildDuplicateSelections(sets, selected);
+  const selectedBytes = selectionBytes(selections, members);
+  const bulkSelection = getBulkSelectionState(sets, selected);
 
   const begin = async () => {
     setBusy(true);
     setError(null);
     setSelected(new Set());
+    setSelectionNotice(null);
     try {
       onStatusChange(await startDuplicateReviewScan());
     } catch (reason) {
@@ -99,13 +102,13 @@ export function DuplicateReviewView({
   };
 
   const submit = async () => {
-    if (status.runId === null || selections.length === 0 || invalidWholeSet)
-      return;
+    if (status.runId === null || selections.length === 0) return;
     setBusy(true);
     setError(null);
     try {
       await addDuplicateSubsetToPendingDelete(status.runId, selections);
       setSelected(new Set());
+      setSelectionNotice(null);
       setConfirming(false);
       await onPendingAdded();
     } catch (reason) {
@@ -113,6 +116,24 @@ export function DuplicateReviewView({
     } finally {
       setBusy(false);
     }
+  };
+
+  const toggleMember = (assetId: string) => {
+    const result = toggleMemberSelection(sets, selected, assetId);
+    setSelected(result.selected);
+    setError(result.error);
+    if (result.error === null) setSelectionNotice(null);
+  };
+
+  const toggleBulkSelection = () => {
+    if (bulkSelection.mode === 'disabled') return;
+    setSelected(applyBulkSelection(bulkSelection, selected));
+    setError(null);
+    setSelectionNotice(
+      bulkSelection.mode === 'clear'
+        ? `已取消 ${bulkSelection.changeCount} 个文件的勾选。`
+        : `已勾选 ${bulkSelection.changeCount} 个非建议保留文件。`,
+    );
   };
 
   return (
@@ -168,6 +189,18 @@ export function DuplicateReviewView({
         {results !== null && !results.expired && (
           <>
             <Summary results={results} />
+            <div className="duplicate-bulk-toolbar">
+              <span role="status">{selectionNotice}</span>
+              <button
+                className="duplicate-bulk-button"
+                type="button"
+                aria-pressed={bulkSelection.pressed}
+                disabled={bulkSelection.mode === 'disabled'}
+                onClick={toggleBulkSelection}
+              >
+                {bulkSelection.label}
+              </button>
+            </div>
             <div className="duplicate-family-list">
               {results.families.map((family) => (
                 <article
@@ -194,65 +227,34 @@ export function DuplicateReviewView({
                         key={set.setId}
                         set={set}
                         selected={selected}
-                        retained={
-                          retained.get(set.setId) ??
-                          set.suggestedRetainedAssetId
-                        }
-                        onRetain={(assetId) =>
-                          setRetained((current) =>
-                            new Map(current).set(set.setId, assetId),
-                          )
-                        }
-                        onToggle={(assetId) =>
-                          setSelected((current) => toggleSet(current, assetId))
-                        }
-                        onSelectDirectory={(directory) =>
-                          setSelected((current) => {
-                            const next = new Set(current);
-                            for (const member of set.members)
-                              if (
-                                member.directory === directory &&
-                                member.selectable &&
-                                member.assetId !==
-                                  (retained.get(set.setId) ??
-                                    set.suggestedRetainedAssetId)
-                              )
-                                next.add(member.assetId);
-                            return next;
-                          })
-                        }
+                        onToggle={toggleMember}
                       />
                     ))}
                 </article>
               ))}
             </div>
-            <div className="duplicate-selection-bar">
-              <span>
-                {selections.length} 个文件 ·{' '}
-                {formatBytes(
-                  selections.reduce(
-                    (sum, item) =>
-                      sum + (members.get(item.deletedAssetId)?.sizeBytes ?? 0),
-                    0,
-                  ),
-                )}
-              </span>
-              {invalidWholeSet && (
-                <span className="selection-warning">
-                  每个集合必须至少保留一份。
-                </span>
-              )}
-              <button
-                type="button"
-                disabled={selections.length === 0 || invalidWholeSet || busy}
-                onClick={() => setConfirming(true)}
-              >
-                加入待删除…
-              </button>
-            </div>
           </>
         )}
       </main>
+      {results !== null && !results.expired && (
+        <footer className="duplicate-selection-bar" aria-label="待删除选择摘要">
+          <div>
+            <strong>
+              {selections.length === 0
+                ? '尚未选择文件'
+                : `已选择 ${selections.length} 个文件 · ${formatBytes(selectedBytes)}`}
+            </strong>
+            <span>仅加入待删除列表，不会立即移动文件</span>
+          </div>
+          <button
+            type="button"
+            disabled={selections.length === 0 || busy}
+            onClick={() => setConfirming(true)}
+          >
+            加入待删除（{selections.length}）…
+          </button>
+        </footer>
+      )}
       {confirming && (
         <Modal
           title="确认加入待删除"
@@ -276,14 +278,7 @@ export function DuplicateReviewView({
             })}
           </ul>
           <p>
-            {selections.length} 个文件，共{' '}
-            {formatBytes(
-              selections.reduce(
-                (sum, item) =>
-                  sum + (members.get(item.deletedAssetId)?.sizeBytes ?? 0),
-                0,
-              ),
-            )}
+            {selections.length} 个文件，共 {formatBytes(selectedBytes)}
           </p>
         </Modal>
       )}
@@ -330,117 +325,85 @@ function Summary({ results }: { readonly results: DuplicateReviewResults }) {
 function DuplicateSet({
   set,
   selected,
-  retained,
-  onRetain,
   onToggle,
-  onSelectDirectory,
 }: {
   readonly set: DuplicateSetResult;
   readonly selected: ReadonlySet<string>;
-  readonly retained: string | null;
-  readonly onRetain: (assetId: string) => void;
   readonly onToggle: (assetId: string) => void;
-  readonly onSelectDirectory: (directory: string) => void;
 }) {
-  const directories = [
-    ...new Set(set.members.map((member) => member.directory)),
-  ];
   return (
     <section className="duplicate-set">
       <div className="duplicate-set-heading">
         <strong>{setTitle(set)}</strong>
-        {directories.map((directory) => (
-          <button
-            key={directory}
-            type="button"
-            onClick={() => onSelectDirectory(directory)}
-          >
-            选择这一整套副本 · {directory}
-          </button>
-        ))}
       </div>
-      {set.members.map((member) => (
-        <div className="duplicate-member" key={member.assetId}>
-          <input
-            aria-label={`选择删除 ${member.fullPath}`}
-            type="checkbox"
-            checked={selected.has(member.assetId)}
-            disabled={!member.selectable || retained === member.assetId}
-            onChange={() => onToggle(member.assetId)}
+      {set.members.map((member) => {
+        const isSelected = selected.has(member.assetId);
+        return (
+          <DuplicateFileRow
+            key={member.assetId}
+            member={member}
+            selected={isSelected}
+            onToggle={() => onToggle(member.assetId)}
           />
-          <div>
-            <code>{member.fullPath}</code>
-            <span>
-              {member.directory} · {formatBytes(member.sizeBytes)}
-              {member.captureLocalKey !== null
-                ? ` · ${member.captureLocalKey}`
-                : ''}
-            </span>
-          </div>
-          {member.suggestedRetain && (
-            <span className="suggestion">建议保留</span>
-          )}
-          <label>
-            保留{' '}
-            <input
-              type="radio"
-              name={`retain-${set.setId}`}
-              checked={retained === member.assetId}
-              disabled={!member.selectable || selected.has(member.assetId)}
-              onChange={() => onRetain(member.assetId)}
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() =>
-              void openDuplicateAssetLocation(
-                member.assetId,
-                member.assetVersion,
-              )
-            }
-          >
-            在资源管理器中查看
-          </button>
-        </div>
-      ))}
+        );
+      })}
     </section>
   );
 }
 
-function buildSelections(
-  sets: readonly DuplicateSetResult[],
-  selected: ReadonlySet<string>,
-  retained: ReadonlyMap<string, string>,
-): DuplicateSubsetSelection[] {
-  return sets.flatMap((set) => {
-    const retainedId = retained.get(set.setId) ?? set.suggestedRetainedAssetId;
-    const retainedMember = set.members.find(
-      (member) => member.assetId === retainedId,
-    );
-    if (retainedMember === undefined) return [];
-    return set.members
-      .filter(
-        (member) =>
-          selected.has(member.assetId) && member.assetId !== retainedId,
-      )
-      .map((member) => ({
-        setId: set.setId,
-        deletedAssetId: member.assetId,
-        deletedAssetVersion: member.assetVersion,
-        retainedAssetId: retainedMember.assetId,
-        retainedAssetVersion: retainedMember.assetVersion,
-      }));
-  });
+function DuplicateFileRow({
+  member,
+  selected,
+  onToggle,
+}: {
+  readonly member: DuplicateMemberResult;
+  readonly selected: boolean;
+  readonly onToggle: () => void;
+}) {
+  return (
+    <div
+      className={selected ? 'duplicate-member is-selected' : 'duplicate-member'}
+    >
+      <input
+        aria-label={
+          selected
+            ? `取消 ${member.fullPath} 的待删除标记`
+            : `将 ${member.fullPath} 标记为待删除`
+        }
+        type="checkbox"
+        checked={selected}
+        disabled={!member.selectable}
+        onChange={onToggle}
+      />
+      <div className="duplicate-member-info">
+        <div className="duplicate-member-title">
+          <code className="duplicate-member-name">{fileName(member)}</code>
+          {member.suggestedRetain && (
+            <span className="suggestion">建议保留</span>
+          )}
+        </div>
+        <span className="duplicate-member-details" title={member.fullPath}>
+          <code>{member.fullPath}</code> · {formatBytes(member.sizeBytes)}
+          {member.captureLocalKey !== null
+            ? ` · ${member.captureLocalKey}`
+            : ''}
+        </span>
+      </div>
+      <span className="duplicate-delete-state">{selected ? '待删除' : ''}</span>
+      <button
+        type="button"
+        onClick={() =>
+          void openDuplicateAssetLocation(member.assetId, member.assetVersion)
+        }
+      >
+        在资源管理器中查看
+      </button>
+    </div>
+  );
 }
 
-function toggleSet(
-  current: ReadonlySet<string>,
-  assetId: string,
-): ReadonlySet<string> {
-  const next = new Set(current);
-  if (next.has(assetId)) next.delete(assetId);
-  else next.add(assetId);
-  return next;
+function fileName(member: DuplicateMemberResult): string {
+  return member.relativePath.split(/[\\/]/).at(-1) ?? member.relativePath;
 }
 function setTitle(set: DuplicateSetResult): string {
   return `${set.role.toUpperCase()}：${set.members.length} 份（重复 ${set.redundantFiles} 份）`;
