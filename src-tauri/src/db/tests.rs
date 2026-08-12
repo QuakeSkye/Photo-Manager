@@ -301,6 +301,112 @@ fn photo_capture_metadata_schema_is_versioned_constrained_and_immutable() {
 }
 
 #[test]
+fn import_dedup_duplicate_review_schema_is_versioned_constrained_and_immutable() {
+    let test = open_test_database();
+    let connection = test.database.open_read_connection().unwrap();
+
+    assert_eq!(LATEST_SCHEMA_VERSION, 11);
+    for table in [
+        "library_catalog_revision",
+        "asset_import_candidate_key",
+        "import_asset_resolution_fact",
+        "duplicate_scan_run",
+        "duplicate_file_observation",
+        "duplicate_equivalence_set",
+        "duplicate_equivalence_proof",
+        "duplicate_retention_guard",
+        "deletion_batch_retention_guard",
+    ] {
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "missing v10 table {table}");
+    }
+
+    let mark_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE type='table' AND name='deletion_mark'",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(mark_sql.contains("mark_scope"));
+    assert!(mark_sql.contains("WholePhoto"));
+    assert!(mark_sql.contains("DuplicateSubset"));
+
+    let immutable_trigger_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type='trigger' AND name IN (
+                 'asset_import_candidate_key_no_update',
+                 'asset_import_candidate_key_no_delete',
+                 'import_asset_resolution_fact_no_update',
+                 'import_asset_resolution_fact_no_delete',
+                 'duplicate_scan_run_payload_immutable',
+                 'duplicate_file_observation_no_update',
+                 'duplicate_file_observation_no_delete',
+                 'duplicate_equivalence_set_no_update',
+                 'duplicate_equivalence_set_no_delete',
+                 'duplicate_equivalence_proof_no_update',
+                 'duplicate_equivalence_proof_no_delete',
+                 'duplicate_retention_guard_no_update',
+                 'duplicate_retention_guard_no_delete'
+             )",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(immutable_trigger_count, 13);
+}
+
+#[test]
+fn duplicate_result_reconciliation_schema_is_versioned_constrained_and_immutable() {
+    let test = open_test_database();
+    let connection = test.database.open_read_connection().unwrap();
+    for table in [
+        "catalog_revision_event",
+        "catalog_revision_asset_change",
+        "duplicate_result_reconciliation",
+        "duplicate_result_reconciliation_member",
+    ] {
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name=?1",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "missing v11 table {table}");
+    }
+    let immutable_trigger_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type='trigger' AND name IN (
+                'catalog_revision_event_no_update',
+                'catalog_revision_event_no_delete',
+                'catalog_revision_event_chain',
+                'catalog_revision_asset_change_no_update',
+                'catalog_revision_asset_change_no_delete',
+                'catalog_revision_asset_change_chain',
+                'duplicate_result_reconciliation_transition',
+                'duplicate_result_reconciliation_no_delete',
+                'duplicate_result_reconciliation_member_chain',
+                'duplicate_result_reconciliation_applied_totals',
+                'duplicate_result_reconciliation_member_no_update',
+                'duplicate_result_reconciliation_member_no_delete'
+             )",
+            (),
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(immutable_trigger_count, 12);
+}
+
+#[test]
 fn foreign_keys_and_core_uniqueness_are_enforced() {
     let test = open_test_database();
     let fixture = insert_catalog_fixture(&test.database);
@@ -1169,7 +1275,7 @@ fn migration_manifest_and_schema_checksum_cover_the_complete_published_chain() {
     assert_eq!(manifest.first().unwrap().filename, "0001_phase_zero.sql");
     assert_eq!(
         manifest.last().unwrap().filename,
-        "0009_photo_capture_metadata.sql"
+        "0011_duplicate_result_reconciliation.sql"
     );
     assert!(manifest.iter().all(|entry| entry.sha256.len() == 64));
     assert_eq!(crate::db::migration_chain_checksum().len(), 64);

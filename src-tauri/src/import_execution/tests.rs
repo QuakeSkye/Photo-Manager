@@ -504,16 +504,18 @@ fn disposable_two_volume_import_publishes_without_source_or_existing_target_chan
     );
 
     let connection = database.open_read_connection().unwrap();
-    let facts: (i64, i64, i64) = connection
+    let facts: (i64, i64, i64, i64) = connection
         .query_row(
             "SELECT (SELECT COUNT(*) FROM import_published_fact),
                     (SELECT COUNT(*) FROM import_indexed_fact),
-                    (SELECT COUNT(*) FROM import_history)",
+                    (SELECT COUNT(*) FROM import_history),
+                    (SELECT COUNT(*) FROM import_asset_resolution_fact
+                     WHERE resolution_kind='PublishedIndexed')",
             (),
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
-    assert_eq!(facts, (1, 1, 1));
+    assert_eq!(facts, (1, 1, 1, 1));
 }
 
 #[cfg(windows)]
@@ -773,17 +775,17 @@ fn duplicate_is_reproved_in_validation_and_execution_without_target_change() {
         .unwrap();
     assert_eq!(status.phase, ImportExecutionPhase::Completed);
     assert_eq!((status.skipped_files, status.published_files), (1, 0));
-    let proof_counts: (i64, i64, i64) = fixture
+    let proof_counts: (i64, i64, i64, i64) = fixture
         .database
         .open_read_connection()
         .unwrap()
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM import_duplicate_proof WHERE proof_scope='Validation'),(SELECT COUNT(*) FROM import_duplicate_proof WHERE proof_scope='Execution'),(SELECT COUNT(*) FROM import_duplicate_path_binding_proof)",
+            "SELECT (SELECT COUNT(*) FROM import_duplicate_proof WHERE proof_scope='Validation'),(SELECT COUNT(*) FROM import_duplicate_proof WHERE proof_scope='Execution'),(SELECT COUNT(*) FROM import_duplicate_path_binding_proof),(SELECT COUNT(*) FROM import_asset_resolution_fact WHERE resolution_kind='SkippedDuplicate')",
             (),
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
-    assert_eq!(proof_counts, (1, 1, 2));
+    assert_eq!(proof_counts, (1, 1, 2, 1));
     assert_eq!(
         (
             file_hash(target),

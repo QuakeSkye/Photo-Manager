@@ -13,6 +13,7 @@ import {
   type PhotoDetail,
   type SortMode,
 } from '../../shared/commands/library';
+import type { DuplicateReviewStatus } from '../../shared/commands/duplicate-review';
 import {
   choosePhotoshop,
   getPhotoshopStatus,
@@ -37,6 +38,8 @@ interface LibraryViewProps {
   readonly onSortChange: (mode: SortMode) => void;
   readonly onOpenSettings: () => void;
   readonly onOpenImport: () => void;
+  readonly duplicateReviewStatus?: DuplicateReviewStatus;
+  readonly onOpenDuplicateReview?: () => void;
   readonly importEnabled?: boolean;
   readonly onOpenScan: () => void;
   readonly mutationPending: boolean;
@@ -56,6 +59,8 @@ export function LibraryView({
   onSortChange,
   onOpenSettings,
   onOpenImport,
+  duplicateReviewStatus,
+  onOpenDuplicateReview,
   importEnabled = true,
   onOpenScan,
   mutationPending,
@@ -211,6 +216,8 @@ export function LibraryView({
         onSortChange={onSortChange}
         onOpenSettings={onOpenSettings}
         onOpenImport={onOpenImport}
+        duplicateReviewStatus={duplicateReviewStatus}
+        onOpenDuplicateReview={onOpenDuplicateReview}
         importEnabled={importEnabled}
       />
       {rootOffline && (
@@ -222,21 +229,6 @@ export function LibraryView({
           </button>
         </div>
       )}
-      {snapshot.scan?.kind === 'incremental' &&
-        snapshot.scan.phase !== 'completed' && (
-          <button className="scan-banner" type="button" onClick={onOpenScan}>
-            <span className="activity-dot" aria-hidden="true" />
-            <span>
-              {snapshot.scan.phase === 'running'
-                ? '正在更新图库'
-                : scanPhaseText(snapshot.scan.phase)}
-            </span>
-            <span className="scan-banner-detail">
-              已检查 {snapshot.scan.filesChecked.toLocaleString('zh-CN')} 个文件
-            </span>
-            <strong>查看进度</strong>
-          </button>
-        )}
       <main className="photo-workspace">
         <VirtualFilmstrip
           photos={snapshot.photos}
@@ -263,6 +255,7 @@ export function LibraryView({
           onOpenFileLocation={() => void revealCurrent()}
           onOpenSettings={onOpenSettings}
           onToggleDeletion={onToggleDeletion}
+          onUndoDeletion={onUndoDeletion}
         />
       </main>
       <footer className="status-bar">
@@ -271,18 +264,22 @@ export function LibraryView({
             ? '0 / 0'
             : `${(selectedIndex + 1).toLocaleString('zh-CN')} / ${snapshot.photos.length.toLocaleString('zh-CN')}`}
         </div>
-        <div className="shortcut-hint">
-          <kbd>←</kbd>
-          <kbd>→</kbd> 浏览 <span>·</span> <kbd>D</kbd> 标记 <span>·</span>{' '}
+        {snapshot.scan?.kind === 'incremental' &&
+        snapshot.scan.phase !== 'completed' ? (
           <button
-            className="status-link"
+            className="status-link scan-status-center"
             type="button"
-            disabled={mutationPending}
-            onClick={onUndoDeletion}
+            onClick={onOpenScan}
           >
-            <kbd>R</kbd> 撤销
+            {snapshot.scan.phase === 'running'
+              ? '正在更新图库'
+              : scanPhaseText(snapshot.scan.phase)}
+            {' · '}已检查 {snapshot.scan.filesChecked.toLocaleString('zh-CN')}{' '}
+            个文件 · 查看进度
           </button>
-        </div>
+        ) : (
+          <div />
+        )}
         {snapshot.pendingDeleteSummary.totalCount > 0 ? (
           <button
             className="pending-status"

@@ -96,6 +96,7 @@ impl LibraryScanner {
         C: FnMut() -> bool,
         O: FnMut(ScanProgress),
     {
+        let _bulk_io = self.scheduler.acquire_bulk_io(&mut cancelled)?;
         let started = Instant::now();
         let root_probe = probe_directory(&request.root_path)?;
         self.verify_binding(&request, &root_probe)?;

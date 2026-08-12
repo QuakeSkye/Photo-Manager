@@ -1,4 +1,5 @@
 mod file_ops;
+mod resolution;
 #[cfg(test)]
 mod tests;
 
@@ -363,7 +364,7 @@ fn insert_duplicate_proof(
     proof: &DuplicateProof,
     seed: &ExecutionDraftSeed,
     target_asset: Option<&[u8]>,
-) -> Result<(), DomainError> {
+) -> Result<Vec<u8>, DomainError> {
     let target_relative: String = transaction
         .query_row(
             "SELECT final_relative_path FROM import_asset_step WHERE step_id=?1",
@@ -427,7 +428,7 @@ fn insert_duplicate_proof(
     let proof_id = id();
     transaction.execute("INSERT INTO import_duplicate_proof(duplicate_proof_id,proof_scope,step_id,validation_id,execution_attempt_step_id,lease_generation,source_read_reservation_id,target_existing_reservation_id,source_before_snapshot_id,source_after_snapshot_id,target_before_snapshot_id,target_after_snapshot_id,full_hash_equal,byte_equal,created_at,target_asset_id,source_full_hash,target_full_hash,length_equal) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1,1,?13,?14,?15,?16,1)",params![&proof_id,scope,step_id,validation,attempt_step,lease_generation,source_reservation,target_reservation,&source_before,&source_after,&target_before,&target_after,now_micros(),&target_asset,proof.source_hash.as_slice(),proof.target_hash.as_slice()]).map_err(map_sqlite_error)?;
     transaction.execute("INSERT INTO import_duplicate_path_binding_proof(path_binding_proof_id,duplicate_proof_id,source_root_id,source_binding_id,source_path_key,source_file_id,target_root_id,target_binding_id,target_path_key,target_file_id,source_contained,target_contained,source_reparse_free,target_reparse_free,source_relative_path,source_path_key_version,source_volume_id,source_binding_generation_before,source_binding_generation_after,target_relative_path,target_path_key_version,target_volume_id,target_binding_generation_before,target_binding_generation_after) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1,1,1,1,?11,1,?12,1,1,?13,1,?14,1,1)",params![id(),&proof_id,&seed.source.root_id,&seed.source.binding_id,path_key(Path::new(&source_relative)),proof.source_before.file_id.as_ref().unwrap(),&seed.target.root_id,&seed.target.binding_id,path_key(Path::new(&target_relative)),proof.target_before.file_id.as_ref().unwrap(),&source_relative,&seed.source.volume_id,&target_relative,&target_volume]).map_err(map_sqlite_error)?;
-    Ok(())
+    Ok(proof_id)
 }
 #[allow(clippy::too_many_arguments)] // Snapshot identity fields are intentionally not defaultable.
 fn insert_snapshot(
@@ -1981,7 +1982,7 @@ impl ImportExecutionService {
                 let proof = proof.clone();
                 move |transaction| {
                     require_fence(transaction, &attempt, &step)?;
-                    insert_duplicate_proof(
+                    let duplicate_proof_id = insert_duplicate_proof(
                         transaction,
                         "Execution",
                         &step.step_id,
@@ -1994,6 +1995,7 @@ impl ImportExecutionService {
                         &seed,
                         None,
                     )?;
+                    resolution::insert_skipped(transaction, &step.step_id, &duplicate_proof_id)?;
                     finish_step_row(
                         transaction,
                         &step.attempt_step_id,
@@ -2260,9 +2262,10 @@ impl ImportExecutionService {
         let step = step.clone();
         let source_hash = *source_hash;
         let target_asset = observed.asset_id.as_bytes().to_vec();
+        let target_version = observed.asset_version;
         let source_volume = seed.source.volume_id.clone();
         let from_state = from_state.to_string();
-        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt,&step)?;transaction.execute("INSERT INTO import_history(history_id,library_id,source_volume_id,source_file_id,source_size_bytes,source_mtime,source_full_hash,hash_algorithm,target_asset_id,published_fact_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'SHA-256',?8,?9,?10)",params![&history,&attempt.job.library_id,&source_volume,&step.source_file_id,i64::try_from(step.expected_bytes).unwrap_or(i64::MAX),source_mtime(transaction,&step.source_snapshot_id)?,source_hash.as_slice(),&target_asset,&published,now_micros()]).map_err(map_sqlite_error)?;transaction.execute("INSERT INTO import_indexed_fact(indexed_fact_id,published_fact_id,asset_id,indexed_at) VALUES(?1,?2,?3,?4)",params![&indexed,&published,&target_asset,now_micros()]).map_err(map_sqlite_error)?;finish_step_row(transaction,&step.attempt_step_id,&from_state,"Indexed",None,(!time_preserved).then_some("LastWriteTimeNotPreserved"))?;append_report_item(transaction,&attempt.report_id,&step,"Published",(!time_preserved).then_some("LastWriteTimeNotPreserved"),step.expected_bytes)?;Ok(())})
+        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt,&step)?;transaction.execute("INSERT INTO import_history(history_id,library_id,source_volume_id,source_file_id,source_size_bytes,source_mtime,source_full_hash,hash_algorithm,target_asset_id,published_fact_id,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,'SHA-256',?8,?9,?10)",params![&history,&attempt.job.library_id,&source_volume,&step.source_file_id,i64::try_from(step.expected_bytes).unwrap_or(i64::MAX),source_mtime(transaction,&step.source_snapshot_id)?,source_hash.as_slice(),&target_asset,&published,now_micros()]).map_err(map_sqlite_error)?;transaction.execute("INSERT INTO import_indexed_fact(indexed_fact_id,published_fact_id,asset_id,indexed_at) VALUES(?1,?2,?3,?4)",params![&indexed,&published,&target_asset,now_micros()]).map_err(map_sqlite_error)?;resolution::insert_published(transaction,&step.step_id,&indexed,&target_asset,target_version)?;finish_step_row(transaction,&step.attempt_step_id,&from_state,"Indexed",None,(!time_preserved).then_some("LastWriteTimeNotPreserved"))?;append_report_item(transaction,&attempt.report_id,&step,"Published",(!time_preserved).then_some("LastWriteTimeNotPreserved"),step.expected_bytes)?;Ok(())})
     }
 
     fn index_existing_published(

@@ -207,7 +207,7 @@ p {
   display: grid;
   grid-template-columns:
     clamp(160px, 15vw, 180px) minmax(0, 1fr)
-    clamp(220px, 18vw, 260px);
+    clamp(300px, 20vw, 360px);
 }
 .filmstrip {
   min-width: 0;
@@ -549,7 +549,7 @@ p {
 }
 .metadata-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr);
+  grid-template-columns: 58px minmax(0, 1fr);
   gap: 8px;
   min-height: 24px;
   align-items: baseline;
@@ -563,6 +563,13 @@ p {
   margin: 0;
   text-align: right;
   overflow-wrap: anywhere;
+}
+.metadata-row dd.lens-value {
+  overflow: hidden;
+  font-size: 10px;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .metadata-row.is-emphasis dd {
   color: #384250;
@@ -601,6 +608,19 @@ p {
 }
 .library-actions .compact-error {
   margin: 0 0 2px;
+}
+.library-actions .photoshop-action {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.inspector-shortcuts {
+  text-align: center;
+  white-space: nowrap;
+}
+.keycap-centered {
+  display: inline-grid;
+  place-items: center;
+  line-height: 1;
 }
 .inline-link {
   min-height: 0;
@@ -764,6 +784,260 @@ p {
   color: inherit;
   background: transparent;
   font: inherit;
+}
+.scan-status-center {
+  justify-self: center;
+}
+
+.duplicate-review-screen {
+  grid-template-rows: 52px minmax(0, 1fr) auto;
+}
+.duplicate-review-main {
+  min-height: 0;
+  overflow: auto;
+  padding: 24px clamp(20px, 4vw, 64px);
+  background: var(--canvas);
+}
+.duplicate-review-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+}
+.duplicate-review-heading h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+}
+.duplicate-review-heading p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+.duplicate-progress,
+.duplicate-empty {
+  display: grid;
+  gap: 7px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.duplicate-receipt {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid #b8dcc5;
+  border-radius: 10px;
+  background: #effaf2;
+  color: #205c35;
+}
+.duplicate-receipt.is-warning {
+  border-color: #e5c58c;
+  background: #fff8e9;
+  color: #73510e;
+}
+.duplicate-empty-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+.duplicate-progress code,
+.duplicate-member code,
+.pending-file-row code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.duplicate-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0;
+}
+.duplicate-summary div {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.duplicate-summary dt {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.duplicate-summary dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+.duplicate-bulk-toolbar {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin: -4px 0 12px;
+}
+.duplicate-bulk-toolbar > span {
+  margin-right: auto;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.duplicate-bulk-button {
+  min-height: 32px;
+  border-color: #cfd7e2;
+  background: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.duplicate-bulk-button[aria-pressed='true'] {
+  border-color: #c4ccd7;
+  background: #f3f5f7;
+}
+.duplicate-family-list {
+  display: grid;
+  gap: 14px;
+}
+.duplicate-family-card {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.duplicate-family-card h2 {
+  margin: 0;
+  font-size: 15px;
+}
+.duplicate-family-card > p {
+  color: var(--text-secondary);
+}
+.duplicate-set {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.duplicate-set-heading {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 0;
+}
+.duplicate-member {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 58px 178px;
+  gap: 12px;
+  align-items: center;
+  min-height: 54px;
+  padding: 9px 10px;
+  border-top: 1px solid #edf0f3;
+  border-radius: 7px;
+  transition:
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+.duplicate-member.is-selected {
+  background: #fff1f2;
+  box-shadow: inset 3px 0 0 #c95b66;
+}
+.duplicate-member > input {
+  justify-self: center;
+}
+.duplicate-member-info {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.duplicate-member-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.duplicate-member-name {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap !important;
+}
+.duplicate-member.is-selected .duplicate-member-name {
+  color: #8b4b54;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.duplicate-member-details {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.duplicate-member-details code {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+.duplicate-member .suggestion {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid #b9dbc3;
+  border-radius: 999px;
+  color: #326b45;
+  background: #eef8f1;
+  font-size: 9px;
+  font-weight: 700;
+}
+.duplicate-delete-state {
+  justify-self: center;
+  color: #a33e4b;
+  font-size: 10px;
+  font-weight: 700;
+}
+.duplicate-member > button {
+  width: 178px;
+  white-space: nowrap;
+}
+.duplicate-selection-bar {
+  display: flex;
+  z-index: 5;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 74px 10px clamp(20px, 4vw, 64px);
+  border-top: 1px solid var(--border);
+  background: #fff;
+  box-shadow: 0 -5px 18px rgb(32 38 51 / 8%);
+}
+.duplicate-selection-bar > div {
+  display: grid;
+  gap: 2px;
+}
+.duplicate-selection-bar strong {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.duplicate-selection-bar span {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+.duplicate-selection-bar > button {
+  min-width: 174px;
+  white-space: nowrap;
+}
+.duplicate-confirm-list,
+.pending-file-list {
+  display: grid;
+  gap: 10px;
+}
+.duplicate-confirm-list li,
+.pending-file-row {
+  display: grid;
+  gap: 4px;
+}
+.pending-file-list {
+  margin-top: 12px;
+}
+.pending-file-row {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
 }
 .pending-status {
   justify-self: end;

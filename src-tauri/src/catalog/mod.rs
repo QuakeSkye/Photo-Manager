@@ -1,5 +1,7 @@
+mod candidate_lookup;
 mod coordinator;
 mod pairing;
+mod recycle_reconciliation;
 mod scanner;
 mod timeline;
 
@@ -18,6 +20,8 @@ use crate::{
     media::{CaptureMetadata, MEDIA_PARSER_VERSION, PreviewState},
 };
 
+pub(crate) use candidate_lookup::find_candidates as find_import_candidates;
+pub use candidate_lookup::{CandidateLookup, CandidateLookupInput, ImportCandidate};
 pub use coordinator::{BackgroundScan, ScanCoordinator, ScanKind, ScanPhase, ScanStatus};
 pub use scanner::{LibraryScanner, ScanIssue, ScanProgress, ScanReport, ScanRequest};
 pub use timeline::{SortMode, TimelinePhoto, ViewingCursor};
@@ -231,6 +235,7 @@ impl CatalogService {
                 ));
             }
             let now = now_micros();
+            candidate_lookup::ensure_catalog_revision(transaction, library_id, root_binding_id)?;
             transaction
                 .execute(
                     "INSERT INTO scan_run(
@@ -567,6 +572,7 @@ fn observe_in_transaction(
     }
 
     let mut candidate = by_file.clone().or(by_path.clone());
+    let mut preceding_change = None;
     if observation.hard_link_count > 1 {
         if let Some(file_asset) = &by_file {
             let (current_key, current_relative): (Vec<u8>, String) = transaction
@@ -600,7 +606,8 @@ fn observe_in_transaction(
                 .as_ref()
                 .is_some_and(|old| old != observed_file_id)
             {
-                retire_replaced_asset(transaction, path_asset, observation)?;
+                preceding_change =
+                    Some(retire_replaced_asset(transaction, path_asset, observation)?);
                 candidate = None;
             }
         }
@@ -608,7 +615,7 @@ fn observe_in_transaction(
 
     match candidate {
         Some(bytes) => update_existing(transaction, observation, bytes),
-        None => insert_new(transaction, observation),
+        None => insert_new(transaction, observation, preceding_change),
     }
 }
 
@@ -692,6 +699,12 @@ fn update_existing(
         ensure_metadata(transaction, &id_bytes, current.version, observation)?;
         let capture_metadata_inserted =
             ensure_capture_metadata(transaction, &id_bytes, current.version, observation)?;
+        candidate_lookup::ensure_candidate_key(
+            transaction,
+            &id_bytes,
+            current.version,
+            observation,
+        )?;
         let (photo_id, photo_version) = match current_photo {
             Some(value) => value,
             None => create_photo_for_asset(
@@ -733,6 +746,7 @@ fn update_existing(
     insert_metadata(transaction, &id_bytes, next_version, observation)?;
     let capture_metadata_inserted =
         ensure_capture_metadata(transaction, &id_bytes, next_version, observation)?;
+    candidate_lookup::ensure_candidate_key(transaction, &id_bytes, next_version, observation)?;
     let (photo_id, photo_version) = match current_photo {
         Some((photo_id, version)) => {
             let next_photo_version = bump_photo(transaction, photo_id, version)?;
@@ -746,6 +760,25 @@ fn update_existing(
             observation,
         )?,
     };
+    candidate_lookup::bump_catalog_revision(
+        transaction,
+        observation.asset.library_id,
+        observation.asset.root_binding_id,
+        "AssetObserved",
+        observation
+            .scan_run_id
+            .as_ref()
+            .map(|value| value.as_bytes().as_slice()),
+        None,
+        &[candidate_lookup::CatalogRevisionAssetChange {
+            asset_id: id_bytes.clone(),
+            before_asset_version: Some(current.version),
+            after_asset_version: next_version,
+            before_presence: Some(current.presence_state),
+            after_presence: "Present".into(),
+            change_kind: "Updated",
+        }],
+    )?;
     Ok(ObserveAssetResult {
         asset_id,
         asset_version: next_version,
@@ -759,6 +792,7 @@ fn update_existing(
 fn insert_new(
     transaction: &Transaction<'_>,
     observation: &CatalogObservation,
+    preceding_change: Option<candidate_lookup::CatalogRevisionAssetChange>,
 ) -> Result<ObserveAssetResult, DomainError> {
     let asset_id = AssetId::new();
     transaction
@@ -784,11 +818,33 @@ fn insert_new(
     insert_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
     let capture_metadata_inserted =
         ensure_capture_metadata(transaction, asset_id.as_bytes(), 1, observation)?;
+    candidate_lookup::ensure_candidate_key(transaction, asset_id.as_bytes(), 1, observation)?;
     let (photo_id, photo_version) = create_photo_for_asset(
         transaction,
         observation.asset.library_id,
         asset_id.as_bytes(),
         observation,
+    )?;
+    let mut changes = preceding_change.into_iter().collect::<Vec<_>>();
+    changes.push(candidate_lookup::CatalogRevisionAssetChange {
+        asset_id: asset_id.as_bytes().to_vec(),
+        before_asset_version: None,
+        after_asset_version: 1,
+        before_presence: None,
+        after_presence: "Present".into(),
+        change_kind: "Inserted",
+    });
+    candidate_lookup::bump_catalog_revision(
+        transaction,
+        observation.asset.library_id,
+        observation.asset.root_binding_id,
+        "AssetObserved",
+        observation
+            .scan_run_id
+            .as_ref()
+            .map(|value| value.as_bytes().as_slice()),
+        None,
+        &changes,
     )?;
     Ok(ObserveAssetResult {
         asset_id,
@@ -996,7 +1052,7 @@ fn retire_replaced_asset(
     transaction: &Transaction<'_>,
     asset_id: &[u8],
     observation: &CatalogObservation,
-) -> Result<(), DomainError> {
+) -> Result<candidate_lookup::CatalogRevisionAssetChange, DomainError> {
     let (version, row_version): (i64, i64) = transaction
         .query_row(
             "SELECT current_version, row_version FROM asset WHERE asset_id=?1",
@@ -1099,7 +1155,14 @@ fn retire_replaced_asset(
             sync_photo_sorting(transaction, photo_id)?;
         }
     }
-    Ok(())
+    Ok(candidate_lookup::CatalogRevisionAssetChange {
+        asset_id: asset_id.to_vec(),
+        before_asset_version: Some(version),
+        after_asset_version: next,
+        before_presence: Some("Present".into()),
+        after_presence: "Tombstoned".into(),
+        change_kind: "Updated",
+    })
 }
 
 fn mark_missing_assets(
@@ -1179,6 +1242,37 @@ fn mark_missing_assets(
         if let Some((photo_id, photo_version)) = current_photo_for_asset(transaction, asset)? {
             bump_photo(transaction, photo_id, photo_version)?;
         }
+    }
+    if !rows.is_empty() {
+        let library_bytes: Vec<u8> = transaction
+            .query_row(
+                "SELECT library_id FROM root WHERE root_id=?1",
+                [root_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        let changes = rows
+            .iter()
+            .map(|(asset, version, _, _, _, _, _, _, _)| {
+                candidate_lookup::CatalogRevisionAssetChange {
+                    asset_id: asset.clone(),
+                    before_asset_version: Some(*version),
+                    after_asset_version: version + 1,
+                    before_presence: Some("Present".into()),
+                    after_presence: "Missing".into(),
+                    change_kind: "Missing",
+                }
+            })
+            .collect::<Vec<_>>();
+        candidate_lookup::bump_catalog_revision(
+            transaction,
+            library_id_from(&library_bytes)?,
+            binding_id,
+            "ScanMissing",
+            Some(scan_run_id.as_bytes().as_slice()),
+            None,
+            &changes,
+        )?;
     }
     Ok(rows.len())
 }
@@ -1341,7 +1435,7 @@ fn to_i64(value: usize) -> Result<i64, DomainError> {
     i64::try_from(value).map_err(|_| DomainError::new(ErrorCode::Internal, "扫描计数溢出。"))
 }
 
-pub(super) fn uuid_from(bytes: &[u8]) -> Result<uuid::Uuid, DomainError> {
+pub(crate) fn uuid_from(bytes: &[u8]) -> Result<uuid::Uuid, DomainError> {
     uuid::Uuid::from_slice(bytes)
         .map_err(|_| DomainError::new(ErrorCode::DatabaseCorrupt, "数据库对象标识损坏。"))
 }

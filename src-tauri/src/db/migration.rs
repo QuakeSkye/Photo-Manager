@@ -9,7 +9,7 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 9;
+pub const LATEST_SCHEMA_VERSION: u32 = 11;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
 pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
 pub const PHASE_THREE_MIGRATION_SQL: &str = include_str!("../../migrations/0003_phase_three.sql");
@@ -20,6 +20,10 @@ pub const PHASE_SEVEN_MIGRATION_SQL: &str = include_str!("../../migrations/0007_
 pub const PHASE_EIGHT_MIGRATION_SQL: &str = include_str!("../../migrations/0008_phase_eight.sql");
 pub const PHOTO_CAPTURE_METADATA_MIGRATION_SQL: &str =
     include_str!("../../migrations/0009_photo_capture_metadata.sql");
+pub const IMPORT_DEDUP_DUPLICATE_REVIEW_MIGRATION_SQL: &str =
+    include_str!("../../migrations/0010_import_dedup_duplicate_review.sql");
+pub const DUPLICATE_RESULT_RECONCILIATION_MIGRATION_SQL: &str =
+    include_str!("../../migrations/0011_duplicate_result_reconciliation.sql");
 
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "0001_phase_zero.sql", MIGRATION_SQL),
@@ -34,6 +38,16 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         9,
         "0009_photo_capture_metadata.sql",
         PHOTO_CAPTURE_METADATA_MIGRATION_SQL,
+    ),
+    (
+        10,
+        "0010_import_dedup_duplicate_review.sql",
+        IMPORT_DEDUP_DUPLICATE_REVIEW_MIGRATION_SQL,
+    ),
+    (
+        11,
+        "0011_duplicate_result_reconciliation.sql",
+        DUPLICATE_RESULT_RECONCILIATION_MIGRATION_SQL,
     ),
 ];
 

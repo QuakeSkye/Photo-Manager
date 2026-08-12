@@ -3,6 +3,7 @@ pub mod catalog;
 mod commands;
 pub mod db;
 pub mod domain;
+pub mod duplicate_review;
 pub mod external_tools;
 pub mod import_execution;
 pub mod import_preflight;
@@ -77,7 +78,10 @@ pub fn run() {
                 io_scheduler.clone(),
             ));
             let pending_delete_service =
-                std::sync::Arc::new(pending_delete::PendingDeleteService::new(database.clone()));
+                std::sync::Arc::new(pending_delete::PendingDeleteService::with_scheduler(
+                    database.clone(),
+                    io_scheduler.clone(),
+                ));
             let recycle_service = std::sync::Arc::new(recycle::RecycleService::new(
                 database.clone(),
                 pending_delete_service.clone(),
@@ -88,6 +92,11 @@ pub fn run() {
             }
             let external_tool_service =
                 std::sync::Arc::new(external_tools::ExternalToolService::new(database.clone()));
+            let duplicate_review_service =
+                std::sync::Arc::new(duplicate_review::DuplicateReviewService::new(
+                    database.clone(),
+                    io_scheduler.clone(),
+                ));
             let phase_eight_ui_fixture = std::env::var_os("FPM_TEST_ROOT").is_some()
                 && std::env::var_os("FPM_PHASE8_UI_NO_BACKGROUND_SCAN").is_some();
             if !phase_eight_ui_fixture {
@@ -104,6 +113,7 @@ pub fn run() {
             application.manage(pending_delete_service);
             application.manage(recycle_service);
             application.manage(external_tool_service);
+            application.manage(duplicate_review_service);
             application.manage(scan_coordinator);
             application.manage(io_scheduler);
             application.manage(runtime_safety_gate);
@@ -136,6 +146,11 @@ pub fn run() {
             commands::external_tools::choose_photoshop,
             commands::external_tools::open_raf_in_photoshop,
             commands::external_tools::open_photo_file_location,
+            commands::duplicate_review::get_duplicate_review_status,
+            commands::duplicate_review::start_duplicate_review_scan,
+            commands::duplicate_review::cancel_duplicate_review_scan,
+            commands::duplicate_review::get_duplicate_review_results,
+            commands::duplicate_review::open_duplicate_asset_location,
             commands::cache::get_cache_settings,
             commands::cache::validate_cache_location,
             commands::cache::update_cache_location,
@@ -143,6 +158,7 @@ pub fn run() {
             commands::pending_delete::get_pending_delete_snapshot,
             commands::pending_delete::toggle_deletion_mark,
             commands::pending_delete::undo_deletion_mark,
+            commands::pending_delete::add_duplicate_subset_to_pending_delete,
             commands::recycle::get_recycle_confirmation,
             commands::recycle::get_recycle_status,
             commands::recycle::start_recycle,

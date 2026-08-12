@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LibraryView } from '../features/library/LibraryView';
 import { ImportView } from '../features/import/ImportView';
 import { PendingDeleteView } from '../features/pending-delete/PendingDeleteView';
+import { DuplicateReviewView } from '../features/duplicate-review/DuplicateReviewView';
 import { ScanView } from '../features/scanning/ScanView';
 import { SettingsView } from '../features/settings/SettingsView';
 import { Modal } from '../shared/ui/Modal';
@@ -30,8 +31,32 @@ import {
 } from '../shared/commands/recycle';
 import { getSafetyStatus, type SafetyStatus } from '../shared/commands/safety';
 import { APP_VERSION } from '../shared/version';
+import {
+  getDuplicateReviewStatus,
+  type DuplicateReviewStatus,
+} from '../shared/commands/duplicate-review';
 
-type Route = 'library' | 'pending-delete' | 'settings' | 'scan' | 'import';
+type Route =
+  | 'library'
+  | 'pending-delete'
+  | 'duplicate-review'
+  | 'settings'
+  | 'scan'
+  | 'import';
+
+const idleDuplicateStatus: DuplicateReviewStatus = {
+  state: 'idle',
+  runId: null,
+  phase: null,
+  checkedFiles: 0,
+  candidateFiles: 0,
+  hashedFiles: 0,
+  currentRelativePath: null,
+  familyCount: 0,
+  expiredReason: null,
+  resultVersionId: null,
+  lastReceipt: null,
+};
 
 export function App() {
   return (
@@ -61,6 +86,8 @@ function AppContent() {
   );
   const [recycleExecuting, setRecycleExecuting] = useState(false);
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
+  const [duplicateReviewStatus, setDuplicateReviewStatus] =
+    useState<DuplicateReviewStatus>(idleDuplicateStatus);
   const mutationInFlight = useRef(false);
   const sortInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -91,6 +118,19 @@ function AppContent() {
     const timer = window.setInterval(() => void refreshSafetyStatus(), 2000);
     return () => window.clearInterval(timer);
   }, [refreshSafetyStatus]);
+
+  useEffect(() => {
+    const refresh = () =>
+      void getDuplicateReviewStatus()
+        .then(setDuplicateReviewStatus)
+        .catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(
+      refresh,
+      duplicateReviewStatus.state === 'running' ? 500 : 4000,
+    );
+    return () => window.clearInterval(timer);
+  }, [duplicateReviewStatus.state]);
 
   const load = useCallback(
     async (mode: SortMode, preserveSelection = false) => {
@@ -301,6 +341,12 @@ function AppContent() {
     window.history.replaceState(null, '', '#/import');
   };
 
+  const openDuplicateReview = () => {
+    if (mutationInFlight.current || snapshot === null) return;
+    setRoute('duplicate-review');
+    window.history.replaceState(null, '', '#/duplicate-review');
+  };
+
   const openPendingDelete = async () => {
     if (mutationInFlight.current || snapshot === null) return;
     if (snapshot.pendingDeleteSummary.totalCount === 0) {
@@ -344,6 +390,38 @@ function AppContent() {
     setSnapshot(nextLibrary);
     setPendingSnapshot(nextPending);
     return { nextLibrary, nextPending };
+  };
+
+  const refreshAfterRecycle = async (result: RecycleStatus) => {
+    const { nextLibrary, nextPending } = await refreshDeletionState();
+    if (result.duplicateReconciliation !== 'notApplicable') {
+      setDuplicateReviewStatus(await getDuplicateReviewStatus());
+    }
+    const mustReviewProblems =
+      result.remainingProblemCount > 0 ||
+      result.phase === 'awaitingUser' ||
+      result.phase === 'needsAttention';
+    if (mustReviewProblems || nextPending.summary.totalCount > 0) {
+      setRoute('pending-delete');
+      window.history.replaceState(null, '', '#/pending-delete');
+      setPendingSnapshot(nextPending);
+      setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+      return;
+    }
+    if (
+      result.duplicateReconciliation === 'applied' ||
+      result.duplicateReconciliation === 'rejected'
+    ) {
+      setRoute('duplicate-review');
+      window.history.replaceState(null, '', '#/duplicate-review');
+      setSelectedPhotoId(null);
+      return;
+    }
+    setRoute('library');
+    window.history.replaceState(null, '', '#/library');
+    setSelectedPhotoId(
+      nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
+    );
   };
 
   const performToggle = async () => {
@@ -478,17 +556,7 @@ function AppContent() {
         : await startRecycle(recycleConfirmation);
       setRecycleStatus(result);
       setRecycleConfirmation(null);
-      const { nextLibrary, nextPending } = await refreshDeletionState();
-      if (nextPending.summary.totalCount === 0) {
-        setRoute('library');
-        window.history.replaceState(null, '', '#/library');
-        setSelectedPhotoId(
-          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
-        );
-      } else {
-        setPendingSnapshot(nextPending);
-        setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
-      }
+      await refreshAfterRecycle(result);
     } catch (reason) {
       setError(readError(reason));
       void refreshSafetyStatus();
@@ -507,14 +575,7 @@ function AppContent() {
     try {
       const result = await cancelRemainingRecycle();
       setRecycleStatus(result);
-      const { nextLibrary, nextPending } = await refreshDeletionState();
-      if (nextPending.summary.totalCount === 0) {
-        setRoute('library');
-        window.history.replaceState(null, '', '#/library');
-        setSelectedPhotoId(
-          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
-        );
-      }
+      await refreshAfterRecycle(result);
     } catch (reason) {
       setError(readError(reason));
     } finally {
@@ -594,6 +655,8 @@ function AppContent() {
           onSortChange={changeSort}
           onOpenSettings={openSettings}
           onOpenImport={openImport}
+          duplicateReviewStatus={duplicateReviewStatus}
+          onOpenDuplicateReview={openDuplicateReview}
           importEnabled={safetyStatus?.importGate === 'open'}
           onOpenScan={() => setRoute('scan')}
           mutationPending={mutationPending}
@@ -616,16 +679,41 @@ function AppContent() {
           onOpenLibrary={openLibrary}
           onOpenSettings={openSettings}
           onOpenImport={openImport}
+          duplicateReviewStatus={duplicateReviewStatus}
+          onOpenDuplicateReview={openDuplicateReview}
           onCancelCurrent={() => void performToggle()}
           onUndoDeletion={() => void performUndo()}
           onRescan={() => void startRescan()}
           onExecute={() => void openRecycleConfirmation()}
           onRetryRemaining={() => void openRecycleConfirmation()}
           onCancelRemaining={() => void cancelRecycleRemaining()}
-          recycleMessage={recycleStatus?.message ?? null}
+          recycleMessage={
+            recycleStatus?.reconciliationMessage ??
+            recycleStatus?.message ??
+            null
+          }
           importEnabled={safetyStatus?.importGate === 'open'}
           recycleEnabled={safetyStatus?.recycleGate === 'open'}
           safetyMessage={safetyStatus?.message}
+        />
+      )}
+      {route === 'duplicate-review' && (
+        <DuplicateReviewView
+          status={duplicateReviewStatus}
+          pendingDeleteSummary={snapshot.pendingDeleteSummary}
+          settingsButtonRef={settingsButtonRef}
+          onStatusChange={setDuplicateReviewStatus}
+          onOpenLibrary={openLibrary}
+          onOpenPendingDelete={() => void openPendingDelete()}
+          onOpenSettings={openSettings}
+          onPendingAdded={async () => {
+            const { nextLibrary, nextPending } = await refreshDeletionState();
+            setSnapshot(nextLibrary);
+            setPendingSnapshot(nextPending);
+            setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+            setRoute('pending-delete');
+            window.history.replaceState(null, '', '#/pending-delete');
+          }}
         />
       )}
       {route === 'settings' && (

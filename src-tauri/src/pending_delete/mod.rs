@@ -1,10 +1,11 @@
 use std::{
+    path::PathBuf,
     str::FromStr,
-    sync::{Arc, Mutex, TryLockError},
+    sync::{Arc, Mutex, TryLockError, atomic::AtomicBool},
 };
 
 use rusqlite::{OptionalExtension, Transaction};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -13,8 +14,12 @@ use crate::{
         Database,
         migration::{map_sqlite_error, now_micros},
     },
-    domain::{DeletionMarkId, DomainError, ErrorCode, FileSnapshotId, OperationId, PhotoId},
-    roots::{Capability, CapabilitySet},
+    domain::{
+        AssetId, DeletionMarkId, DomainError, ErrorCode, FileSnapshotId, OperationId, PhotoId,
+    },
+    duplicate_review::stable_pair_proof,
+    io_scheduler::IoScheduler,
+    roots::{Capability, CapabilitySet, FileProbe},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -87,7 +92,40 @@ pub struct PendingDeleteItem {
     pub relative_directory: String,
     pub physical_file_count: usize,
     pub total_size_bytes: i64,
+    pub mark_scope: String,
+    pub source_label: String,
+    pub files: Vec<PendingDeleteFile>,
     pub problem: Option<DeletionProblem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingDeleteFile {
+    pub asset_id: String,
+    pub asset_version: i64,
+    pub role: String,
+    pub full_path: String,
+    pub directory: String,
+    pub size_bytes: i64,
+    pub retained_full_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateSubsetSelection {
+    pub set_id: String,
+    pub deleted_asset_id: String,
+    pub deleted_asset_version: i64,
+    pub retained_asset_id: String,
+    pub retained_asset_version: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddDuplicateSubsetRequest {
+    pub run_id: String,
+    pub operation_id: String,
+    pub selections: Vec<DuplicateSubsetSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -124,17 +162,84 @@ struct SessionAction {
 #[derive(Debug)]
 pub struct PendingDeleteService {
     database: Arc<Database>,
+    scheduler: Arc<IoScheduler>,
     write_gate: Mutex<()>,
     session_actions: Mutex<Vec<SessionAction>>,
 }
 
 impl PendingDeleteService {
     pub fn new(database: Arc<Database>) -> Self {
+        Self::with_scheduler(database, Arc::new(IoScheduler::for_rotational()))
+    }
+
+    pub fn with_scheduler(database: Arc<Database>, scheduler: Arc<IoScheduler>) -> Self {
         Self {
             database,
+            scheduler,
             write_gate: Mutex::new(()),
             session_actions: Mutex::new(Vec::new()),
         }
+    }
+
+    pub fn add_duplicate_subset(
+        &self,
+        request: AddDuplicateSubsetRequest,
+    ) -> Result<DeletionMutationResult, DomainError> {
+        let _gate = self.try_write_gate()?;
+        if request.selections.is_empty() {
+            return Err(DomainError::new(
+                ErrorCode::InvalidTransition,
+                "至少选择一个重复文件。",
+            ));
+        }
+        let run_id = uuid::Uuid::parse_str(&request.run_id)
+            .map_err(|_| DomainError::new(ErrorCode::InvalidId, "重复检测 Run ID 无效。"))?;
+        let operation_id = OperationId::from_str(&request.operation_id)?;
+        let mut resolved = Vec::with_capacity(request.selections.len());
+        for selection in &request.selections {
+            resolved.push(load_duplicate_selection(&self.database, run_id, selection)?);
+        }
+        let photo_id = resolved[0].deleted.photo_id;
+        let photo_version = resolved[0].deleted.photo_version;
+        if resolved.iter().any(|item| {
+            item.deleted.photo_id != photo_id || item.deleted.photo_version != photo_version
+        }) {
+            return Err(DomainError::new(
+                ErrorCode::InvalidTransition,
+                "一次重复清理只能选择同一位置关联照片中的文件。",
+            ));
+        }
+        let cancelled = AtomicBool::new(false);
+        for item in &mut resolved {
+            item.reproof = Some(stable_pair_proof(
+                &self.scheduler,
+                &cancelled,
+                &item.deleted.root_path,
+                &item.deleted.relative_path,
+                &item.deleted.expected,
+                &item.retained.relative_path,
+                &item.retained.expected,
+            )?);
+        }
+        let request_hash = duplicate_subset_request_hash(run_id, &resolved);
+        let mark_id = self.database.writer()?.transaction(move |transaction| {
+            create_duplicate_subset_mark(
+                transaction,
+                run_id,
+                photo_id,
+                photo_version,
+                operation_id,
+                request_hash,
+                resolved,
+            )
+        })?;
+        let _ = mark_id;
+        Ok(DeletionMutationResult {
+            photo_id: photo_id.to_string(),
+            marked: true,
+            summary: self.summary()?,
+            undone_operation_id: None,
+        })
     }
 
     pub fn snapshot(&self, sort_mode: SortMode) -> Result<PendingDeleteSnapshot, DomainError> {
@@ -158,56 +263,74 @@ impl PendingDeleteService {
     ) -> Result<DeletionMutationResult, DomainError> {
         let _gate = self.try_write_gate()?;
         let request_hash = request_hash("ToggleDeletionMark", photo_id, photo_version, None);
-        let (action, created_now) = self.database.writer()?.transaction(move |transaction| {
-            if let Some(existing) = existing_operation(transaction, operation_id, &request_hash)? {
-                return Ok((
-                    action_from_existing(transaction, operation_id, photo_id, existing)?,
-                    false,
-                ));
-            }
+        let (action, created_now, record_session) =
+            self.database.writer()?.transaction(move |transaction| {
+                if let Some(existing) =
+                    existing_operation(transaction, operation_id, &request_hash)?
+                {
+                    return Ok((
+                        action_from_existing(transaction, operation_id, photo_id, existing)?,
+                        false,
+                        false,
+                    ));
+                }
 
-            let active_mark = active_mark(transaction, photo_id)?;
-            let action = if let Some((mark_id, frozen_version)) = active_mark {
-                insert_operation(
-                    transaction,
-                    operation_id,
-                    "ToggleDeletionMark",
-                    photo_id,
-                    request_hash,
-                    "Unmarked",
-                    mark_id.as_bytes(),
-                )?;
-                release_mark(transaction, mark_id, operation_id, "UserToggle")?;
-                SessionAction {
-                    operation_id,
-                    photo_id,
-                    mark_id,
-                    frozen_photo_version: frozen_version,
-                    effect: SessionEffect::Unmarked,
-                }
-            } else {
-                let mark_id = create_mark(
-                    transaction,
-                    photo_id,
-                    photo_version,
-                    operation_id,
-                    request_hash,
-                    "ToggleDeletionMark",
-                    "Marked",
-                )?;
-                SessionAction {
-                    operation_id,
-                    photo_id,
-                    mark_id,
-                    frozen_photo_version: photo_version,
-                    effect: SessionEffect::Marked,
-                }
-            };
-            Ok((action, true))
-        })?;
+                let active_mark = active_mark(transaction, photo_id)?;
+                let (action, record_session) = if let Some((mark_id, frozen_version)) = active_mark
+                {
+                    let scope: String = transaction
+                        .query_row(
+                            "SELECT mark_scope FROM deletion_mark WHERE mark_id=?1",
+                            [mark_id.as_bytes().as_slice()],
+                            |row| row.get(0),
+                        )
+                        .map_err(map_sqlite_error)?;
+                    insert_operation(
+                        transaction,
+                        operation_id,
+                        "ToggleDeletionMark",
+                        photo_id,
+                        request_hash,
+                        "Unmarked",
+                        mark_id.as_bytes(),
+                    )?;
+                    release_mark(transaction, mark_id, operation_id, "UserToggle")?;
+                    (
+                        SessionAction {
+                            operation_id,
+                            photo_id,
+                            mark_id,
+                            frozen_photo_version: frozen_version,
+                            effect: SessionEffect::Unmarked,
+                        },
+                        scope == "WholePhoto",
+                    )
+                } else {
+                    let mark_id = create_mark(
+                        transaction,
+                        photo_id,
+                        photo_version,
+                        operation_id,
+                        request_hash,
+                        "ToggleDeletionMark",
+                        "Marked",
+                    )?;
+                    (
+                        SessionAction {
+                            operation_id,
+                            photo_id,
+                            mark_id,
+                            frozen_photo_version: photo_version,
+                            effect: SessionEffect::Marked,
+                        },
+                        true,
+                    )
+                };
+                Ok((action, true, record_session))
+            })?;
 
         let mut history = self.session_actions.lock().map_err(lock_error)?;
-        if created_now {
+        if created_now && record_session {
             history.push(action);
         }
         drop(history);
@@ -321,6 +444,118 @@ impl PendingDeleteService {
 
     pub fn session_undo_count(&self) -> Result<usize, DomainError> {
         Ok(self.session_actions.lock().map_err(lock_error)?.len())
+    }
+
+    pub(crate) fn reprove_batch_retention(&self, batch_asset_id: &[u8]) -> Result<(), DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let row = connection.query_row(
+            "SELECT deleted_binding.absolute_path_display, deleted_identity.relative_path,
+                    deleted_identity.file_id, deleted_identity.size_bytes, deleted_identity.mtime_filetime,
+                    retained_identity.relative_path, retained_identity.file_id,
+                    retained_identity.size_bytes, retained_identity.mtime_filetime,
+                    retained_asset.current_version, guard.retained_asset_version,
+                    retained_asset.presence_state, retained_root.lifecycle,
+                    retained_root.current_binding_id, retained_identity.root_binding_id,
+                    retained_binding.binding_state,
+                    EXISTS(SELECT 1 FROM deletion_batch_asset selected
+                           JOIN deletion_batch_photo selected_photo ON selected_photo.batch_photo_id=selected.batch_photo_id
+                           JOIN deletion_batch_photo owner_photo ON owner_photo.batch_photo_id=batch_asset.batch_photo_id
+                           WHERE selected_photo.batch_id=owner_photo.batch_id
+                             AND selected.asset_id=guard.retained_asset_id),
+                    retained_revision.root_binding_id=retained_identity.root_binding_id
+                      AND retained_revision.relative_path=retained_identity.relative_path
+                      AND retained_revision.path_key=retained_identity.path_key
+                      AND retained_revision.file_id IS retained_identity.file_id
+                      AND retained_revision.size_bytes=retained_identity.size_bytes
+                      AND retained_revision.mtime_filetime=retained_identity.mtime_filetime
+             FROM deletion_batch_asset AS batch_asset
+             JOIN deletion_mark_asset_snapshot AS marked
+               ON marked.mark_asset_snapshot_id=batch_asset.mark_asset_snapshot_id
+             JOIN file_identity_snapshot AS deleted_identity
+               ON deleted_identity.snapshot_id=marked.file_identity_snapshot_id
+             JOIN root_binding AS deleted_binding
+               ON deleted_binding.binding_id=deleted_identity.root_binding_id
+             JOIN deletion_batch_retention_guard AS guard
+               ON guard.batch_asset_id=batch_asset.batch_asset_id
+             JOIN file_identity_snapshot AS retained_identity
+               ON retained_identity.snapshot_id=guard.retained_snapshot_id
+             JOIN asset AS retained_asset ON retained_asset.asset_id=guard.retained_asset_id
+             JOIN asset_revision AS retained_revision
+               ON retained_revision.asset_id=retained_asset.asset_id
+              AND retained_revision.asset_version=retained_asset.current_version
+             JOIN root AS retained_root ON retained_root.root_id=retained_revision.root_id
+             JOIN root_binding AS retained_binding ON retained_binding.binding_id=retained_revision.root_binding_id
+             WHERE batch_asset.batch_asset_id=?1",
+            [batch_asset_id],
+            |row| Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, String>(5)?,
+                row.get::<_, Option<Vec<u8>>>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?, row.get::<_, i64>(10)?, row.get::<_, String>(11)?,
+                row.get::<_, String>(12)?, row.get::<_, Option<Vec<u8>>>(13)?, row.get::<_, Vec<u8>>(14)?,
+                row.get::<_, String>(15)?, row.get::<_, bool>(16)?, row.get::<_, bool>(17)?,
+            )),
+        ).optional().map_err(map_sqlite_error)?;
+        let Some((
+            root,
+            deleted_relative,
+            deleted_file_id,
+            deleted_size,
+            deleted_mtime,
+            retained_relative,
+            retained_file_id,
+            retained_size,
+            retained_mtime,
+            current_version,
+            retained_version,
+            presence,
+            root_state,
+            current_binding,
+            retained_binding_id,
+            binding_state,
+            retained_selected,
+            retained_identity_current,
+        )) = row
+        else {
+            return Ok(());
+        };
+        if retained_selected
+            || !retained_identity_current
+            || current_version != retained_version
+            || presence != "Present"
+            || root_state != "Online"
+            || current_binding.as_deref() != Some(retained_binding_id.as_slice())
+            || binding_state != "Active"
+        {
+            return Err(DomainError::new(
+                ErrorCode::IdentityMismatch,
+                "保留副本缺失、离线、版本变化或也被当前批次选择。",
+            ));
+        }
+        let expected_deleted = FileProbe {
+            file_id: deleted_file_id,
+            size_bytes: u64::try_from(deleted_size).unwrap_or(0),
+            mtime_filetime: deleted_mtime,
+            hard_link_count: 1,
+            reparse_point: false,
+        };
+        let expected_retained = FileProbe {
+            file_id: retained_file_id,
+            size_bytes: u64::try_from(retained_size).unwrap_or(0),
+            mtime_filetime: retained_mtime,
+            hard_link_count: 1,
+            reparse_point: false,
+        };
+        stable_pair_proof(
+            &self.scheduler,
+            &AtomicBool::new(false),
+            PathBuf::from(root).as_path(),
+            &deleted_relative,
+            &expected_deleted,
+            &retained_relative,
+            &expected_retained,
+        )?;
+        Ok(())
     }
 
     fn replayed_undo(
@@ -534,6 +769,458 @@ fn release_mark(
         return Err(DomainError::stale_version("DeletionMark"));
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct DuplicateAssetEvidence {
+    asset_id: AssetId,
+    asset_version: i64,
+    photo_id: PhotoId,
+    photo_version: i64,
+    role: String,
+    observation_id: Vec<u8>,
+    observation_snapshot_id: Vec<u8>,
+    root_id: Vec<u8>,
+    root_binding_id: Vec<u8>,
+    volume_id: Vec<u8>,
+    root_path: PathBuf,
+    relative_path: String,
+    path_key: Vec<u8>,
+    path_key_version: i64,
+    expected: FileProbe,
+}
+
+#[derive(Debug)]
+struct ResolvedDuplicateSelection {
+    set_id: Vec<u8>,
+    deleted: DuplicateAssetEvidence,
+    retained: DuplicateAssetEvidence,
+    reproof: Option<crate::duplicate_review::StablePairObservation>,
+}
+
+type DuplicateRevisionRow = (Vec<u8>, i64, String, Vec<u8>, i64);
+
+fn load_duplicate_selection(
+    database: &Database,
+    run_id: uuid::Uuid,
+    selection: &DuplicateSubsetSelection,
+) -> Result<ResolvedDuplicateSelection, DomainError> {
+    let set_id = uuid::Uuid::parse_str(&selection.set_id)
+        .map_err(|_| DomainError::new(ErrorCode::InvalidId, "重复集合 ID 无效。"))?;
+    let deleted_id = AssetId::from_str(&selection.deleted_asset_id)?;
+    let retained_id = AssetId::from_str(&selection.retained_asset_id)?;
+    if deleted_id == retained_id {
+        return Err(DomainError::new(
+            ErrorCode::InvalidTransition,
+            "待删文件不能同时作为保留副本。",
+        ));
+    }
+    let connection = database.open_read_connection()?;
+    let current: Option<DuplicateRevisionRow> = connection
+        .query_row(
+            "SELECT run.root_binding_id, run.catalog_revision, run.run_state,
+                    revision.root_binding_id, revision.catalog_revision
+             FROM duplicate_scan_run AS run
+             JOIN library_catalog_revision AS revision ON revision.library_id=run.library_id
+             WHERE run.run_id=?1",
+            [run_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    let Some((run_binding, run_revision, run_state, current_binding, current_revision)) = current
+    else {
+        return Err(DomainError::new(
+            ErrorCode::InvalidTransition,
+            "重复检测结果不存在。",
+        ));
+    };
+    if run_state != "Completed"
+        || run_binding != current_binding
+        || run_revision != current_revision
+    {
+        return Err(DomainError::new(
+            ErrorCode::StaleVersion,
+            "重复检测结果已过期，请重新检测。",
+        ));
+    }
+    let deleted = load_duplicate_asset(
+        &connection,
+        run_id.as_bytes(),
+        set_id.as_bytes(),
+        deleted_id,
+        selection.deleted_asset_version,
+        true,
+    )?;
+    let retained = load_duplicate_asset(
+        &connection,
+        run_id.as_bytes(),
+        set_id.as_bytes(),
+        retained_id,
+        selection.retained_asset_version,
+        false,
+    )?;
+    if deleted.role != retained.role || deleted.root_path != retained.root_path {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "保留副本不属于同一媒体集合或当前图库 Root。",
+        ));
+    }
+    Ok(ResolvedDuplicateSelection {
+        set_id: set_id.as_bytes().to_vec(),
+        deleted,
+        retained,
+        reproof: None,
+    })
+}
+
+fn load_duplicate_asset(
+    connection: &rusqlite::Connection,
+    run_id: &[u8],
+    set_id: &[u8],
+    asset_id: AssetId,
+    asset_version: i64,
+    require_deletion: bool,
+) -> Result<DuplicateAssetEvidence, DomainError> {
+    let row = connection
+        .query_row(
+            "SELECT asset.asset_id, asset.current_version, photo.photo_id, photo.photo_version,
+                    observation.role, observation.observation_id, observation.after_snapshot_id,
+                    revision.root_id, revision.root_binding_id, binding.volume_id,
+                    binding.absolute_path_display, revision.relative_path, revision.path_key,
+                    revision.path_key_version, revision.file_id, revision.size_bytes,
+                    revision.mtime_filetime, revision.hard_link_count,
+                    asset.presence_state, asset.deletion_supported, root.lifecycle,
+                    root.current_binding_id, binding.binding_state
+             FROM duplicate_file_observation AS observation
+             JOIN asset ON asset.asset_id=observation.asset_id
+             JOIN asset_revision AS revision
+               ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version
+             JOIN root ON root.root_id=revision.root_id
+             JOIN root_binding AS binding ON binding.binding_id=revision.root_binding_id
+             JOIN photo_asset AS relation
+               ON relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL
+             JOIN photo ON photo.photo_id=relation.photo_id AND photo.lifecycle='Active'
+             WHERE observation.run_id=?1 AND observation.asset_id=?2
+               AND observation.asset_version=?3
+               AND EXISTS (
+                 SELECT 1 FROM duplicate_equivalence_proof AS proof
+                 WHERE proof.set_id=?4
+                   AND (proof.anchor_observation_id=observation.observation_id
+                        OR proof.member_observation_id=observation.observation_id)
+               )",
+            rusqlite::params![
+                run_id,
+                asset_id.as_bytes().as_slice(),
+                asset_version,
+                set_id
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Vec<u8>>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Vec<u8>>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, Option<Vec<u8>>>(14)?,
+                    row.get::<_, i64>(15)?,
+                    row.get::<_, i64>(16)?,
+                    row.get::<_, i64>(17)?,
+                    row.get::<_, String>(18)?,
+                    row.get::<_, bool>(19)?,
+                    row.get::<_, String>(20)?,
+                    row.get::<_, Option<Vec<u8>>>(21)?,
+                    row.get::<_, String>(22)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or_else(|| DomainError::new(ErrorCode::IdentityMismatch, "重复集合成员或版本无效。"))?;
+    let (
+        id,
+        current_version,
+        photo,
+        photo_version,
+        role,
+        observation_id,
+        observation_snapshot_id,
+        root_id,
+        root_binding_id,
+        volume_id,
+        root_path,
+        relative_path,
+        path_key,
+        path_key_version,
+        file_id,
+        size,
+        mtime,
+        links,
+        presence,
+        deletion_supported,
+        root_state,
+        current_binding,
+        binding_state,
+    ) = row;
+    if current_version != asset_version
+        || presence != "Present"
+        || root_state != "Online"
+        || current_binding.as_deref() != Some(root_binding_id.as_slice())
+        || binding_state != "Active"
+        || links != 1
+        || (require_deletion && !deletion_supported)
+    {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "重复集合成员当前不可安全读取或删除。",
+        ));
+    }
+    Ok(DuplicateAssetEvidence {
+        asset_id: id_from_bytes::<AssetId>(&id)?,
+        asset_version,
+        photo_id: id_from_bytes::<PhotoId>(&photo)?,
+        photo_version,
+        role,
+        observation_id,
+        observation_snapshot_id,
+        root_id,
+        root_binding_id,
+        volume_id,
+        root_path: PathBuf::from(root_path),
+        relative_path,
+        path_key,
+        path_key_version,
+        expected: FileProbe {
+            file_id,
+            size_bytes: u64::try_from(size).unwrap_or(0),
+            mtime_filetime: mtime,
+            hard_link_count: u64::try_from(links).unwrap_or(0),
+            reparse_point: false,
+        },
+    })
+}
+
+fn duplicate_subset_request_hash(
+    run_id: uuid::Uuid,
+    selections: &[ResolvedDuplicateSelection],
+) -> Vec<u8> {
+    let mut digest = Sha256::new();
+    digest.update(b"AddDuplicateSubset");
+    digest.update(run_id.as_bytes());
+    for selection in selections {
+        digest.update(&selection.set_id);
+        digest.update(selection.deleted.asset_id.as_bytes());
+        digest.update(selection.deleted.asset_version.to_le_bytes());
+        digest.update(selection.retained.asset_id.as_bytes());
+        digest.update(selection.retained.asset_version.to_le_bytes());
+    }
+    digest.finalize().to_vec()
+}
+
+fn create_duplicate_subset_mark(
+    transaction: &Transaction<'_>,
+    run_id: uuid::Uuid,
+    photo_id: PhotoId,
+    photo_version: i64,
+    operation_id: OperationId,
+    request_hash: Vec<u8>,
+    selections: Vec<ResolvedDuplicateSelection>,
+) -> Result<DeletionMarkId, DomainError> {
+    if let Some(result) = existing_operation(transaction, operation_id, &request_hash)? {
+        if result != "MarkedDuplicateSubset" {
+            return Err(DomainError::new(
+                ErrorCode::DuplicateOperation,
+                "操作标识已用于其他请求。",
+            ));
+        }
+        let bytes: Vec<u8> = transaction
+            .query_row(
+                "SELECT related_entity_id FROM operation_event WHERE operation_id=?1",
+                [operation_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        return id_from_bytes::<DeletionMarkId>(&bytes);
+    }
+    if active_mark(transaction, photo_id)?.is_some() {
+        return Err(DomainError::new(
+            ErrorCode::InvalidTransition,
+            "该照片已有活动待删除标记，请先取消原标记。",
+        ));
+    }
+    let (state, run_revision, current_revision): (String, i64, i64) = transaction
+        .query_row(
+            "SELECT run.run_state, run.catalog_revision, revision.catalog_revision
+         FROM duplicate_scan_run AS run
+         JOIN library_catalog_revision AS revision ON revision.library_id=run.library_id
+         WHERE run.run_id=?1 AND run.root_binding_id=revision.root_binding_id",
+            [run_id.as_bytes().as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(map_sqlite_error)?;
+    if state != "Completed" || run_revision != current_revision {
+        return Err(DomainError::new(
+            ErrorCode::StaleVersion,
+            "重复检测结果已过期。",
+        ));
+    }
+    let selected_by_set = selections.iter().fold(
+        std::collections::HashMap::<Vec<u8>, usize>::new(),
+        |mut map, item| {
+            *map.entry(item.set_id.clone()).or_default() += 1;
+            map
+        },
+    );
+    for (set_id, selected) in selected_by_set {
+        let members: i64 = transaction
+            .query_row(
+                "SELECT member_count FROM duplicate_equivalence_set WHERE set_id=?1 AND run_id=?2",
+                rusqlite::params![set_id, run_id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if selected >= usize::try_from(members).unwrap_or(0) {
+            return Err(DomainError::new(
+                ErrorCode::InvalidTransition,
+                "不能选择重复集合的全部成员。",
+            ));
+        }
+    }
+    let mark_id = DeletionMarkId::new();
+    insert_operation(
+        transaction,
+        operation_id,
+        "AddDuplicateSubset",
+        photo_id,
+        request_hash,
+        "MarkedDuplicateSubset",
+        mark_id.as_bytes(),
+    )?;
+    let created_at = now_micros();
+    transaction.execute(
+        "INSERT INTO deletion_mark(mark_id,photo_id,photo_version,created_operation_id,created_at,mark_scope)
+         VALUES(?1,?2,?3,?4,?5,'DuplicateSubset')",
+        rusqlite::params![mark_id.as_bytes().as_slice(), photo_id.as_bytes().as_slice(), photo_version,
+            operation_id.as_bytes().as_slice(), created_at],
+    ).map_err(map_sqlite_error)?;
+    for selection in selections {
+        let proof = selection
+            .reproof
+            .as_ref()
+            .ok_or_else(|| DomainError::new(ErrorCode::Internal, "缺少建立标记前的复证。"))?;
+        let deleted_snapshot = insert_duplicate_file_snapshot(
+            transaction,
+            &selection.deleted,
+            &proof.deleted,
+            created_at,
+        )?;
+        let retained_snapshot = insert_duplicate_file_snapshot(
+            transaction,
+            &selection.retained,
+            &proof.retained,
+            created_at,
+        )?;
+        let mark_asset_snapshot_id = FileSnapshotId::new();
+        transaction.execute(
+            "INSERT INTO deletion_mark_asset_snapshot(mark_asset_snapshot_id,mark_id,asset_id,asset_version,role,file_identity_snapshot_id)
+             VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![mark_asset_snapshot_id.as_bytes().as_slice(), mark_id.as_bytes().as_slice(),
+                selection.deleted.asset_id.as_bytes().as_slice(), selection.deleted.asset_version,
+                selection.deleted.role, deleted_snapshot.as_bytes().as_slice()],
+        ).map_err(map_sqlite_error)?;
+        let proof_id =
+            ensure_direct_equivalence_proof(transaction, run_id, &selection, created_at)?;
+        transaction.execute(
+            "INSERT INTO duplicate_retention_guard(guard_id,mark_asset_snapshot_id,retained_asset_id,
+                retained_asset_version,retained_snapshot_id,equivalence_proof_id,created_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            rusqlite::params![uuid::Uuid::new_v4().as_bytes().as_slice(), mark_asset_snapshot_id.as_bytes().as_slice(),
+                selection.retained.asset_id.as_bytes().as_slice(), selection.retained.asset_version,
+                retained_snapshot.as_bytes().as_slice(), proof_id, created_at],
+        ).map_err(map_sqlite_error)?;
+    }
+    Ok(mark_id)
+}
+
+fn insert_duplicate_file_snapshot(
+    transaction: &Transaction<'_>,
+    asset: &DuplicateAssetEvidence,
+    proof: &crate::duplicate_review::StableHashObservation,
+    captured_at: i64,
+) -> Result<FileSnapshotId, DomainError> {
+    let snapshot_id = FileSnapshotId::new();
+    transaction.execute(
+        "INSERT INTO file_identity_snapshot(snapshot_id,root_id,root_binding_id,volume_id,relative_path,
+            path_key,path_key_version,file_id,size_bytes,mtime_filetime,captured_at,evidence_level,
+            content_hash_algorithm,content_hash)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'Strong','SHA-256',?12)",
+        rusqlite::params![snapshot_id.as_bytes().as_slice(), &asset.root_id, &asset.root_binding_id,
+            &asset.volume_id, &asset.relative_path, &asset.path_key, asset.path_key_version,
+            &proof.after.file_id, i64::try_from(proof.after.size_bytes).unwrap_or(i64::MAX),
+            proof.after.mtime_filetime, captured_at, proof.hash.as_slice()],
+    ).map_err(map_sqlite_error)?;
+    Ok(snapshot_id)
+}
+
+fn ensure_direct_equivalence_proof(
+    transaction: &Transaction<'_>,
+    run_id: uuid::Uuid,
+    selection: &ResolvedDuplicateSelection,
+    created_at: i64,
+) -> Result<Vec<u8>, DomainError> {
+    let existing: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT proof_id FROM duplicate_equivalence_proof
+         WHERE set_id=?1 AND ((anchor_observation_id=?2 AND member_observation_id=?3)
+           OR (anchor_observation_id=?3 AND member_observation_id=?2)) LIMIT 1",
+            rusqlite::params![
+                &selection.set_id,
+                &selection.deleted.observation_id,
+                &selection.retained.observation_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?;
+    if let Some(proof) = existing {
+        return Ok(proof);
+    }
+    let proof_id = uuid::Uuid::new_v4().as_bytes().to_vec();
+    transaction
+        .execute(
+            "INSERT INTO duplicate_equivalence_proof(proof_id,run_id,set_id,anchor_observation_id,
+            member_observation_id,anchor_snapshot_id,member_snapshot_id,byte_equal,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,1,?8)",
+            rusqlite::params![
+                &proof_id,
+                run_id.as_bytes().as_slice(),
+                &selection.set_id,
+                &selection.deleted.observation_id,
+                &selection.retained.observation_id,
+                &selection.deleted.observation_snapshot_id,
+                &selection.retained.observation_snapshot_id,
+                created_at
+            ],
+        )
+        .map_err(map_sqlite_error)?;
+    Ok(proof_id)
 }
 
 #[derive(Debug)]
@@ -786,6 +1473,10 @@ struct ReviewRow {
     current_role: Option<String>,
     preview_state: Option<String>,
     current_member_count: i64,
+    mark_scope: String,
+    root_path: Option<String>,
+    retained_root_path: Option<String>,
+    retained_relative_path: Option<String>,
 }
 
 fn load_pending_snapshot(
@@ -812,7 +1503,9 @@ fn load_pending_snapshot(
                 relation.role, metadata.preview_state,
                 (SELECT COUNT(*) FROM photo_asset current_relation
                  WHERE current_relation.photo_id=mark.photo_id
-                   AND current_relation.to_photo_version IS NULL)
+                   AND current_relation.to_photo_version IS NULL),
+                mark.mark_scope, snapshot_binding.absolute_path_display,
+                retained_binding.absolute_path_display, retained_identity.relative_path
          FROM deletion_mark mark
          JOIN photo ON photo.photo_id=mark.photo_id
          JOIN current_library current ON current.library_id=photo.library_id AND current.slot=1
@@ -820,6 +1513,13 @@ fn load_pending_snapshot(
          LEFT JOIN file_identity_snapshot identity
            ON identity.snapshot_id=snapshot.file_identity_snapshot_id
          LEFT JOIN root ON root.root_id=identity.root_id
+         LEFT JOIN root_binding snapshot_binding ON snapshot_binding.binding_id=identity.root_binding_id
+         LEFT JOIN duplicate_retention_guard retention
+           ON retention.mark_asset_snapshot_id=snapshot.mark_asset_snapshot_id
+         LEFT JOIN file_identity_snapshot retained_identity
+           ON retained_identity.snapshot_id=retention.retained_snapshot_id
+         LEFT JOIN root_binding retained_binding
+           ON retained_binding.binding_id=retained_identity.root_binding_id
          LEFT JOIN asset ON asset.asset_id=snapshot.asset_id
          LEFT JOIN asset_revision revision
            ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version
@@ -877,6 +1577,10 @@ fn load_pending_snapshot(
                 current_role: row.get(33)?,
                 preview_state: row.get(34)?,
                 current_member_count: row.get(35)?,
+                mark_scope: row.get(36)?,
+                root_path: row.get(37)?,
+                retained_root_path: row.get(38)?,
+                retained_relative_path: row.get(39)?,
             })
         })
         .map_err(map_sqlite_error)?
@@ -1008,6 +1712,9 @@ fn load_batch_problem_items(
                 relative_directory: relative_parent(&relative_path),
                 physical_file_count: usize::try_from(unresolved).unwrap_or(0),
                 total_size_bytes: row.get(5)?,
+                mark_scope: "WholePhoto".into(),
+                source_label: "图库标记".into(),
+                files: Vec::new(),
                 problem: Some(problem(kind, message, can_rescan, false)),
             })
         })
@@ -1052,6 +1759,39 @@ fn review_item(rows: Vec<ReviewRow>) -> Result<PendingDeleteItem, DomainError> {
             })
         })
         .min_by_key(|preview| (preview.state == "Unavailable", preview.media_kind != "Jpg"));
+    let files = rows
+        .iter()
+        .filter_map(|row| {
+            let asset = id_from_bytes::<AssetId>(row.asset_id.as_deref()?).ok()?;
+            let relative = row.snapshot_relative_path.as_deref()?;
+            let full_path = PathBuf::from(row.root_path.as_deref()?)
+                .join(relative)
+                .to_string_lossy()
+                .into_owned();
+            let retained_full_path = row
+                .retained_root_path
+                .as_deref()
+                .zip(row.retained_relative_path.as_deref())
+                .map(|(root, relative)| {
+                    PathBuf::from(root)
+                        .join(relative)
+                        .to_string_lossy()
+                        .into_owned()
+                });
+            Some(PendingDeleteFile {
+                asset_id: asset.to_string(),
+                asset_version: row.frozen_asset_version?,
+                role: row.frozen_role.clone()?,
+                directory: PathBuf::from(&full_path)
+                    .parent()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                full_path,
+                size_bytes: row.snapshot_size.unwrap_or(0),
+                retained_full_path,
+            })
+        })
+        .collect();
 
     let problem = classify_problem(&rows, snapshot_count);
     Ok(PendingDeleteItem {
@@ -1065,6 +1805,13 @@ fn review_item(rows: Vec<ReviewRow>) -> Result<PendingDeleteItem, DomainError> {
         relative_directory,
         physical_file_count: snapshot_count,
         total_size_bytes,
+        mark_scope: first.mark_scope.clone(),
+        source_label: if first.mark_scope == "DuplicateSubset" {
+            "重复清理".into()
+        } else {
+            "图库标记".into()
+        },
+        files,
         problem,
     })
 }
@@ -1093,7 +1840,8 @@ fn classify_problem(rows: &[ReviewRow], snapshot_count: usize) -> Option<Deletio
         ));
     }
     if snapshot_count == 0
-        || usize::try_from(first.current_member_count).ok() != Some(snapshot_count)
+        || (first.mark_scope == "WholePhoto"
+            && usize::try_from(first.current_member_count).ok() != Some(snapshot_count))
         || rows.iter().any(|row| row.current_role != row.frozen_role)
     {
         return Some(problem(
