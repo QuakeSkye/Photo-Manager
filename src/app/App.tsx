@@ -54,6 +54,8 @@ const idleDuplicateStatus: DuplicateReviewStatus = {
   currentRelativePath: null,
   familyCount: 0,
   expiredReason: null,
+  resultVersionId: null,
+  lastReceipt: null,
 };
 
 export function App() {
@@ -390,6 +392,38 @@ function AppContent() {
     return { nextLibrary, nextPending };
   };
 
+  const refreshAfterRecycle = async (result: RecycleStatus) => {
+    const { nextLibrary, nextPending } = await refreshDeletionState();
+    if (result.duplicateReconciliation !== 'notApplicable') {
+      setDuplicateReviewStatus(await getDuplicateReviewStatus());
+    }
+    const mustReviewProblems =
+      result.remainingProblemCount > 0 ||
+      result.phase === 'awaitingUser' ||
+      result.phase === 'needsAttention';
+    if (mustReviewProblems || nextPending.summary.totalCount > 0) {
+      setRoute('pending-delete');
+      window.history.replaceState(null, '', '#/pending-delete');
+      setPendingSnapshot(nextPending);
+      setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+      return;
+    }
+    if (
+      result.duplicateReconciliation === 'applied' ||
+      result.duplicateReconciliation === 'rejected'
+    ) {
+      setRoute('duplicate-review');
+      window.history.replaceState(null, '', '#/duplicate-review');
+      setSelectedPhotoId(null);
+      return;
+    }
+    setRoute('library');
+    window.history.replaceState(null, '', '#/library');
+    setSelectedPhotoId(
+      nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
+    );
+  };
+
   const performToggle = async () => {
     if (mutationInFlight.current || selectedIndex < 0) return;
     const current = activePhotos[selectedIndex];
@@ -522,17 +556,7 @@ function AppContent() {
         : await startRecycle(recycleConfirmation);
       setRecycleStatus(result);
       setRecycleConfirmation(null);
-      const { nextLibrary, nextPending } = await refreshDeletionState();
-      if (nextPending.summary.totalCount === 0) {
-        setRoute('library');
-        window.history.replaceState(null, '', '#/library');
-        setSelectedPhotoId(
-          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
-        );
-      } else {
-        setPendingSnapshot(nextPending);
-        setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
-      }
+      await refreshAfterRecycle(result);
     } catch (reason) {
       setError(readError(reason));
       void refreshSafetyStatus();
@@ -551,14 +575,7 @@ function AppContent() {
     try {
       const result = await cancelRemainingRecycle();
       setRecycleStatus(result);
-      const { nextLibrary, nextPending } = await refreshDeletionState();
-      if (nextPending.summary.totalCount === 0) {
-        setRoute('library');
-        window.history.replaceState(null, '', '#/library');
-        setSelectedPhotoId(
-          nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
-        );
-      }
+      await refreshAfterRecycle(result);
     } catch (reason) {
       setError(readError(reason));
     } finally {
@@ -670,7 +687,11 @@ function AppContent() {
           onExecute={() => void openRecycleConfirmation()}
           onRetryRemaining={() => void openRecycleConfirmation()}
           onCancelRemaining={() => void cancelRecycleRemaining()}
-          recycleMessage={recycleStatus?.message ?? null}
+          recycleMessage={
+            recycleStatus?.reconciliationMessage ??
+            recycleStatus?.message ??
+            null
+          }
           importEnabled={safetyStatus?.importGate === 'open'}
           recycleEnabled={safetyStatus?.recycleGate === 'open'}
           safetyMessage={safetyStatus?.message}
@@ -683,10 +704,15 @@ function AppContent() {
           settingsButtonRef={settingsButtonRef}
           onStatusChange={setDuplicateReviewStatus}
           onOpenLibrary={openLibrary}
+          onOpenPendingDelete={() => void openPendingDelete()}
           onOpenSettings={openSettings}
           onPendingAdded={async () => {
-            const { nextLibrary } = await refreshDeletionState();
+            const { nextLibrary, nextPending } = await refreshDeletionState();
             setSnapshot(nextLibrary);
+            setPendingSnapshot(nextPending);
+            setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+            setRoute('pending-delete');
+            window.history.replaceState(null, '', '#/pending-delete');
           }}
         />
       )}

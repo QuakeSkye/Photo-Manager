@@ -35,12 +35,16 @@ const idle: commands.DuplicateReviewStatus = {
   currentRelativePath: null,
   familyCount: 0,
   expiredReason: null,
+  resultVersionId: null,
+  lastReceipt: null,
 };
 
 const results: commands.DuplicateReviewResults = {
   runId: '00000000-0000-0000-0000-000000000001',
+  resultVersionId: '00000000-0000-0000-0000-000000000001',
   expired: false,
   expiredReason: null,
+  lastReceipt: null,
   summary: {
     equivalenceSets: 1,
     jpgOnlyFamilies: 1,
@@ -110,6 +114,7 @@ function view(status: commands.DuplicateReviewStatus = idle) {
       settingsButtonRef={createRef()}
       onStatusChange={vi.fn()}
       onOpenLibrary={vi.fn()}
+      onOpenPendingDelete={vi.fn()}
       onOpenSettings={vi.fn()}
       onPendingAdded={vi.fn().mockResolvedValue(undefined)}
     />
@@ -316,4 +321,46 @@ describe('DuplicateReviewView', () => {
     expect(screen.getByText(/将回收：G:\\old\\delete.jpg/)).toBeInTheDocument();
     expect(screen.getByText(/保留：G:\\2026\\keep.jpg/)).toBeInTheDocument();
   });
+});
+
+test('shows the recycle receipt and completion actions for a reconciled empty result', async () => {
+  const receipt: commands.DuplicateReviewReceipt = {
+    reconciliationId: '00000000-0000-0000-0000-000000000010',
+    batchId: '00000000-0000-0000-0000-000000000011',
+    state: 'applied',
+    recycledFiles: 1,
+    recycledBytes: 10,
+    completedAt: 1,
+    message: '图库索引和重复结果已更新，无须重新检测。',
+  };
+  vi.mocked(commands.getDuplicateReviewResults).mockResolvedValue({
+    ...results,
+    resultVersionId: receipt.reconciliationId,
+    lastReceipt: receipt,
+    summary: {
+      equivalenceSets: 0,
+      jpgOnlyFamilies: 0,
+      rafOnlyFamilies: 0,
+      jpgAndRafFamilies: 0,
+      redundantFiles: 0,
+      reclaimableBytes: 0,
+    },
+    families: [],
+  });
+  render(
+    view({
+      ...idle,
+      state: 'completedEmpty',
+      runId: results.runId,
+      resultVersionId: receipt.reconciliationId,
+      lastReceipt: receipt,
+    }),
+  );
+
+  expect(await screen.findByText('重复文件已处理')).toBeInTheDocument();
+  expect(screen.getByText('本次发现的重复文件已处理完')).toBeInTheDocument();
+  expect(screen.getAllByRole('button', { name: '返回图库' })).toHaveLength(2);
+  expect(
+    screen.getByRole('button', { name: '再次检查重复' }),
+  ).toBeInTheDocument();
 });

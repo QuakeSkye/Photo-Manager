@@ -822,6 +822,26 @@ p {
   border-radius: 10px;
   background: var(--surface);
 }
+.duplicate-receipt {
+  display: grid;
+  gap: 4px;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 1px solid #b8dcc5;
+  border-radius: 10px;
+  background: #effaf2;
+  color: #205c35;
+}
+.duplicate-receipt.is-warning {
+  border-color: #e5c58c;
+  background: #fff8e9;
+  color: #73510e;
+}
+.duplicate-empty-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
 .duplicate-progress code,
 .duplicate-member code,
 .pending-file-row code {

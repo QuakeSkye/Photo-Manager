@@ -12,11 +12,13 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
+    catalog::CatalogService,
     db::{
         Database,
         migration::{map_sqlite_error, now_micros},
     },
     domain::{DomainError, ErrorCode},
+    duplicate_review::{DuplicateReconciliationState, DuplicateResultReconciler},
     pending_delete::PendingDeleteService,
     roots::{
         FilesystemKind, open_read_only, path_key, probe_directory, probe_file,
@@ -43,6 +45,15 @@ pub enum RecyclePhase {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DuplicateReconciliationPhase {
+    NotApplicable,
+    Pending,
+    Applied,
+    Rejected,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecycleConfirmation {
@@ -62,6 +73,12 @@ pub struct RecycleStatus {
     pub retryable_files: usize,
     pub needs_attention_files: usize,
     pub cancelled_files: usize,
+    pub duplicate_reconciliation: DuplicateReconciliationPhase,
+    pub successful_duplicate_file_count: usize,
+    pub successful_duplicate_bytes: i64,
+    pub remaining_problem_count: usize,
+    pub duplicate_review_run_id: Option<String>,
+    pub reconciliation_message: Option<String>,
     pub message: Option<String>,
 }
 
@@ -74,6 +91,12 @@ impl Default for RecycleStatus {
             retryable_files: 0,
             needs_attention_files: 0,
             cancelled_files: 0,
+            duplicate_reconciliation: DuplicateReconciliationPhase::NotApplicable,
+            successful_duplicate_file_count: 0,
+            successful_duplicate_bytes: 0,
+            remaining_problem_count: 0,
+            duplicate_review_run_id: None,
+            reconciliation_message: None,
             message: None,
         }
     }
@@ -144,6 +167,8 @@ struct InterruptedAttempt {
     lease_generation: i64,
 }
 
+type StoredReconciliation = (String, Option<Vec<u8>>, i64, i64, Option<String>);
+
 struct NewAttempt<'a> {
     batch_id: &'a [u8],
     operation_id: &'a [u8],
@@ -157,6 +182,8 @@ pub struct RecycleService {
     database: Arc<Database>,
     safety_gate: Arc<RuntimeSafetyGate>,
     pending_delete: Arc<PendingDeleteService>,
+    catalog: Arc<CatalogService>,
+    duplicate_reconciler: DuplicateResultReconciler,
     shell: Arc<dyn RecycleShell>,
     status: Arc<Mutex<RecycleStatus>>,
     execution_gate: Mutex<()>,
@@ -195,10 +222,14 @@ impl RecycleService {
         safety_gate: Arc<RuntimeSafetyGate>,
         faults: FaultInjector,
     ) -> Self {
+        let catalog = Arc::new(CatalogService::new(database.clone()));
+        let duplicate_reconciler = DuplicateResultReconciler::new(database.clone());
         Self {
             database,
             safety_gate,
             pending_delete,
+            catalog,
+            duplicate_reconciler,
             shell,
             status: Arc::new(Mutex::new(RecycleStatus::default())),
             execution_gate: Mutex::new(()),
@@ -231,7 +262,29 @@ impl RecycleService {
     }
 
     pub fn reconcile_startup(&self) -> Result<(), DomainError> {
-        self.reconcile_interrupted()
+        self.reconcile_interrupted()?;
+        let connection = self.database.open_read_connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT batch.batch_id FROM deletion_batch batch
+                 JOIN deletion_batch_photo photo ON photo.batch_id=batch.batch_id
+                 JOIN deletion_batch_asset asset ON asset.batch_photo_id=photo.batch_photo_id
+                 WHERE batch.batch_state IN ('Completed','Cancelled')
+                   AND asset.resolution_state='Recycled'
+                 ORDER BY batch.confirmed_at",
+            )
+            .map_err(map_sqlite_error)?;
+        let batches = statement
+            .query_map((), |row| row.get::<_, Vec<u8>>(0))
+            .map_err(map_sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(map_sqlite_error)?;
+        drop(statement);
+        drop(connection);
+        for batch in batches {
+            self.finalize_stable_batch(&batch)?;
+        }
+        Ok(())
     }
 
     pub fn start(
@@ -261,8 +314,10 @@ impl RecycleService {
         };
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let attempt = self.create_initial_attempt(operation_id, expected)?;
+        let batch_id = attempt.batch_id.clone();
         self.pending_delete.clear_session_history()?;
         self.execute_attempt(attempt)?;
+        self.finalize_stable_batch(&batch_id)?;
         self.status()
     }
 
@@ -295,6 +350,7 @@ impl RecycleService {
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let attempt = self.create_retry_attempt(operation_id, &batch_id)?;
         self.execute_attempt(attempt)?;
+        self.finalize_stable_batch(&batch_id)?;
         self.status()
     }
 
@@ -332,9 +388,72 @@ impl RecycleService {
             ).map_err(map_sqlite_error)?;
             Ok(())
         })?;
+        self.finalize_stable_batch(&batch_id)?;
         let status = status_for_batch(&self.database.open_read_connection()?, &batch_id)?;
         *self.status.lock().map_err(lock_error)? = status.clone();
         Ok(status)
+    }
+
+    fn finalize_stable_batch(&self, batch_id: &[u8]) -> Result<(), DomainError> {
+        let state: String = self
+            .database
+            .open_read_connection()?
+            .query_row(
+                "SELECT batch_state FROM deletion_batch WHERE batch_id=?1",
+                [batch_id],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if !matches!(state.as_str(), "Completed" | "Cancelled") {
+            return Ok(());
+        }
+        let mut status = status_for_batch(&self.database.open_read_connection()?, batch_id)?;
+        match self.catalog.reconcile_recycled_batch(batch_id) {
+            Ok(catalog_result) => {
+                let _ = (
+                    catalog_result.event_id.as_ref(),
+                    catalog_result.from_revision,
+                    catalog_result.to_revision,
+                    catalog_result.changed_assets,
+                );
+                let outcome = self.duplicate_reconciler.reconcile_batch(batch_id)?;
+                status.duplicate_reconciliation = match outcome.state {
+                    DuplicateReconciliationState::NotApplicable => {
+                        DuplicateReconciliationPhase::NotApplicable
+                    }
+                    DuplicateReconciliationState::Applied => DuplicateReconciliationPhase::Applied,
+                    DuplicateReconciliationState::Rejected => {
+                        DuplicateReconciliationPhase::Rejected
+                    }
+                };
+                status.successful_duplicate_file_count = outcome.recycled_files;
+                status.successful_duplicate_bytes = outcome.recycled_bytes;
+                status.duplicate_review_run_id = outcome.run_id;
+                status.reconciliation_message = outcome.message;
+            }
+            Err(error) => {
+                let reason = format!(
+                    "文件已成功移入回收站，但图库索引无法安全协调：{}",
+                    error.user_message
+                );
+                let outcome = self.duplicate_reconciler.reject_batch(batch_id, &reason)?;
+                status.duplicate_reconciliation = match outcome.state {
+                    DuplicateReconciliationState::NotApplicable => {
+                        DuplicateReconciliationPhase::NotApplicable
+                    }
+                    DuplicateReconciliationState::Applied => DuplicateReconciliationPhase::Applied,
+                    DuplicateReconciliationState::Rejected => {
+                        DuplicateReconciliationPhase::Rejected
+                    }
+                };
+                status.successful_duplicate_file_count = outcome.recycled_files;
+                status.successful_duplicate_bytes = outcome.recycled_bytes;
+                status.duplicate_review_run_id = outcome.run_id;
+                status.reconciliation_message = outcome.message;
+            }
+        }
+        *self.status.lock().map_err(lock_error)? = status;
+        Ok(())
     }
 
     fn create_initial_attempt(
@@ -754,6 +873,12 @@ impl RecycleService {
             retryable_files: 0,
             needs_attention_files: 0,
             cancelled_files: 0,
+            duplicate_reconciliation: DuplicateReconciliationPhase::Pending,
+            successful_duplicate_file_count: 0,
+            successful_duplicate_bytes: 0,
+            remaining_problem_count: 0,
+            duplicate_review_run_id: None,
+            reconciliation_message: None,
             message: Some("正在逐张移入 Windows 回收站。".into()),
         };
         Ok(())
@@ -1316,7 +1441,7 @@ fn status_for_batch(
     connection: &Connection,
     batch_id: &[u8],
 ) -> Result<RecycleStatus, DomainError> {
-    let (state,recycled,retryable,attention,cancelled):(String,i64,i64,i64,i64)=connection.query_row("SELECT batch.batch_state,SUM(asset.resolution_state='Recycled'),SUM(asset.resolution_state='RetryableFailed'),SUM(asset.resolution_state='NeedsAttention'),SUM(asset.resolution_state IN ('CancelledRemaining','ResolvedWithoutDelete')) FROM deletion_batch batch JOIN deletion_batch_photo photo ON photo.batch_id=batch.batch_id JOIN deletion_batch_asset asset ON asset.batch_photo_id=photo.batch_photo_id WHERE batch.batch_id=?1 GROUP BY batch.batch_id",[batch_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).map_err(map_sqlite_error)?;
+    let (state,recycled,retryable,attention,cancelled,duplicate_files,duplicate_bytes):(String,i64,i64,i64,i64,i64,i64)=connection.query_row("SELECT batch.batch_state,SUM(asset.resolution_state='Recycled'),SUM(asset.resolution_state='RetryableFailed'),SUM(asset.resolution_state='NeedsAttention'),SUM(asset.resolution_state IN ('CancelledRemaining','ResolvedWithoutDelete')),SUM(asset.resolution_state='Recycled' AND mark.mark_scope='DuplicateSubset'),COALESCE(SUM(CASE WHEN asset.resolution_state='Recycled' AND mark.mark_scope='DuplicateSubset' THEN identity.size_bytes ELSE 0 END),0) FROM deletion_batch batch JOIN deletion_batch_photo photo ON photo.batch_id=batch.batch_id JOIN deletion_mark mark ON mark.mark_id=photo.mark_id JOIN deletion_batch_asset asset ON asset.batch_photo_id=photo.batch_photo_id JOIN deletion_mark_asset_snapshot snapshot ON snapshot.mark_asset_snapshot_id=asset.mark_asset_snapshot_id JOIN file_identity_snapshot identity ON identity.snapshot_id=snapshot.file_identity_snapshot_id WHERE batch.batch_id=?1 GROUP BY batch.batch_id",[batch_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).map_err(map_sqlite_error)?;
     let phase = match state.as_str() {
         "Completed" => RecyclePhase::Completed,
         "Cancelled" => RecyclePhase::Cancelled,
@@ -1325,6 +1450,43 @@ fn status_for_batch(
         "Running" | "CancelRequested" => RecyclePhase::Running,
         _ => RecyclePhase::Idle,
     };
+    let reconciliation:Option<StoredReconciliation>=connection.query_row("SELECT reconciliation_state,source_run_id,removed_asset_count,removed_bytes,rejection_reason FROM duplicate_result_reconciliation WHERE recycle_batch_id=?1 AND reconciliation_state!='Pending' ORDER BY completed_at DESC LIMIT 1",[batch_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?))).optional().map_err(map_sqlite_error)?;
+    let (
+        duplicate_reconciliation,
+        run_id,
+        reconciled_files,
+        reconciled_bytes,
+        reconciliation_message,
+    ) = match reconciliation {
+        Some((state, run, files, bytes, _reason)) if state == "Applied" => (
+            DuplicateReconciliationPhase::Applied,
+            run.map(|value| uuid_string(&value)).transpose()?,
+            files,
+            bytes,
+            Some("图库索引和重复结果已更新，无须重新检测。".into()),
+        ),
+        Some((_, run, files, bytes, reason)) => (
+            DuplicateReconciliationPhase::Rejected,
+            run.map(|value| uuid_string(&value)).transpose()?,
+            files,
+            bytes,
+            reason,
+        ),
+        None if duplicate_files > 0 => (
+            DuplicateReconciliationPhase::Pending,
+            None,
+            duplicate_files,
+            duplicate_bytes,
+            None,
+        ),
+        None => (
+            DuplicateReconciliationPhase::NotApplicable,
+            None,
+            0,
+            0,
+            None,
+        ),
+    };
     Ok(RecycleStatus {
         phase,
         batch_id: Some(uuid_string(batch_id)?),
@@ -1332,6 +1494,12 @@ fn status_for_batch(
         retryable_files: retryable as usize,
         needs_attention_files: attention as usize,
         cancelled_files: cancelled as usize,
+        duplicate_reconciliation,
+        successful_duplicate_file_count: reconciled_files as usize,
+        successful_duplicate_bytes: reconciled_bytes,
+        remaining_problem_count: (retryable + attention) as usize,
+        duplicate_review_run_id: run_id,
+        reconciliation_message,
         message: Some(
             match phase {
                 RecyclePhase::Completed => "全部文件已移入 Windows 回收站。",

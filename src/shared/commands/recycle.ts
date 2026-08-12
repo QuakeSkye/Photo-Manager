@@ -18,6 +18,9 @@ export type RecyclePhase =
   | 'completed'
   | 'cancelled';
 
+export type DuplicateReconciliationPhase =
+  'notApplicable' | 'pending' | 'applied' | 'rejected';
+
 export interface RecycleStatus {
   readonly phase: RecyclePhase;
   readonly batchId: string | null;
@@ -25,6 +28,12 @@ export interface RecycleStatus {
   readonly retryableFiles: number;
   readonly needsAttentionFiles: number;
   readonly cancelledFiles: number;
+  readonly duplicateReconciliation: DuplicateReconciliationPhase;
+  readonly successfulDuplicateFileCount: number;
+  readonly successfulDuplicateBytes: number;
+  readonly remainingProblemCount: number;
+  readonly duplicateReviewRunId: string | null;
+  readonly reconciliationMessage: string | null;
   readonly message: string | null;
 }
 
@@ -90,6 +99,12 @@ function completedDemoStatus(recycledFiles: number): RecycleStatus {
     retryableFiles: 0,
     needsAttentionFiles: 0,
     cancelledFiles: 0,
+    duplicateReconciliation: 'notApplicable',
+    successfulDuplicateFileCount: 0,
+    successfulDuplicateBytes: 0,
+    remainingProblemCount: 0,
+    duplicateReviewRunId: null,
+    reconciliationMessage: null,
     message: '全部文件已移入 Windows 回收站。',
   };
 }

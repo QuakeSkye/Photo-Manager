@@ -19,6 +19,18 @@ export interface DuplicateReviewStatus {
   readonly currentRelativePath: string | null;
   readonly familyCount: number;
   readonly expiredReason: string | null;
+  readonly resultVersionId: string | null;
+  readonly lastReceipt: DuplicateReviewReceipt | null;
+}
+
+export interface DuplicateReviewReceipt {
+  readonly reconciliationId: string;
+  readonly batchId: string;
+  readonly state: 'applied' | 'rejected';
+  readonly recycledFiles: number;
+  readonly recycledBytes: number;
+  readonly completedAt: number;
+  readonly message: string;
 }
 
 export interface DuplicateReviewSummary {
@@ -63,8 +75,10 @@ export interface DuplicateFamilyResult {
 
 export interface DuplicateReviewResults {
   readonly runId: string | null;
+  readonly resultVersionId: string | null;
   readonly expired: boolean;
   readonly expiredReason: string | null;
+  readonly lastReceipt: DuplicateReviewReceipt | null;
   readonly summary: DuplicateReviewSummary;
   readonly families: readonly DuplicateFamilyResult[];
 }

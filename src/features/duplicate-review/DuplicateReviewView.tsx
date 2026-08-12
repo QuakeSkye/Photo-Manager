@@ -28,6 +28,7 @@ interface DuplicateReviewViewProps {
   readonly settingsButtonRef: RefObject<HTMLButtonElement | null>;
   readonly onStatusChange: (status: DuplicateReviewStatus) => void;
   readonly onOpenLibrary: () => void;
+  readonly onOpenPendingDelete: () => void;
   readonly onOpenSettings: () => void;
   readonly onPendingAdded: () => Promise<void>;
 }
@@ -38,6 +39,7 @@ export function DuplicateReviewView({
   settingsButtonRef,
   onStatusChange,
   onOpenLibrary,
+  onOpenPendingDelete,
   onOpenSettings,
   onPendingAdded,
 }: DuplicateReviewViewProps) {
@@ -60,10 +62,10 @@ export function DuplicateReviewView({
     void getDuplicateReviewResults()
       .then((next) => {
         setResults(next);
-        if (next.expired) setSelected(new Set());
+        setSelected(new Set());
       })
       .catch((reason) => setError(readError(reason)));
-  }, [status.runId, status.state]);
+  }, [status.resultVersionId, status.runId, status.state]);
 
   const sets = useMemo(
     () =>
@@ -143,7 +145,7 @@ export function DuplicateReviewView({
         settingsButtonRef={settingsButtonRef}
         pendingDeleteSummary={pendingDeleteSummary}
         onOpenLibrary={onOpenLibrary}
-        onOpenPendingDelete={onOpenLibrary}
+        onOpenPendingDelete={onOpenPendingDelete}
         onOpenSettings={onOpenSettings}
         onBack={onOpenLibrary}
       />
@@ -172,6 +174,23 @@ export function DuplicateReviewView({
             {error}
           </div>
         )}
+        {status.lastReceipt !== null && (
+          <section
+            className={
+              status.lastReceipt.state === 'applied'
+                ? 'duplicate-receipt'
+                : 'duplicate-receipt is-warning'
+            }
+            role="status"
+          >
+            <strong>重复文件已处理</strong>
+            <span>
+              已移入 Windows 回收站 {status.lastReceipt.recycledFiles} 个文件 ·{' '}
+              {formatBytes(status.lastReceipt.recycledBytes)}
+            </span>
+            <span>{status.lastReceipt.message}</span>
+          </section>
+        )}
         {status.state === 'running' && <ScanProgress status={status} />}
         {status.state === 'expired' && (
           <div className="problem-panel" role="status">
@@ -183,60 +202,80 @@ export function DuplicateReviewView({
         )}
         {status.state === 'completedEmpty' && (
           <div className="duplicate-empty">
-            <strong>上次检测未发现重复</strong>
+            <strong>
+              {status.lastReceipt?.state === 'applied'
+                ? '本次发现的重复文件已处理完'
+                : '上次检测未发现重复'}
+            </strong>
+            {status.lastReceipt?.state === 'applied' && (
+              <div className="duplicate-empty-actions">
+                <button type="button" onClick={onOpenLibrary}>
+                  返回图库
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void begin()}
+                >
+                  再次检查重复
+                </button>
+              </div>
+            )}
           </div>
         )}
-        {results !== null && !results.expired && (
-          <>
-            <Summary results={results} />
-            <div className="duplicate-bulk-toolbar">
-              <span role="status">{selectionNotice}</span>
-              <button
-                className="duplicate-bulk-button"
-                type="button"
-                aria-pressed={bulkSelection.pressed}
-                disabled={bulkSelection.mode === 'disabled'}
-                onClick={toggleBulkSelection}
-              >
-                {bulkSelection.label}
-              </button>
-            </div>
-            <div className="duplicate-family-list">
-              {results.families.map((family) => (
-                <article
-                  className="duplicate-family-card"
-                  key={family.familyId}
+        {results !== null &&
+          !results.expired &&
+          results.families.length > 0 && (
+            <>
+              <Summary results={results} />
+              <div className="duplicate-bulk-toolbar">
+                <span role="status">{selectionNotice}</span>
+                <button
+                  className="duplicate-bulk-button"
+                  type="button"
+                  aria-pressed={bulkSelection.pressed}
+                  disabled={bulkSelection.mode === 'disabled'}
+                  onClick={toggleBulkSelection}
                 >
-                  <h2>
-                    {family.jpg !== null && setTitle(family.jpg)}
-                    {family.jpg !== null && family.raf !== null ? ' · ' : ''}
-                    {family.raf !== null && setTitle(family.raf)}
-                  </h2>
-                  <p>
-                    状态：
-                    {family.jpg !== null && family.raf !== null
-                      ? 'JPG 与 RAF 都有重复'
-                      : family.jpg !== null
-                        ? '仅 JPG 重复'
-                        : '仅 RAF 重复'}
-                  </p>
-                  {[family.jpg, family.raf]
-                    .filter((set): set is DuplicateSetResult => set !== null)
-                    .map((set) => (
-                      <DuplicateSet
-                        key={set.setId}
-                        set={set}
-                        selected={selected}
-                        onToggle={toggleMember}
-                      />
-                    ))}
-                </article>
-              ))}
-            </div>
-          </>
-        )}
+                  {bulkSelection.label}
+                </button>
+              </div>
+              <div className="duplicate-family-list">
+                {results.families.map((family) => (
+                  <article
+                    className="duplicate-family-card"
+                    key={family.familyId}
+                  >
+                    <h2>
+                      {family.jpg !== null && setTitle(family.jpg)}
+                      {family.jpg !== null && family.raf !== null ? ' · ' : ''}
+                      {family.raf !== null && setTitle(family.raf)}
+                    </h2>
+                    <p>
+                      状态：
+                      {family.jpg !== null && family.raf !== null
+                        ? 'JPG 与 RAF 都有重复'
+                        : family.jpg !== null
+                          ? '仅 JPG 重复'
+                          : '仅 RAF 重复'}
+                    </p>
+                    {[family.jpg, family.raf]
+                      .filter((set): set is DuplicateSetResult => set !== null)
+                      .map((set) => (
+                        <DuplicateSet
+                          key={set.setId}
+                          set={set}
+                          selected={selected}
+                          onToggle={toggleMember}
+                        />
+                      ))}
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
       </main>
-      {results !== null && !results.expired && (
+      {results !== null && !results.expired && results.families.length > 0 && (
         <footer className="duplicate-selection-bar" aria-label="待删除选择摘要">
           <div>
             <strong>

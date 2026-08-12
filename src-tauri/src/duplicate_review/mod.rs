@@ -1,7 +1,9 @@
 mod proof;
+mod reconciliation;
 mod scanner;
 
 pub(crate) use proof::{StableHashObservation, StablePairObservation, stable_pair_proof};
+pub(crate) use reconciliation::{DuplicateReconciliationState, DuplicateResultReconciler};
 
 #[cfg(test)]
 mod tests;
@@ -48,6 +50,20 @@ pub struct DuplicateReviewStatus {
     pub current_relative_path: Option<String>,
     pub family_count: usize,
     pub expired_reason: Option<String>,
+    pub result_version_id: Option<String>,
+    pub last_receipt: Option<DuplicateReviewReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateReviewReceipt {
+    pub reconciliation_id: String,
+    pub batch_id: String,
+    pub state: String,
+    pub recycled_files: usize,
+    pub recycled_bytes: i64,
+    pub completed_at: i64,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -102,8 +118,10 @@ pub struct DuplicateFamilyResult {
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateReviewResults {
     pub run_id: Option<String>,
+    pub result_version_id: Option<String>,
     pub expired: bool,
     pub expired_reason: Option<String>,
+    pub last_receipt: Option<DuplicateReviewReceipt>,
     pub summary: DuplicateReviewSummary,
     pub families: Vec<DuplicateFamilyResult>,
 }
@@ -176,6 +194,8 @@ impl DuplicateReviewService {
             current_relative_path: None,
             family_count: 0,
             expired_reason: None,
+            result_version_id: None,
+            last_receipt: None,
         })
     }
 
@@ -222,8 +242,23 @@ impl DuplicateReviewService {
         else {
             return Ok(idle_status());
         };
-        let (expired, expired_reason) = if run_state == "Completed" {
-            completion_expiry(&connection, &binding, revision)?
+        let reconciliation = latest_reconciliation(&connection, &run_id)?;
+        let effective_revision = reconciliation
+            .as_ref()
+            .filter(|value| value.state == "Applied")
+            .map_or(revision, |value| value.to_revision);
+        let (expired, expired_reason) = if reconciliation
+            .as_ref()
+            .is_some_and(|value| value.state == "Rejected")
+        {
+            (
+                true,
+                reconciliation
+                    .as_ref()
+                    .and_then(|value| value.rejection_reason.clone()),
+            )
+        } else if run_state == "Completed" {
+            completion_expiry(&connection, &binding, effective_revision)?
         } else {
             (false, None)
         };
@@ -244,7 +279,7 @@ impl DuplicateReviewService {
         } else {
             match run_state.as_str() {
                 "Running" => DuplicateReviewState::Running,
-                "Completed" if set_count == 0 => DuplicateReviewState::CompletedEmpty,
+                "Completed" if family_count == 0 => DuplicateReviewState::CompletedEmpty,
                 "Completed" => DuplicateReviewState::CompletedWithDuplicates,
                 "Cancelled" => DuplicateReviewState::Cancelled,
                 _ => DuplicateReviewState::Failed,
@@ -260,6 +295,12 @@ impl DuplicateReviewService {
             current_relative_path: current,
             family_count,
             expired_reason,
+            result_version_id: Some(
+                reconciliation
+                    .as_ref()
+                    .map_or_else(|| uuid_string(&run_id), |value| uuid_string(&value.id))?,
+            ),
+            last_receipt: reconciliation.map(|value| value.receipt()).transpose()?,
         })
     }
 
@@ -268,8 +309,10 @@ impl DuplicateReviewService {
         let Some(run_id) = status.run_id.clone() else {
             return Ok(DuplicateReviewResults {
                 run_id: None,
+                result_version_id: None,
                 expired: false,
                 expired_reason: None,
+                last_receipt: None,
                 summary: DuplicateReviewSummary::default(),
                 families: Vec::new(),
             });
@@ -287,8 +330,10 @@ impl DuplicateReviewService {
         }
         Ok(DuplicateReviewResults {
             run_id: Some(run_id),
+            result_version_id: status.result_version_id,
             expired,
             expired_reason: status.expired_reason,
+            last_receipt: status.last_receipt,
             summary,
             families,
         })
@@ -323,6 +368,8 @@ fn idle_status() -> DuplicateReviewStatus {
         current_relative_path: None,
         family_count: 0,
         expired_reason: None,
+        result_version_id: None,
+        last_receipt: None,
     }
 }
 
@@ -370,6 +417,68 @@ struct SetBuild {
     pairing_keys: HashSet<String>,
 }
 
+#[derive(Debug)]
+struct ReconciliationSnapshot {
+    id: Vec<u8>,
+    batch_id: Vec<u8>,
+    state: String,
+    to_revision: i64,
+    removed_assets: i64,
+    removed_bytes: i64,
+    rejection_reason: Option<String>,
+    completed_at: i64,
+}
+
+impl ReconciliationSnapshot {
+    fn receipt(self) -> Result<DuplicateReviewReceipt, DomainError> {
+        let applied = self.state == "Applied";
+        Ok(DuplicateReviewReceipt {
+            reconciliation_id: uuid_string(&self.id)?,
+            batch_id: uuid_string(&self.batch_id)?,
+            state: self.state.to_lowercase(),
+            recycled_files: usize::try_from(self.removed_assets).unwrap_or(0),
+            recycled_bytes: self.removed_bytes,
+            completed_at: self.completed_at,
+            message: if applied {
+                "图库索引和重复结果已更新，无须重新检测。".into()
+            } else {
+                self.rejection_reason
+                    .unwrap_or_else(|| "现有重复结果无法安全沿用。".into())
+            },
+        })
+    }
+}
+
+fn latest_reconciliation(
+    connection: &rusqlite::Connection,
+    run_id: &[u8],
+) -> Result<Option<ReconciliationSnapshot>, DomainError> {
+    connection
+        .query_row(
+            "SELECT reconciliation_id,recycle_batch_id,reconciliation_state,
+                    to_catalog_revision,removed_asset_count,removed_bytes,
+                    rejection_reason,completed_at
+             FROM duplicate_result_reconciliation
+             WHERE source_run_id=?1 AND reconciliation_state!='Pending'
+             ORDER BY completed_at DESC LIMIT 1",
+            [run_id],
+            |row| {
+                Ok(ReconciliationSnapshot {
+                    id: row.get(0)?,
+                    batch_id: row.get(1)?,
+                    state: row.get(2)?,
+                    to_revision: row.get(3)?,
+                    removed_assets: row.get(4)?,
+                    removed_bytes: row.get(5)?,
+                    rejection_reason: row.get(6)?,
+                    completed_at: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)
+}
+
 fn load_families(
     connection: &rusqlite::Connection,
     run_id: &[u8],
@@ -411,6 +520,14 @@ fn load_families(
                ON relation.asset_id=observation.asset_id AND relation.to_photo_version IS NULL
              LEFT JOIN photo ON photo.photo_id=relation.photo_id AND photo.lifecycle='Active'
              WHERE equivalent_set.run_id=?1
+               AND NOT EXISTS(
+                   SELECT 1 FROM duplicate_result_reconciliation_member removed
+                   JOIN duplicate_result_reconciliation reconciliation
+                     ON reconciliation.reconciliation_id=removed.reconciliation_id
+                   WHERE reconciliation.source_run_id=?1
+                     AND reconciliation.reconciliation_state='Applied'
+                     AND removed.asset_id=observation.asset_id
+               )
              ORDER BY equivalent_set.role, equivalent_set.set_id, revision.path_key",
         )
         .map_err(map_sqlite_error)?;
@@ -489,6 +606,7 @@ fn load_families(
         });
     }
     let mut sets = sets.into_values().collect::<Vec<_>>();
+    sets.retain(|set| set.result.members.len() >= 2);
     sets.sort_by(|left, right| left.result.set_id.cmp(&right.result.set_id));
     for set in &mut sets {
         let redundant = set.result.members.len().saturating_sub(1);
