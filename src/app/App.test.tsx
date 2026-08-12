@@ -46,8 +46,8 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
       'captureDesc',
     );
-    expect(screen.getByLabelText('应用版本 v1.0.2')).toHaveTextContent(
-      'v1.0.2',
+    expect(screen.getByLabelText('应用版本 v1.0.3')).toHaveTextContent(
+      'v1.0.3',
     );
     expect(
       screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),

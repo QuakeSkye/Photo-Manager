@@ -2,7 +2,10 @@ mod proof;
 mod reconciliation;
 mod scanner;
 
-pub(crate) use proof::{StableHashObservation, StablePairObservation, stable_pair_proof};
+pub(crate) use proof::{
+    StableHashObservation, StablePairObservation, StablePairProofInput, stable_pair_proof,
+    stable_pair_stream_proof,
+};
 pub(crate) use reconciliation::{DuplicateReconciliationState, DuplicateResultReconciler};
 
 #[cfg(test)]
@@ -21,7 +24,10 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 
 use crate::{
-    db::{Database, migration::map_sqlite_error},
+    db::{
+        Database,
+        migration::{map_sqlite_error, now_micros},
+    },
     domain::{AssetId, DomainError, ErrorCode, LibraryId},
     io_scheduler::IoScheduler,
 };
@@ -201,7 +207,28 @@ impl DuplicateReviewService {
 
     pub fn cancel(&self) -> Result<DuplicateReviewStatus, DomainError> {
         self.cancel_requested.store(true, Ordering::Release);
+        if !self.worker_active.load(Ordering::Acquire) {
+            self.finish_orphaned_runs("CancelledWithoutWorker")?;
+        }
         self.status()
+    }
+
+    pub fn reconcile_startup(&self) -> Result<usize, DomainError> {
+        self.finish_orphaned_runs("ProcessInterrupted")
+    }
+
+    fn finish_orphaned_runs(&self, error_code: &'static str) -> Result<usize, DomainError> {
+        self.database.writer()?.transaction(move |transaction| {
+            transaction
+                .execute(
+                    "UPDATE duplicate_scan_run
+                     SET run_state='Cancelled', phase='Finished', error_code=?1,
+                         completed_at=?2, current_relative_path=NULL
+                     WHERE run_state='Running'",
+                    (error_code, now_micros()),
+                )
+                .map_err(map_sqlite_error)
+        })
     }
 
     pub fn status(&self) -> Result<DuplicateReviewStatus, DomainError> {

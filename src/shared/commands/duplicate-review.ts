@@ -91,6 +91,34 @@ export interface DuplicateSubsetSelection {
   readonly retainedAssetVersion: number;
 }
 
+export type DuplicatePendingBatchPhase =
+  'validating' | 'committing' | 'completed' | 'failed' | 'cancelled';
+
+export interface DuplicatePendingBatchFailure {
+  readonly code: string;
+  readonly message: string;
+  readonly deletedPath: string | null;
+  readonly retainedPath: string | null;
+  readonly diagnostic: string | null;
+}
+
+export interface DuplicatePendingBatchStatus {
+  readonly taskId: string;
+  readonly operationId: string;
+  readonly phase: DuplicatePendingBatchPhase;
+  readonly cancellationRequested: boolean;
+  readonly totalFiles: number;
+  readonly validatedFiles: number;
+  readonly totalBytes: number;
+  readonly validatedBytes: number;
+  readonly currentDeletedPath: string | null;
+  readonly currentRetainedPath: string | null;
+  readonly markedPhotos: number;
+  readonly markedFiles: number;
+  readonly markedBytes: number;
+  readonly failure: DuplicatePendingBatchFailure | null;
+}
+
 export function getDuplicateReviewStatus(): Promise<DuplicateReviewStatus> {
   return invoke('get_duplicate_review_status');
 }
@@ -121,4 +149,22 @@ export function addDuplicateSubsetToPendingDelete(
   return invoke('add_duplicate_subset_to_pending_delete', {
     request: { runId, operationId: crypto.randomUUID(), selections },
   });
+}
+
+export function startDuplicatePendingBatch(
+  runId: string,
+  operationId: string,
+  selections: readonly DuplicateSubsetSelection[],
+): Promise<DuplicatePendingBatchStatus> {
+  return invoke('start_duplicate_pending_batch', {
+    request: { runId, operationId, selections },
+  });
+}
+
+export function getDuplicatePendingBatchStatus(): Promise<DuplicatePendingBatchStatus> {
+  return invoke('get_duplicate_pending_batch_status');
+}
+
+export function cancelDuplicatePendingBatch(): Promise<DuplicatePendingBatchStatus> {
+  return invoke('cancel_duplicate_pending_batch');
 }

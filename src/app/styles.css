@@ -1026,10 +1026,82 @@ p {
   display: grid;
   gap: 10px;
 }
+.duplicate-confirm-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 48px);
+}
+.duplicate-confirm-modal .modal-body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-height: 0;
+}
+.duplicate-confirm-modal .duplicate-confirm-list {
+  min-height: 0;
+  padding-right: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
 .duplicate-confirm-list li,
 .pending-file-row {
   display: grid;
   gap: 4px;
+}
+.duplicate-batch-progress,
+.duplicate-batch-paths,
+.duplicate-batch-failure {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.duplicate-confirm-summary-header {
+  min-height: 0;
+}
+.duplicate-batch-progress progress {
+  width: 100%;
+  height: 8px;
+  accent-color: var(--accent);
+}
+.duplicate-batch-paths,
+.duplicate-batch-failure {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+.duplicate-batch-paths span,
+.duplicate-batch-failure > span:not(:nth-child(2)) {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+}
+.duplicate-batch-paths code,
+.duplicate-batch-failure code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.duplicate-batch-failure {
+  margin-bottom: 12px;
+  border-color: #efb8b8;
+  color: #7f2525;
+  background: #fff3f3;
+}
+.duplicate-batch-failure p,
+.duplicate-batch-message {
+  margin: 0;
+}
+.duplicate-batch-message {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #b9d9c3;
+  border-radius: 8px;
+  color: #315e40;
+  background: #f1faf4;
+}
+.duplicate-batch-error {
+  margin-top: 12px;
 }
 .pending-file-list {
   margin-top: 12px;

@@ -22,6 +22,9 @@ vi.mock('../../shared/commands/duplicate-review', async () => {
     cancelDuplicateReviewScan: vi.fn(),
     openDuplicateAssetLocation: vi.fn(),
     addDuplicateSubsetToPendingDelete: vi.fn(),
+    startDuplicatePendingBatch: vi.fn(),
+    getDuplicatePendingBatchStatus: vi.fn(),
+    cancelDuplicatePendingBatch: vi.fn(),
   };
 });
 
@@ -99,7 +102,11 @@ const results: commands.DuplicateReviewResults = {
   ],
 };
 
-function view(status: commands.DuplicateReviewStatus = idle) {
+function view(
+  status: commands.DuplicateReviewStatus = idle,
+  onStatusChange = vi.fn(),
+  onPendingAdded = vi.fn().mockResolvedValue(undefined),
+) {
   return (
     <DuplicateReviewView
       status={status}
@@ -112,11 +119,11 @@ function view(status: commands.DuplicateReviewStatus = idle) {
         executableBytes: 0,
       }}
       settingsButtonRef={createRef()}
-      onStatusChange={vi.fn()}
+      onStatusChange={onStatusChange}
       onOpenLibrary={vi.fn()}
       onOpenPendingDelete={vi.fn()}
       onOpenSettings={vi.fn()}
-      onPendingAdded={vi.fn().mockResolvedValue(undefined)}
+      onPendingAdded={onPendingAdded}
     />
   );
 }
@@ -138,6 +145,36 @@ describe('DuplicateReviewView', () => {
     );
   });
 
+  test('shows cancellation progress and applies the returned terminal status', async () => {
+    const onStatusChange = vi.fn();
+    const cancelled = { ...idle, state: 'cancelled' as const };
+    vi.mocked(commands.cancelDuplicateReviewScan).mockResolvedValue(cancelled);
+    render(
+      view({ ...idle, state: 'running', phase: 'Comparing' }, onStatusChange),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '取消检测' }));
+
+    expect(screen.getByRole('button', { name: '正在取消…' })).toBeDisabled();
+    await waitFor(() => expect(onStatusChange).toHaveBeenCalledWith(cancelled));
+  });
+
+  test('labels hashing progress without implying byte comparison is complete', () => {
+    render(
+      view({
+        ...idle,
+        state: 'running',
+        phase: 'Comparing',
+        checkedFiles: 4,
+        candidateFiles: 4,
+        hashedFiles: 4,
+      }),
+    );
+    expect(screen.getByText('正在逐字节比较')).toBeInTheDocument();
+    expect(screen.getByText(/已完成哈希 4 个/)).toBeInTheDocument();
+    expect(screen.queryByText(/已完整验证/)).not.toBeInTheDocument();
+  });
+
   test('shows the six-part summary and does not preselect suggested files', async () => {
     vi.mocked(commands.getDuplicateReviewResults).mockResolvedValue(results);
     render(
@@ -152,6 +189,9 @@ describe('DuplicateReviewView', () => {
       2,
     );
     expect(screen.getByText('理论可释放')).toBeInTheDocument();
+    expect(
+      screen.getByText(/区分大小写的完整文件名与大小筛选/),
+    ).toBeInTheDocument();
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);
     expect(
       screen
@@ -318,10 +358,158 @@ describe('DuplicateReviewView', () => {
     });
     fireEvent.click(checkbox);
     fireEvent.click(screen.getByRole('button', { name: '加入待删除（1）…' }));
+    const dialog = screen.getByRole('dialog', { name: '确认加入待删除' });
+    const list = dialog.querySelector('.duplicate-confirm-list');
+    expect(dialog).toHaveClass('duplicate-confirm-modal');
+    expect(list).toBeInstanceOf(HTMLUListElement);
+    expect(list?.parentElement).toHaveClass('modal-body');
+    expect(dialog.querySelector('.modal-actions')).toBeInTheDocument();
     expect(screen.getByText(/将回收：G:\\old\\delete.jpg/)).toBeInTheDocument();
     expect(screen.getByText(/保留：G:\\2026\\keep.jpg/)).toBeInTheDocument();
   });
+
+  test('keeps the dialog open for validation and routes only after the whole batch completes', async () => {
+    const onPendingAdded = vi.fn().mockResolvedValue(undefined);
+    const validating = batchStatus('validating');
+    vi.mocked(commands.getDuplicateReviewResults).mockResolvedValue(results);
+    vi.mocked(commands.startDuplicatePendingBatch).mockResolvedValue(
+      validating,
+    );
+    vi.mocked(commands.getDuplicatePendingBatchStatus).mockResolvedValue({
+      ...validating,
+      phase: 'completed',
+      validatedFiles: 1,
+      validatedBytes: 20,
+      markedPhotos: 1,
+      markedFiles: 1,
+      markedBytes: 10,
+    });
+    render(
+      view(
+        {
+          ...idle,
+          state: 'completedWithDuplicates',
+          runId: results.runId,
+          familyCount: 1,
+        },
+        vi.fn(),
+        onPendingAdded,
+      ),
+    );
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: /delete.jpg/ }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除（1）…' }));
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除' }));
+
+    expect(await screen.findByText('正在验证 0 / 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '取消验证' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '取消验证' })).toHaveFocus();
+    expect(onPendingAdded).not.toHaveBeenCalled();
+    await waitFor(() => expect(onPendingAdded).toHaveBeenCalledOnce(), {
+      timeout: 2_000,
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('shows the first failed pair inside the dialog and preserves the selection', async () => {
+    const validating = batchStatus('validating');
+    vi.mocked(commands.getDuplicateReviewResults).mockResolvedValue(results);
+    vi.mocked(commands.startDuplicatePendingBatch).mockResolvedValue(
+      validating,
+    );
+    vi.mocked(commands.getDuplicatePendingBatchStatus).mockResolvedValue({
+      ...validating,
+      phase: 'failed',
+      failure: {
+        code: 'identity_mismatch',
+        message: '待删文件与保留副本已不再逐字节相同。',
+        deletedPath: 'G:\\old\\delete.jpg',
+        retainedPath: 'G:\\2026\\keep.jpg',
+        diagnostic: null,
+      },
+    });
+    render(
+      view({
+        ...idle,
+        state: 'completedWithDuplicates',
+        runId: results.runId,
+        familyCount: 1,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: /delete.jpg/ }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除（1）…' }));
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除' }));
+
+    expect(await screen.findByText('整批未提交')).toBeInTheDocument();
+    expect(
+      screen.getByText('待删文件与保留副本已不再逐字节相同。'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '重新验证整批' })).toBeEnabled();
+    expect(
+      screen.getByRole('checkbox', { name: /取消 G:\\old\\delete.jpg/ }),
+    ).toBeChecked();
+  });
+
+  test('cancels validation without clearing the selected files', async () => {
+    const validating = batchStatus('validating');
+    vi.mocked(commands.getDuplicateReviewResults).mockResolvedValue(results);
+    vi.mocked(commands.startDuplicatePendingBatch).mockResolvedValue(
+      validating,
+    );
+    vi.mocked(commands.cancelDuplicatePendingBatch).mockResolvedValue({
+      ...validating,
+      cancellationRequested: true,
+    });
+    vi.mocked(commands.getDuplicatePendingBatchStatus).mockResolvedValue({
+      ...validating,
+      phase: 'cancelled',
+      cancellationRequested: true,
+    });
+    render(
+      view({
+        ...idle,
+        state: 'completedWithDuplicates',
+        runId: results.runId,
+        familyCount: 1,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole('checkbox', { name: /delete.jpg/ }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除（1）…' }));
+    fireEvent.click(screen.getByRole('button', { name: '加入待删除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '取消验证' }));
+
+    expect(await screen.findByText(/验证已安全取消/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('checkbox', { name: /取消 G:\\old\\delete.jpg/ }),
+    ).toBeChecked();
+  });
 });
+
+function batchStatus(
+  phase: commands.DuplicatePendingBatchPhase,
+): commands.DuplicatePendingBatchStatus {
+  return {
+    taskId: '00000000-0000-0000-0000-000000000020',
+    operationId: '00000000-0000-0000-0000-000000000021',
+    phase,
+    cancellationRequested: false,
+    totalFiles: 1,
+    validatedFiles: 0,
+    totalBytes: 20,
+    validatedBytes: 0,
+    currentDeletedPath: 'G:\\old\\delete.jpg',
+    currentRetainedPath: 'G:\\2026\\keep.jpg',
+    markedPhotos: 0,
+    markedFiles: 0,
+    markedBytes: 0,
+    failure: null,
+  };
+}
 
 test('shows the recycle receipt and completion actions for a reconciled empty result', async () => {
   const receipt: commands.DuplicateReviewReceipt = {

@@ -26,6 +26,7 @@ struct AssetRow {
     asset_id: Vec<u8>,
     asset_version: i64,
     role: String,
+    file_name: String,
     relative_path: String,
     path_key: Vec<u8>,
     expected: FileProbe,
@@ -61,7 +62,7 @@ struct EquivalenceClass {
 pub(super) fn execute(
     database: &Arc<Database>,
     scheduler: &Arc<IoScheduler>,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
 ) -> Result<(), DomainError> {
     cancelled.store(false, Ordering::Release);
     let _bulk_io = scheduler.acquire_bulk_io(|| cancelled.load(Ordering::Acquire))?;
@@ -82,15 +83,16 @@ pub(super) fn execute(
 fn execute_inner(
     database: &Arc<Database>,
     scheduler: &Arc<IoScheduler>,
-    cancelled: &AtomicBool,
+    cancelled: &Arc<AtomicBool>,
     context: &RunContext,
 ) -> Result<(), DomainError> {
     let assets = load_assets(database, context)?;
-    let mut buckets: BTreeMap<(String, i64), Vec<AssetRow>> = BTreeMap::new();
+    let mut buckets: BTreeMap<(String, String, i64), Vec<AssetRow>> = BTreeMap::new();
     for asset in assets {
         buckets
             .entry((
                 asset.role.clone(),
+                asset.file_name.clone(),
                 i64::try_from(asset.expected.size_bytes).unwrap_or(i64::MAX),
             ))
             .or_default()
@@ -150,11 +152,14 @@ fn execute_inner(
         hashed.len(),
         None,
     )?;
-    let mut hash_groups: BTreeMap<(String, i64, [u8; 32]), Vec<HashedAsset>> = BTreeMap::new();
+    let hashed_count = hashed.len();
+    let mut hash_groups: BTreeMap<(String, String, i64, [u8; 32]), Vec<HashedAsset>> =
+        BTreeMap::new();
     for member in hashed {
         hash_groups
             .entry((
                 member.asset.role.clone(),
+                member.asset.file_name.clone(),
                 i64::try_from(member.asset.expected.size_bytes).unwrap_or(i64::MAX),
                 member.observation.hash,
             ))
@@ -162,7 +167,7 @@ fn execute_inner(
             .push(member);
     }
     let mut classes = Vec::new();
-    for ((role, size_bytes, hash), group) in hash_groups {
+    for ((role, _file_name, size_bytes, hash), group) in hash_groups {
         if group.len() < 2 {
             continue;
         }
@@ -224,7 +229,24 @@ fn execute_inner(
     if cancelled.load(Ordering::Acquire) {
         return Err(cancelled_error());
     }
-    publish(database, context, checked, candidate_files, classes)
+    update_progress(
+        database,
+        &context.run_id,
+        "Publishing",
+        checked,
+        candidate_files,
+        hashed_count,
+        None,
+    )?;
+    publish(
+        database,
+        context,
+        checked,
+        candidate_files,
+        hashed_count,
+        classes,
+        Arc::clone(cancelled),
+    )
 }
 
 fn begin_run(database: &Arc<Database>) -> Result<RunContext, DomainError> {
@@ -336,11 +358,13 @@ fn load_assets(
             ),
             |row| {
                 let size = row.get::<_, i64>(6)?;
+                let relative_path = row.get::<_, String>(3)?;
                 Ok(AssetRow {
                     asset_id: row.get(0)?,
                     asset_version: row.get(1)?,
                     role: row.get(2)?,
-                    relative_path: row.get(3)?,
+                    file_name: exact_file_name(&relative_path),
+                    relative_path,
                     path_key: row.get(4)?,
                     expected: FileProbe {
                         file_id: row.get(5)?,
@@ -357,15 +381,31 @@ fn load_assets(
         .map_err(map_sqlite_error)
 }
 
+fn exact_file_name(relative_path: &str) -> String {
+    relative_path
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(relative_path)
+        .to_owned()
+}
+
 fn publish(
     database: &Arc<Database>,
     context: &RunContext,
     checked: usize,
     candidates: usize,
+    hashed: usize,
     classes: Vec<EquivalenceClass>,
+    cancelled: Arc<AtomicBool>,
 ) -> Result<(), DomainError> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(cancelled_error());
+    }
     let context = context.clone();
     database.writer()?.transaction(move |transaction| {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
         let current: Option<(Vec<u8>, i64)> = transaction
             .query_row(
                 "SELECT root_binding_id, catalog_revision FROM library_catalog_revision
@@ -382,9 +422,15 @@ fn publish(
             ));
         }
         for equivalent in &classes {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(cancelled_error());
+            }
             let set_id = uuid::Uuid::new_v4().as_bytes().to_vec();
             let mut observations = HashMap::new();
             for member in &equivalent.members {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancelled_error());
+                }
                 let before = insert_snapshot(transaction, &context, member, true)?;
                 let after = insert_snapshot(transaction, &context, member, false)?;
                 let observation_id = uuid::Uuid::new_v4().as_bytes().to_vec();
@@ -434,6 +480,9 @@ fn publish(
                 .get(&anchor.asset.asset_id)
                 .expect("anchor observation was inserted");
             for member in equivalent.members.iter().skip(1) {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(cancelled_error());
+                }
                 let (member_observation, member_snapshot) = observations
                     .get(&member.asset.asset_id)
                     .expect("member observation was inserted");
@@ -458,6 +507,9 @@ fn publish(
                     .map_err(map_sqlite_error)?;
             }
         }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
         transaction
             .execute(
                 "UPDATE duplicate_scan_run SET run_state='Completed', phase='Finished',
@@ -467,10 +519,7 @@ fn publish(
                 (
                     i64::try_from(checked).unwrap_or(i64::MAX),
                     i64::try_from(candidates).unwrap_or(i64::MAX),
-                    classes
-                        .iter()
-                        .map(|class| class.members.len())
-                        .sum::<usize>() as i64,
+                    i64::try_from(hashed).unwrap_or(i64::MAX),
                     now_micros(),
                     &context.run_id,
                 ),
@@ -582,4 +631,19 @@ fn finish(
 
 fn cancelled_error() -> DomainError {
     DomainError::new(ErrorCode::InvalidTransition, "重复检测已安全取消。")
+}
+
+#[cfg(test)]
+mod file_name_tests {
+    use super::exact_file_name;
+
+    #[test]
+    fn extracts_only_the_final_component_without_folding_case() {
+        assert_eq!(exact_file_name(r"old\DSCF2823.JPG"), "DSCF2823.JPG");
+        assert_eq!(exact_file_name("new/DSCF2823.jpg"), "DSCF2823.jpg");
+        assert_ne!(
+            exact_file_name(r"old\DSCF2823.JPG"),
+            exact_file_name("new/DSCF2823.jpg")
+        );
+    }
 }

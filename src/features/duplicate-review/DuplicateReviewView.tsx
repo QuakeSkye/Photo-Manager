@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 
 import {
-  addDuplicateSubsetToPendingDelete,
+  cancelDuplicatePendingBatch,
   cancelDuplicateReviewScan,
+  getDuplicatePendingBatchStatus,
   getDuplicateReviewResults,
   openDuplicateAssetLocation,
+  startDuplicatePendingBatch,
   startDuplicateReviewScan,
   type DuplicateMemberResult,
+  type DuplicatePendingBatchStatus,
   type DuplicateReviewResults,
   type DuplicateReviewStatus,
   type DuplicateSetResult,
@@ -48,7 +51,12 @@ export function DuplicateReviewView({
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [batchStatus, setBatchStatus] =
+    useState<DuplicatePendingBatchStatus | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const completedBatchRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (
@@ -66,6 +74,58 @@ export function DuplicateReviewView({
       })
       .catch((reason) => setError(readError(reason)));
   }, [status.resultVersionId, status.runId, status.state]);
+
+  useEffect(() => {
+    if (status.state !== 'running') setCancelling(false);
+  }, [status.state]);
+
+  useEffect(() => {
+    if (
+      !confirming ||
+      batchStatus === null ||
+      (batchStatus.phase !== 'validating' && batchStatus.phase !== 'committing')
+    ) {
+      return;
+    }
+    let disposed = false;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const next = await getDuplicatePendingBatchStatus();
+        if (disposed || next.taskId !== batchStatus.taskId) return;
+        setBatchStatus(next);
+        setBatchError(null);
+        if (
+          next.phase === 'completed' &&
+          completedBatchRef.current !== next.taskId
+        ) {
+          completedBatchRef.current = next.taskId;
+          setSelected(new Set());
+          setSelectionNotice(null);
+          setConfirming(false);
+          try {
+            await onPendingAdded();
+          } catch (reason) {
+            setError(
+              `待删除标记已经建立，但打开待删除页面失败：${readError(reason)}`,
+            );
+          }
+        }
+      } catch (reason) {
+        if (!disposed)
+          setBatchError(`暂时无法读取验证进度：${readError(reason)}`);
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 350);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [batchStatus, confirming, onPendingAdded]);
 
   const sets = useMemo(
     () =>
@@ -106,17 +166,49 @@ export function DuplicateReviewView({
   const submit = async () => {
     if (status.runId === null || selections.length === 0) return;
     setBusy(true);
-    setError(null);
+    setBatchError(null);
     try {
-      await addDuplicateSubsetToPendingDelete(status.runId, selections);
-      setSelected(new Set());
-      setSelectionNotice(null);
-      setConfirming(false);
-      await onPendingAdded();
+      const next = await startDuplicatePendingBatch(
+        status.runId,
+        crypto.randomUUID(),
+        selections,
+      );
+      completedBatchRef.current = null;
+      setBatchStatus(next);
     } catch (reason) {
-      setError(readError(reason));
+      setBatchError(readError(reason));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const cancelBatchOrClose = async () => {
+    if (
+      batchStatus?.phase === 'validating' &&
+      !batchStatus.cancellationRequested
+    ) {
+      setBatchError(null);
+      try {
+        setBatchStatus(await cancelDuplicatePendingBatch());
+      } catch (reason) {
+        setBatchError(readError(reason));
+      }
+      return;
+    }
+    if (batchStatus?.phase === 'committing') return;
+    setConfirming(false);
+    setBatchStatus(null);
+    setBatchError(null);
+  };
+
+  const cancel = async () => {
+    setCancelling(true);
+    setError(null);
+    try {
+      onStatusChange(await cancelDuplicateReviewScan());
+    } catch (reason) {
+      setCancelling(false);
+      setError(readError(reason));
     }
   };
 
@@ -154,14 +246,18 @@ export function DuplicateReviewView({
           <div>
             <p className="section-label">只读检测 · 用户手动启动</p>
             <h1>检查图库中的重复文件</h1>
-            <p>先按角色与大小筛选，再以完整 SHA-256 和逐字节比较证明相同。</p>
+            <p>
+              先按角色、区分大小写的完整文件名与大小筛选，再以完整 SHA-256
+              和逐字节比较证明相同。
+            </p>
           </div>
           {status.state === 'running' ? (
             <button
               type="button"
-              onClick={() => void cancelDuplicateReviewScan()}
+              disabled={cancelling}
+              onClick={() => void cancel()}
             >
-              取消检测
+              {cancelling ? '正在取消…' : '取消检测'}
             </button>
           ) : (
             <button type="button" disabled={busy} onClick={() => void begin()}>
@@ -288,7 +384,11 @@ export function DuplicateReviewView({
           <button
             type="button"
             disabled={selections.length === 0 || busy}
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              setBatchStatus(null);
+              setBatchError(null);
+              setConfirming(true);
+            }}
           >
             加入待删除（{selections.length}）…
           </button>
@@ -296,29 +396,68 @@ export function DuplicateReviewView({
       )}
       {confirming && (
         <Modal
+          className="duplicate-confirm-modal"
           title="确认加入待删除"
-          confirmLabel="加入待删除"
+          confirmLabel={batchConfirmLabel(batchStatus)}
           busy={busy}
+          confirmBusyLabel="正在启动验证…"
+          confirmDisabled={
+            batchStatus?.phase === 'validating' ||
+            batchStatus?.phase === 'committing'
+          }
+          cancelLabel={batchCancelLabel(batchStatus)}
+          cancelDisabled={
+            batchStatus?.phase === 'committing' ||
+            batchStatus?.cancellationRequested === true
+          }
+          dismissDisabled={
+            batchStatus?.phase === 'validating' ||
+            batchStatus?.phase === 'committing'
+          }
           onConfirm={() => void submit()}
-          onCancel={() => setConfirming(false)}
+          onCancel={() => void cancelBatchOrClose()}
         >
-          <p>此操作只建立复核标记，不会移动或修改文件。</p>
-          <ul className="duplicate-confirm-list">
-            {selections.map((selection) => {
-              const deleted = members.get(selection.deletedAssetId);
-              const kept = members.get(selection.retainedAssetId);
-              return (
-                <li key={selection.deletedAssetId}>
-                  <strong>{deleted?.role}</strong>
-                  <span>将回收：{deleted?.fullPath}</span>
-                  <span>保留：{kept?.fullPath}</span>
-                </li>
-              );
-            })}
-          </ul>
-          <p>
-            {selections.length} 个文件，共 {formatBytes(selectedBytes)}
-          </p>
+          {batchStatus === null ||
+          batchStatus.phase === 'failed' ||
+          batchStatus.phase === 'cancelled' ? (
+            <>
+              <div className="duplicate-confirm-summary-header">
+                <p>此操作只建立复核标记，不会移动或修改文件。</p>
+                {batchStatus?.phase === 'cancelled' && (
+                  <div className="duplicate-batch-message" role="status">
+                    验证已安全取消，整批没有建立任何待删除标记。
+                  </div>
+                )}
+                {batchStatus?.phase === 'failed' &&
+                  batchStatus.failure !== null && (
+                    <BatchFailure status={batchStatus} />
+                  )}
+              </div>
+              <ul className="duplicate-confirm-list">
+                {selections.map((selection) => {
+                  const deleted = members.get(selection.deletedAssetId);
+                  const kept = members.get(selection.retainedAssetId);
+                  return (
+                    <li key={selection.deletedAssetId}>
+                      <strong>{deleted?.role}</strong>
+                      <span>将回收：{deleted?.fullPath}</span>
+                      <span>保留：{kept?.fullPath}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <p>
+                {selections.length} 个文件，共 {formatBytes(selectedBytes)}
+              </p>
+            </>
+          ) : (
+            <BatchProgress status={batchStatus} />
+          )}
+          {batchError !== null && (
+            <div className="inline-error duplicate-batch-error" role="alert">
+              {batchError}
+            </div>
+          )}
         </Modal>
       )}
     </div>
@@ -331,13 +470,95 @@ function ScanProgress({ status }: { readonly status: DuplicateReviewStatus }) {
       <strong>{phaseLabel(status.phase)}</strong>
       <span>
         已检查 {status.checkedFiles} 个文件 · 候选 {status.candidateFiles} 个 ·
-        已完整验证 {status.hashedFiles} 个
+        已完成哈希 {status.hashedFiles} 个
       </span>
       {status.currentRelativePath !== null && (
         <code>{status.currentRelativePath}</code>
       )}
     </section>
   );
+}
+
+function BatchProgress({
+  status,
+}: {
+  readonly status: DuplicatePendingBatchStatus;
+}) {
+  const percentage =
+    status.totalBytes > 0
+      ? Math.min(100, (status.validatedBytes / status.totalBytes) * 100)
+      : 0;
+  return (
+    <section className="duplicate-batch-progress" aria-live="polite">
+      <strong>
+        {status.phase === 'committing'
+          ? '正在建立整批待删除标记…'
+          : status.cancellationRequested
+            ? '正在安全取消验证…'
+            : `正在验证 ${status.validatedFiles} / ${status.totalFiles}`}
+      </strong>
+      <progress max={100} value={percentage} aria-label="批量验证进度" />
+      <span>
+        已读取 {formatBytes(status.validatedBytes)} /{' '}
+        {formatBytes(status.totalBytes)}
+      </span>
+      {status.currentDeletedPath !== null && (
+        <div className="duplicate-batch-paths">
+          <span>待删除文件</span>
+          <code>{status.currentDeletedPath}</code>
+          <span>保留文件</span>
+          <code>{status.currentRetainedPath}</code>
+        </div>
+      )}
+      {status.phase === 'committing' && (
+        <p>全部文件已经验证通过，正在进行不可中断的原子提交。</p>
+      )}
+    </section>
+  );
+}
+
+function BatchFailure({
+  status,
+}: {
+  readonly status: DuplicatePendingBatchStatus;
+}) {
+  const failure = status.failure;
+  if (failure === null) return null;
+  return (
+    <div className="duplicate-batch-failure" role="alert">
+      <strong>整批未提交</strong>
+      <span>{failure.message}</span>
+      {failure.deletedPath !== null && (
+        <>
+          <span>待删除文件</span>
+          <code>{failure.deletedPath}</code>
+        </>
+      )}
+      {failure.retainedPath !== null && (
+        <>
+          <span>保留文件</span>
+          <code>{failure.retainedPath}</code>
+        </>
+      )}
+      <p>请修复以上问题后，重新确认整批。</p>
+    </div>
+  );
+}
+
+function batchConfirmLabel(status: DuplicatePendingBatchStatus | null): string {
+  if (status?.phase === 'validating') return '正在验证…';
+  if (status?.phase === 'committing') return '正在提交…';
+  if (status?.phase === 'failed' || status?.phase === 'cancelled')
+    return '重新验证整批';
+  return '加入待删除';
+}
+
+function batchCancelLabel(status: DuplicatePendingBatchStatus | null): string {
+  if (status?.phase === 'validating')
+    return status.cancellationRequested ? '正在取消…' : '取消验证';
+  if (status?.phase === 'failed' || status?.phase === 'cancelled')
+    return '关闭';
+  return '取消';
 }
 
 function Summary({ results }: { readonly results: DuplicateReviewResults }) {

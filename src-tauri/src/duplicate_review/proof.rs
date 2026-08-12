@@ -108,6 +108,14 @@ pub(crate) struct StablePairObservation {
     pub retained: StableHashObservation,
 }
 
+pub(crate) struct StablePairProofInput<'a> {
+    pub root: &'a Path,
+    pub deleted_relative: &'a str,
+    pub deleted_expected: &'a FileProbe,
+    pub retained_relative: &'a str,
+    pub retained_expected: &'a FileProbe,
+}
+
 pub(crate) fn stable_pair_proof(
     scheduler: &Arc<IoScheduler>,
     cancelled: &AtomicBool,
@@ -148,6 +156,89 @@ pub(crate) fn stable_pair_proof(
         ));
     }
     Ok(StablePairObservation { deleted, retained })
+}
+
+pub(crate) fn stable_pair_stream_proof(
+    scheduler: &Arc<IoScheduler>,
+    cancelled: &AtomicBool,
+    input: StablePairProofInput<'_>,
+    mut on_bytes_read: impl FnMut(u64),
+) -> Result<StablePairObservation, DomainError> {
+    let _permit = scheduler.acquire(IoPriority::BackgroundHashAndCache, || {
+        cancelled.load(Ordering::Acquire)
+    })?;
+    let deleted_path = safe_file(input.root, input.deleted_relative)?;
+    let retained_path = safe_file(input.root, input.retained_relative)?;
+    let mut deleted_handle = open_read_only(&deleted_path)?;
+    let mut retained_handle = open_read_only(&retained_path)?;
+    let deleted_before = probe_file(&deleted_handle)?;
+    let retained_before = probe_file(&retained_handle)?;
+    require_identity(&deleted_before, input.deleted_expected)?;
+    require_identity(&retained_before, input.retained_expected)?;
+    if deleted_before.size_bytes != retained_before.size_bytes {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "待删文件与保留副本大小已不一致。",
+        ));
+    }
+
+    let mut deleted_digest = Sha256::new();
+    let mut retained_digest = Sha256::new();
+    let mut deleted_buffer = vec![0_u8; 1024 * 1024];
+    let mut retained_buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(cancelled_error());
+        }
+        let deleted_count = deleted_handle
+            .read(&mut deleted_buffer)
+            .map_err(read_error)?;
+        let retained_count = retained_handle
+            .read(&mut retained_buffer)
+            .map_err(read_error)?;
+        on_bytes_read(u64::try_from(deleted_count.saturating_add(retained_count)).unwrap_or(0));
+        if deleted_count != retained_count
+            || deleted_buffer[..deleted_count] != retained_buffer[..retained_count]
+        {
+            return Err(DomainError::new(
+                ErrorCode::IdentityMismatch,
+                "待删文件与保留副本已不再逐字节相同。",
+            ));
+        }
+        if deleted_count == 0 {
+            break;
+        }
+        deleted_digest.update(&deleted_buffer[..deleted_count]);
+        retained_digest.update(&retained_buffer[..retained_count]);
+    }
+    let deleted_hash: [u8; 32] = deleted_digest.finalize().into();
+    let retained_hash: [u8; 32] = retained_digest.finalize().into();
+    if deleted_hash != retained_hash {
+        return Err(DomainError::new(
+            ErrorCode::IdentityMismatch,
+            "待删文件与保留副本的内容摘要不一致。",
+        ));
+    }
+    let deleted_after = probe_file(&deleted_handle)?;
+    let retained_after = probe_file(&retained_handle)?;
+    require_identity(&deleted_after, &deleted_before)?;
+    require_identity(&retained_after, &retained_before)?;
+    let deleted_reopened = open_read_only(&deleted_path)?;
+    let retained_reopened = open_read_only(&retained_path)?;
+    require_identity(&probe_file(&deleted_reopened)?, &deleted_before)?;
+    require_identity(&probe_file(&retained_reopened)?, &retained_before)?;
+    Ok(StablePairObservation {
+        deleted: StableHashObservation {
+            before: deleted_before,
+            after: deleted_after,
+            hash: deleted_hash,
+        },
+        retained: StableHashObservation {
+            before: retained_before,
+            after: retained_after,
+            hash: retained_hash,
+        },
+    })
 }
 
 fn safe_file(root: &Path, relative: &str) -> Result<PathBuf, DomainError> {

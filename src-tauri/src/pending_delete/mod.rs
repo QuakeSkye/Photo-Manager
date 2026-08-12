@@ -22,6 +22,13 @@ use crate::{
     roots::{Capability, CapabilitySet, FileProbe},
 };
 
+mod duplicate_batch;
+
+pub use duplicate_batch::{
+    DuplicatePendingBatchFailure, DuplicatePendingBatchPhase, DuplicatePendingBatchStatus,
+    StartDuplicatePendingBatchRequest,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MarkReviewState {
@@ -111,7 +118,7 @@ pub struct PendingDeleteFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DuplicateSubsetSelection {
     pub set_id: String,
     pub deleted_asset_id: String,
@@ -165,6 +172,7 @@ pub struct PendingDeleteService {
     scheduler: Arc<IoScheduler>,
     write_gate: Mutex<()>,
     session_actions: Mutex<Vec<SessionAction>>,
+    duplicate_batch: duplicate_batch::DuplicateBatchCoordinator,
 }
 
 impl PendingDeleteService {
@@ -178,6 +186,7 @@ impl PendingDeleteService {
             scheduler,
             write_gate: Mutex::new(()),
             session_actions: Mutex::new(Vec::new()),
+            duplicate_batch: duplicate_batch::DuplicateBatchCoordinator::default(),
         }
     }
 
@@ -1081,6 +1090,10 @@ fn create_duplicate_subset_mark(
             "重复检测结果已过期。",
         ));
     }
+    for selection in &selections {
+        validate_duplicate_asset_for_commit(transaction, &selection.deleted, true)?;
+        validate_duplicate_asset_for_commit(transaction, &selection.retained, false)?;
+    }
     let selected_by_set = selections.iter().fold(
         std::collections::HashMap::<Vec<u8>, usize>::new(),
         |mut map, item| {
@@ -1157,6 +1170,104 @@ fn create_duplicate_subset_mark(
         ).map_err(map_sqlite_error)?;
     }
     Ok(mark_id)
+}
+
+fn validate_duplicate_asset_for_commit(
+    transaction: &Transaction<'_>,
+    expected: &DuplicateAssetEvidence,
+    require_deletion: bool,
+) -> Result<(), DomainError> {
+    let current = transaction
+        .query_row(
+            "SELECT asset.current_version, asset.presence_state, asset.deletion_supported,
+                    photo.photo_id, photo.photo_version, revision.root_id,
+                    revision.root_binding_id, binding.volume_id, revision.relative_path,
+                    revision.path_key, revision.path_key_version, revision.file_id,
+                    revision.size_bytes, revision.mtime_filetime, revision.hard_link_count,
+                    root.lifecycle, root.current_binding_id, binding.binding_state
+             FROM asset
+             JOIN asset_revision AS revision
+               ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version
+             JOIN root ON root.root_id=revision.root_id
+             JOIN root_binding AS binding ON binding.binding_id=revision.root_binding_id
+             JOIN photo_asset AS relation
+               ON relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL
+             JOIN photo ON photo.photo_id=relation.photo_id AND photo.lifecycle='Active'
+             WHERE asset.asset_id=?1",
+            [expected.asset_id.as_bytes().as_slice()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Vec<u8>>(5)?,
+                    row.get::<_, Vec<u8>>(6)?,
+                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, Vec<u8>>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<Vec<u8>>>(11)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, i64>(14)?,
+                    row.get::<_, String>(15)?,
+                    row.get::<_, Option<Vec<u8>>>(16)?,
+                    row.get::<_, String>(17)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or_else(|| DomainError::stale_version("DuplicateAsset"))?;
+    let (
+        asset_version,
+        presence,
+        deletion_supported,
+        photo_id,
+        photo_version,
+        root_id,
+        root_binding_id,
+        volume_id,
+        relative_path,
+        path_key,
+        path_key_version,
+        file_id,
+        size_bytes,
+        mtime_filetime,
+        hard_link_count,
+        root_lifecycle,
+        current_binding_id,
+        binding_state,
+    ) = current;
+    let unchanged = asset_version == expected.asset_version
+        && presence == "Present"
+        && (!require_deletion || deletion_supported)
+        && photo_id.as_slice() == expected.photo_id.as_bytes()
+        && photo_version == expected.photo_version
+        && root_id == expected.root_id
+        && root_binding_id == expected.root_binding_id
+        && volume_id == expected.volume_id
+        && relative_path == expected.relative_path
+        && path_key == expected.path_key
+        && path_key_version == expected.path_key_version
+        && file_id == expected.expected.file_id
+        && u64::try_from(size_bytes).ok() == Some(expected.expected.size_bytes)
+        && mtime_filetime == expected.expected.mtime_filetime
+        && u64::try_from(hard_link_count).ok() == Some(expected.expected.hard_link_count)
+        && hard_link_count == 1
+        && root_lifecycle == "Online"
+        && current_binding_id.as_deref() == Some(expected.root_binding_id.as_slice())
+        && binding_state == "Active";
+    if unchanged {
+        Ok(())
+    } else {
+        Err(DomainError::new(
+            ErrorCode::StaleVersion,
+            "提交前文件或图库索引已经变化，整批未提交。",
+        ))
+    }
 }
 
 fn insert_duplicate_file_snapshot(

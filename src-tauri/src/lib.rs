@@ -97,6 +97,7 @@ pub fn run() {
                     database.clone(),
                     io_scheduler.clone(),
                 ));
+            let _ = duplicate_review_service.reconcile_startup();
             let phase_eight_ui_fixture = std::env::var_os("FPM_TEST_ROOT").is_some()
                 && std::env::var_os("FPM_PHASE8_UI_NO_BACKGROUND_SCAN").is_some();
             if !phase_eight_ui_fixture {
@@ -159,6 +160,9 @@ pub fn run() {
             commands::pending_delete::toggle_deletion_mark,
             commands::pending_delete::undo_deletion_mark,
             commands::pending_delete::add_duplicate_subset_to_pending_delete,
+            commands::pending_delete::start_duplicate_pending_batch,
+            commands::pending_delete::get_duplicate_pending_batch_status,
+            commands::pending_delete::cancel_duplicate_pending_batch,
             commands::recycle::get_recycle_confirmation,
             commands::recycle::get_recycle_status,
             commands::recycle::start_recycle,

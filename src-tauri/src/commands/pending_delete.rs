@@ -4,8 +4,8 @@ use crate::{
     catalog::SortMode,
     domain::{DomainError, ErrorCode, OperationId, PhotoId},
     pending_delete::{
-        AddDuplicateSubsetRequest, DeletionMutationResult, PendingDeleteService,
-        PendingDeleteSnapshot,
+        AddDuplicateSubsetRequest, DeletionMutationResult, DuplicatePendingBatchStatus,
+        PendingDeleteService, PendingDeleteSnapshot, StartDuplicatePendingBatchRequest,
     },
 };
 
@@ -50,6 +50,28 @@ pub fn add_duplicate_subset_to_pending_delete(
     pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
 ) -> Result<DeletionMutationResult, DomainError> {
     pending_delete.add_duplicate_subset(request)
+}
+
+#[tauri::command]
+pub fn start_duplicate_pending_batch(
+    request: StartDuplicatePendingBatchRequest,
+    pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
+) -> Result<DuplicatePendingBatchStatus, DomainError> {
+    Arc::clone(pending_delete.inner()).start_duplicate_pending_batch(request)
+}
+
+#[tauri::command]
+pub fn get_duplicate_pending_batch_status(
+    pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
+) -> Result<DuplicatePendingBatchStatus, DomainError> {
+    pending_delete.duplicate_pending_batch_status()
+}
+
+#[tauri::command]
+pub fn cancel_duplicate_pending_batch(
+    pending_delete: tauri::State<'_, Arc<PendingDeleteService>>,
+) -> Result<DuplicatePendingBatchStatus, DomainError> {
+    pending_delete.cancel_duplicate_pending_batch()
 }
 
 fn parse_sort_mode(value: &str) -> Result<SortMode, DomainError> {

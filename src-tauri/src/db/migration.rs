@@ -118,7 +118,27 @@ pub fn schema_checksum(connection: &Connection) -> Result<String, DomainError> {
 }
 
 fn migration_file_checksum(sql: &str) -> String {
-    hex::encode(Sha256::digest(sql.as_bytes()))
+    hex::encode(Sha256::digest(
+        normalize_migration_line_endings(sql).as_bytes(),
+    ))
+}
+
+fn legacy_crlf_migration_file_checksum(sql: &str) -> String {
+    let normalized = normalize_migration_line_endings(sql);
+    hex::encode(Sha256::digest(normalized.replace('\n', "\r\n").as_bytes()))
+}
+
+fn normalize_migration_line_endings(sql: &str) -> std::borrow::Cow<'_, str> {
+    if sql.contains('\r') {
+        std::borrow::Cow::Owned(sql.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(sql)
+    }
+}
+
+fn migration_checksum_matches(sql: &str, stored_checksum: &str) -> bool {
+    stored_checksum == migration_file_checksum(sql)
+        || stored_checksum == legacy_crlf_migration_file_checksum(sql)
 }
 
 pub fn current_schema_version(connection: &Connection) -> Result<u32, DomainError> {
@@ -195,7 +215,7 @@ pub fn verify_migration_history_through(
                 |row| row.get::<_, String>(0),
             )
             .map_err(map_sqlite_error)?;
-        if checksum != migration_file_checksum(sql) {
+        if !migration_checksum_matches(sql, &checksum) {
             return Err(DomainError::new(
                 ErrorCode::ReadOnlySafeMode,
                 "数据库迁移记录与当前构建不一致，已关闭照片写入功能。",
@@ -271,4 +291,44 @@ pub fn now_micros() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::*;
+
+    #[test]
+    fn migration_history_accepts_equivalent_lf_and_crlf_checksums() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        install_schema_through(&mut connection, LATEST_SCHEMA_VERSION).unwrap();
+
+        for (version, _, sql) in MIGRATIONS {
+            connection
+                .execute(
+                    "UPDATE schema_migration SET checksum=?1 WHERE version=?2",
+                    (
+                        legacy_crlf_migration_file_checksum(sql),
+                        i64::from(*version),
+                    ),
+                )
+                .unwrap();
+        }
+
+        verify_migration_history(&connection).unwrap();
+    }
+
+    #[test]
+    fn migration_history_still_rejects_changed_sql_content() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        install_schema_through(&mut connection, LATEST_SCHEMA_VERSION).unwrap();
+        connection
+            .execute(
+                "UPDATE schema_migration SET checksum='changed-content' WHERE version=1",
+                (),
+            )
+            .unwrap();
+
+        let error = verify_migration_history(&connection).unwrap_err();
+        assert_eq!(error.code, ErrorCode::ReadOnlySafeMode);
+    }
 }

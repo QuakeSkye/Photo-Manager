@@ -1,6 +1,6 @@
 [package]
 name = "local-photo-manager"
-version = "1.0.2"
+version = "1.0.3"
 description = "Local Fuji photo manager safety foundation"
 authors = ["Local Photo Manager Contributors"]
 edition = "2024"
