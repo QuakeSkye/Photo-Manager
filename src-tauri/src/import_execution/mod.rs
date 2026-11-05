@@ -790,6 +790,9 @@ pub struct ImportExecutionService {
     latest_seed: Arc<Mutex<Option<ExecutionDraftSeed>>>,
     cancel_requested: Arc<AtomicBool>,
     worker_active: Arc<AtomicBool>,
+    control: Arc<Mutex<()>>,
+    shutdown_requested: Arc<AtomicBool>,
+    pause_requested: Arc<AtomicBool>,
     faults: FaultInjector,
 }
 
@@ -919,6 +922,9 @@ impl ImportExecutionService {
             latest_seed: Arc::new(Mutex::new(None)),
             cancel_requested: Arc::new(AtomicBool::new(false)),
             worker_active: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Mutex::new(())),
+            shutdown_requested: Arc::new(AtomicBool::new(false)),
+            pause_requested: Arc::new(AtomicBool::new(false)),
             faults,
         }
     }
@@ -934,23 +940,72 @@ impl ImportExecutionService {
         Ok(self.lock_status()?.clone())
     }
 
-    pub fn request_cancel(&self) -> Result<(), DomainError> {
+    pub fn is_worker_active(&self) -> bool {
+        self.worker_active.load(Ordering::Acquire)
+    }
+
+    pub fn request_pause_for_exit(&self) {
+        let _control = self
+            .control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        self.shutdown_requested.store(true, Ordering::Release);
+        self.pause_requested.store(true, Ordering::Release);
         self.cancel_requested.store(true, Ordering::Release);
-        let job_id = self.active_job_id()?;
-        if let Some(job_id) = job_id {
-            self.database.writer()?.transaction(move |transaction| {
-                transaction
-                    .execute(
-                        "UPDATE import_job
-                         SET job_state='CancelRequested', row_version=row_version+1
-                         WHERE job_id=?1 AND job_state='Running'",
-                        [&job_id],
-                    )
-                    .map_err(map_sqlite_error)?;
-                Ok(())
-            })?;
+        self.preflight.request_execution_cancel();
+    }
+
+    pub fn request_cancel(&self) -> Result<(), DomainError> {
+        let _control = self.control.lock().map_err(lock_error)?;
+        self.cancel_requested.store(true, Ordering::Release);
+        self.preflight.request_execution_cancel();
+        if self.is_worker_active() {
+            return Ok(());
         }
-        Ok(())
+        self.acquire_worker()?;
+        let _guard = ImportWorkerGuard(self.worker_active.clone());
+        self.cancel_idle_job()
+    }
+
+    fn cancel_idle_job(&self) -> Result<(), DomainError> {
+        let Some(job) = self.active_job_id()? else {
+            return Ok(());
+        };
+        let job_tx = job.clone();
+        self.database.writer()?.transaction(move |tx| {
+            abandon_import_attempts(tx, &job_tx)?;
+            retain_import_paths(tx, &job_tx, true)?;
+            let now = now_micros();
+            tx.execute("UPDATE import_partial_claim SET released_at=?2,release_reason='CancelledRetained' WHERE released_at IS NULL AND attempt_step_id IN (SELECT s.attempt_step_id FROM import_attempt_step s JOIN import_attempt a ON a.attempt_id=s.attempt_id WHERE a.job_id=?1)",params![&job_tx,now]).map_err(map_sqlite_error)?;
+            tx.execute("UPDATE operation_reservation SET released_at=?2,release_reason='CancelledRetained' WHERE task_id=?1 AND released_at IS NULL",params![&job_tx,now]).map_err(map_sqlite_error)?;
+            tx.execute("UPDATE file_write_lease SET task_id=NULL,lease_generation=lease_generation+1,released_at=?2,row_version=row_version+1 WHERE slot=1 AND task_id=?1",params![&job_tx,now]).map_err(map_sqlite_error)?;
+            tx.execute("UPDATE import_job SET job_state='Cancelled',completed_at=?2,row_version=row_version+1 WHERE job_id=?1",params![&job_tx,now]).map_err(map_sqlite_error)?;
+            tx.execute("UPDATE task_intent SET lifecycle='Cancelled',resolved_at=?2,row_version=row_version+1 WHERE task_id=?1",params![&job_tx,now]).map_err(map_sqlite_error)?;
+            Ok(())
+        })?;
+        self.set_phase(
+            ImportExecutionPhase::Cancelled,
+            Some(&job),
+            Some("剩余导入已取消；已导入照片和临时文件均保留。"),
+        )
+    }
+
+    fn stop_validation_if_requested(&self) -> Result<bool, DomainError> {
+        if !self.cancel_requested.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        if self.pause_requested.load(Ordering::Acquire) {
+            if let Some(job) = self.active_job_id()? {
+                self.set_phase(
+                    ImportExecutionPhase::NeedsAttention,
+                    Some(&job),
+                    Some("导入已停止；下次启动可确认恢复。"),
+                )?;
+            }
+        } else {
+            self.cancel_idle_job()?;
+        }
+        Ok(true)
     }
 
     pub fn start(
@@ -967,6 +1022,7 @@ impl ImportExecutionService {
         permit: SafetyPermit,
         draft_digest: &str,
     ) -> Result<ImportExecutionStatus, DomainError> {
+        let _control = self.control.lock().map_err(lock_error)?;
         self.acquire_worker()?;
         let job_id = match self.prepare_start(&permit, draft_digest) {
             Ok(job_id) => job_id,
@@ -995,6 +1051,8 @@ impl ImportExecutionService {
     ) -> Result<Vec<u8>, DomainError> {
         self.safety_gate.revalidate(permit, FeatureGate::Import)?;
         self.cancel_requested.store(false, Ordering::Release);
+        self.pause_requested.store(false, Ordering::Release);
+        self.preflight.reset_execution_cancel();
         let existing = self.active_job_id()?;
         let (job_id, seed) = match existing {
             None => {
@@ -1022,7 +1080,7 @@ impl ImportExecutionService {
                         "更新后的计划尚未由用户确认。",
                     ));
                 }
-                self.confirm_proposed_if_needed(&job_id)?;
+                self.confirm_proposed_if_needed(&job_id, draft_digest)?;
                 (job_id, seed)
             }
         };
@@ -1053,6 +1111,10 @@ impl ImportExecutionService {
             }
             Err(error) => return Err(error),
         };
+        if self.stop_validation_if_requested()? {
+            return self.status();
+        }
+        self.require_job_target(job_id, &refreshed)?;
         self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         let validation = self.validate_generation(job_id, &refreshed)?;
@@ -1062,6 +1124,9 @@ impl ImportExecutionService {
         let Some(space_check_id) = self.check_space(&job)? else {
             return self.status();
         };
+        if self.stop_validation_if_requested()? {
+            return self.status();
+        }
         self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         let attempt = self.create_attempt(&job, &space_check_id, "Initial")?;
         self.execute_attempt(attempt, &refreshed)?;
@@ -1104,6 +1169,8 @@ impl ImportExecutionService {
             DomainError::new(ErrorCode::InvalidTransition, "没有可重试的导入任务。")
         })?;
         self.cancel_requested.store(false, Ordering::Release);
+        self.pause_requested.store(false, Ordering::Release);
+        self.preflight.reset_execution_cancel();
         self.close_interrupted_attempt(&job_id)?;
         self.set_phase(
             ImportExecutionPhase::ValidatingPlan,
@@ -1119,6 +1186,7 @@ impl ImportExecutionService {
         job_id: &[u8],
     ) -> Result<ImportExecutionStatus, DomainError> {
         let refreshed = self.preflight.refresh_active_import(job_id)?;
+        self.require_job_target(job_id, &refreshed)?;
         self.require_safe_target(&refreshed)?;
         *self.latest_seed.lock().map_err(lock_error)? = Some(refreshed.clone());
         let Some(job) = self.validate_generation(job_id, &refreshed)? else {
@@ -1131,6 +1199,9 @@ impl ImportExecutionService {
             "SELECT EXISTS(SELECT 1 FROM import_plan_validation_item WHERE validation_id=?1 AND disposition IN ('ReverifyOwnedPartial','IndexPublished'))",
             [&job.validation_id],|row|row.get(0),
         ).map_err(map_sqlite_error)?;
+        if self.stop_validation_if_requested()? {
+            return self.status();
+        }
         self.safety_gate.revalidate(&permit, FeatureGate::Import)?;
         let attempt = self.create_attempt(
             &job,
@@ -1142,6 +1213,12 @@ impl ImportExecutionService {
     }
 
     fn acquire_worker(&self) -> Result<(), DomainError> {
+        if self.shutdown_requested.load(Ordering::Acquire) {
+            return Err(DomainError::new(
+                ErrorCode::InvalidTransition,
+                "正在停止并退出，不能启动新任务。",
+            ));
+        }
         self.worker_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
@@ -1172,6 +1249,9 @@ impl ImportExecutionService {
                 let panic_service = Arc::clone(&service);
                 match catch_unwind(AssertUnwindSafe(|| work(service, worker_job_id.clone()))) {
                     Ok(Ok(())) => {}
+                    Ok(Err(_)) if panic_service.cancel_requested.load(Ordering::Acquire) => {
+                        let _ = panic_service.stop_validation_if_requested();
+                    }
                     Ok(Err(error)) => {
                         let _ = panic_service.set_phase(
                             ImportExecutionPhase::NeedsAttention,
@@ -1190,6 +1270,21 @@ impl ImportExecutionService {
                         );
                     }
                 }
+                let _control = panic_service
+                    .control
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                // Drain a cancellation arriving after the final validation/status update.
+                if panic_service.cancel_requested.load(Ordering::Acquire) {
+                    if let Err(error) = panic_service.stop_validation_if_requested() {
+                        let _ = panic_service.set_phase(
+                            ImportExecutionPhase::NeedsAttention,
+                            Some(&worker_job_id),
+                            Some(&error.user_message),
+                        );
+                    }
+                }
+                drop(_guard);
             });
         if thread.is_err() {
             self.worker_active.store(false, Ordering::Release);
@@ -1208,71 +1303,93 @@ impl ImportExecutionService {
     }
 
     pub fn cancel_before_start(&self) -> Result<ImportExecutionStatus, DomainError> {
-        let job_id = self.active_job_id()?.ok_or_else(|| {
-            DomainError::new(ErrorCode::InvalidTransition, "没有可取消的导入任务。")
-        })?;
-        let job_id_for_tx = job_id.clone();
-        self.database.writer()?.transaction(move |transaction| {
-            let state: String = transaction
-                .query_row(
-                    "SELECT job_state FROM import_job WHERE job_id=?1",
-                    [&job_id_for_tx],
-                    |row| row.get(0),
-                )
-                .map_err(map_sqlite_error)?;
-            if state == "Running" || state == "CancelRequested" {
-                return Err(DomainError::new(
-                    ErrorCode::InvalidTransition,
-                    "导入已开始，请使用“取消剩余导入”。",
-                ));
-            }
-            let ordinal: i64 = transaction
-                .query_row(
-                    "SELECT COALESCE(MAX(attempt_ordinal),0)+1 FROM task_attempt WHERE task_id=?1",
-                    [&job_id_for_tx],
-                    |row| row.get(0),
-                )
-                .map_err(map_sqlite_error)?;
-            let attempt_id = id();
-            let operation_id = id();
-            let report_id = id();
-            let now = now_micros();
-            insert_operation(transaction, &operation_id, "ImportCancelBeforeStart", &job_id_for_tx)?;
-            transaction.execute(
-                "INSERT INTO task_attempt(attempt_id,task_id,attempt_kind,attempt_ordinal,operation_id,created_at)
-                 VALUES(?1,?2,'Import',?3,?4,?5)",
-                params![&attempt_id,&job_id_for_tx,ordinal,&operation_id,now],
-            ).map_err(map_sqlite_error)?;
-            transaction.execute(
-                "INSERT INTO import_attempt(attempt_id,job_id,attempt_reason,attempt_state,finished_at,row_version)
-                 VALUES(?1,?2,'CancelBeforeStart','Cancelled',?3,1)",
-                params![&attempt_id,&job_id_for_tx,now],
-            ).map_err(map_sqlite_error)?;
-            let (library_id,target_root_id):(Vec<u8>,Vec<u8>)=transaction.query_row(
-                "SELECT library_id,target_root_id FROM import_job WHERE job_id=?1",[&job_id_for_tx],
-                |row|Ok((row.get(0)?,row.get(1)?)),
-            ).map_err(map_sqlite_error)?;
-            transaction.execute(
-                "INSERT INTO operation_report(report_id,report_kind,library_id,root_id,task_attempt_id,report_state,started_at,completed_at,result,item_count,total_bytes)
-                 VALUES(?1,'Import',?2,?3,?4,'Finalized',?5,?5,'Cancelled',0,0)",
-                params![&report_id,&library_id,&target_root_id,&attempt_id,now],
-            ).map_err(map_sqlite_error)?;
-            transaction.execute(
-                "UPDATE import_job SET job_state='Cancelled',completed_at=?2,row_version=row_version+1 WHERE job_id=?1",
-                params![&job_id_for_tx,now],
-            ).map_err(map_sqlite_error)?;
-            transaction.execute(
-                "UPDATE task_intent SET lifecycle='Cancelled',resolved_at=?2,row_version=row_version+1 WHERE task_id=?1",
-                params![&job_id_for_tx,now],
-            ).map_err(map_sqlite_error)?;
-            Ok(())
-        })?;
-        self.set_phase(
-            ImportExecutionPhase::Cancelled,
-            Some(&job_id),
-            Some("导入在任何文件动作前取消。"),
-        )?;
+        self.request_cancel()?;
         self.status()
+    }
+
+    pub fn reselect_source(
+        &self,
+        permit: &SafetyPermit,
+        path: &Path,
+    ) -> Result<crate::import_preflight::ImportSetupSnapshot, DomainError> {
+        let _control = self.control.lock().map_err(lock_error)?;
+        self.acquire_worker()?;
+        let _guard = ImportWorkerGuard(self.worker_active.clone());
+        self.safety_gate.revalidate(permit, FeatureGate::Import)?;
+        let job = self
+            .active_job_id()?
+            .ok_or_else(|| DomainError::new(ErrorCode::InvalidTransition, "没有待恢复任务。"))?;
+        if self.preflight.reselect_for_job(&job, path)? {
+            self.set_phase(
+                ImportExecutionPhase::NeedsAttention,
+                Some(&job),
+                Some("已核验来源，请确认并继续恢复。"),
+            )?;
+            self.preflight.setup_snapshot()
+        } else {
+            self.cancel_idle_job()?;
+            let setup = self.preflight.select_source(permit, path)?;
+            *self.lock_status()? = ImportExecutionStatus::default();
+            *self.latest_seed.lock().map_err(lock_error)? = None;
+            Ok(setup)
+        }
+    }
+
+    pub fn recovery_items(&self) -> Result<Vec<RecoveryItem>, DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let mut statement = connection.prepare("SELECT hex(o.ownership_id),hex(i.source_item_id),i.source_relative_path,b.absolute_path_display,o.relative_path,o.created_size_observed,o.state,EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=i.source_item_id),j.job_state NOT IN ('Completed','Cancelled') AND o.state IN ('Planned','CleaningOwnedPartial','NeedsAttention'),s.final_relative_path FROM import_partial_ownership o JOIN import_asset_step s ON s.step_id=o.step_id JOIN import_source_item i ON i.source_item_id=s.source_item_id JOIN import_job j ON j.job_id=i.job_id JOIN root_binding b ON b.binding_id=o.root_binding_id JOIN current_library c ON c.library_id=j.library_id AND c.slot=1 WHERE o.state IN ('Planned','Owned','CleaningOwnedPartial','NeedsAttention') AND o.creation_started=1 ORDER BY i.source_relative_path,o.ownership_ordinal").map_err(map_sqlite_error)?;
+        let rows = statement
+            .query_map([], |r| {
+                Ok(RecoveryItem {
+                    ownership_id: r.get(0)?,
+                    source_item_id: r.get(1)?,
+                    source_path: r.get(2)?,
+                    retained_path: PathBuf::from(r.get::<_, String>(3)?)
+                        .join(r.get::<_, String>(4)?)
+                        .to_string_lossy()
+                        .into_owned(),
+                    observed_bytes: r.get(5)?,
+                    state: r.get(6)?,
+                    excluded: r.get(7)?,
+                    can_exclude: r.get(8)?,
+                    target_path: r.get::<_, Option<String>>(9)?.map(|path| {
+                        PathBuf::from(r.get::<_, String>(3).unwrap_or_default())
+                            .join(path)
+                            .to_string_lossy()
+                            .into_owned()
+                    }),
+                })
+            })
+            .map_err(map_sqlite_error)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(map_sqlite_error)
+    }
+
+    pub fn exclude_recovery_items(&self, ownership_ids: Vec<String>) -> Result<(), DomainError> {
+        let _control = self.control.lock().map_err(lock_error)?;
+        self.acquire_worker()?;
+        let _guard = ImportWorkerGuard(self.worker_active.clone());
+        let job = self
+            .active_job_id()?
+            .ok_or_else(|| DomainError::new(ErrorCode::InvalidTransition, "没有待恢复任务。"))?;
+        let mut ids = ownership_ids;
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() {
+            return Err(DomainError::new(
+                ErrorCode::InvalidId,
+                "请选择要隔离的异常项。",
+            ));
+        }
+        self.database.writer()?.transaction(move |tx| {
+            for value in ids {
+                let ownership = hex::decode(value).map_err(|_|DomainError::new(ErrorCode::InvalidId,"异常项标识无效。"))?;
+                let source: Vec<u8> = tx.query_row("SELECT s.source_item_id FROM import_partial_ownership o JOIN import_asset_step s ON s.step_id=o.step_id JOIN import_source_item i ON i.source_item_id=s.source_item_id JOIN import_job j ON j.job_id=i.job_id JOIN current_library c ON c.library_id=j.library_id AND c.slot=1 WHERE o.ownership_id=?1 AND i.job_id=?2 AND o.state IN ('Planned','CleaningOwnedPartial','NeedsAttention') AND o.creation_started=1",params![ownership,&job],|r|r.get(0)).map_err(map_sqlite_error)?;
+                tx.execute("INSERT OR IGNORE INTO import_recovery_exclusion(source_item_id,confirmed_at) VALUES(?1,?2)",params![source,now_micros()]).map_err(map_sqlite_error)?;
+            }
+            retain_import_paths(tx,&job,false)?;
+            Ok(())
+        })
     }
 
     pub fn recovery_summary(&self) -> Result<ImportRecoverySummary, DomainError> {
@@ -1322,6 +1439,21 @@ impl ImportExecutionService {
     pub fn reconcile_startup(&self) -> Result<(), DomainError> {
         if let Some(job_id) = self.active_job_id()? {
             self.close_interrupted_attempt(&job_id)?;
+        }
+        Ok(())
+    }
+
+    fn require_job_target(
+        &self,
+        job_id: &[u8],
+        seed: &ExecutionDraftSeed,
+    ) -> Result<(), DomainError> {
+        let matches:bool=self.database.open_read_connection()?.query_row("SELECT EXISTS(SELECT 1 FROM import_job WHERE job_id=?1 AND library_id=?2 AND target_root_id=?3 AND target_binding_id=?4)",params![job_id,&seed.target.library_id,&seed.target.root_id,&seed.target.binding_id],|r|r.get(0)).map_err(map_sqlite_error)?;
+        if !matches {
+            return Err(DomainError::new(
+                ErrorCode::StaleVersion,
+                "当前图库与任务确认的目标不同，请切回原图库恢复或取消旧任务。",
+            ));
         }
         Ok(())
     }
@@ -1407,13 +1539,21 @@ impl ImportExecutionService {
         Ok(job_id)
     }
 
-    fn confirm_proposed_if_needed(&self, job_id: &[u8]) -> Result<(), DomainError> {
+    fn confirm_proposed_if_needed(
+        &self,
+        job_id: &[u8],
+        draft_digest: &str,
+    ) -> Result<(), DomainError> {
+        let expected = hex::decode(draft_digest)
+            .map_err(|_| DomainError::new(ErrorCode::StaleVersion, "计划摘要无效。"))?;
         let job_id = job_id.to_vec();
         self.database.writer()?.transaction(move |transaction| {
             let proposed: Option<Vec<u8>> = transaction.query_row(
                 "SELECT proposed_generation_id FROM import_job WHERE job_id=?1",[&job_id],|row|row.get(0),
             ).optional().map_err(map_sqlite_error)?.flatten();
-            let Some(proposed) = proposed else { return Ok(()); };
+            let Some(proposed) = proposed else { return Err(DomainError::new(ErrorCode::StaleVersion,"没有待确认的新计划，请使用恢复入口。")); };
+            let digest:Vec<u8>=transaction.query_row("SELECT digest FROM generation_plan_digest WHERE generation_id=?1",[&proposed],|r|r.get(0)).map_err(map_sqlite_error)?;
+            if digest!=expected { return Err(DomainError::new(ErrorCode::StaleVersion,"计划已变化，请重新确认。")); }
             let old: Vec<u8> = transaction.query_row(
                 "SELECT current_confirmed_generation_id FROM import_job WHERE job_id=?1",[&job_id],|row|row.get(0),
             ).map_err(map_sqlite_error)?;
@@ -1465,7 +1605,16 @@ impl ImportExecutionService {
             )?;
             return Ok(None);
         }
-        if self.unresolved_plan_changed(&generation_id, refreshed)? {
+        let has_proposal: bool = self
+            .database
+            .open_read_connection()?
+            .query_row(
+                "SELECT proposed_generation_id IS NOT NULL FROM import_job WHERE job_id=?1",
+                [job_id],
+                |r| r.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if has_proposal || self.unresolved_plan_changed(&generation_id, refreshed)? {
             self.create_proposed_generation(job_id, &generation_id, generation_no + 1, refreshed)?;
             self.set_phase(
                 ImportExecutionPhase::AwaitingPlanConfirmation,
@@ -1498,7 +1647,7 @@ impl ImportExecutionService {
         let mut statement=connection.prepare(
             "SELECT item.source_relative_path,snapshot.file_id,snapshot.size_bytes,snapshot.mtime_filetime,snapshot.content_hash
              FROM import_source_item AS item JOIN file_identity_snapshot AS snapshot ON snapshot.snapshot_id=item.source_snapshot_id
-             WHERE item.job_id=?1 AND item.parse_result='Readable'"
+             WHERE item.job_id=?1 AND item.parse_result='Readable' AND NOT EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=item.source_item_id)"
         ).map_err(map_sqlite_error)?;
         let rows = statement
             .query_map([job_id], |row| {
@@ -1535,7 +1684,7 @@ impl ImportExecutionService {
                     SELECT 1 FROM import_partial_ownership AS ownership
                     JOIN import_asset_step AS step ON step.step_id=ownership.step_id
                     WHERE step.generation_id=?1
-                      AND ownership.state IN ('Planned','CleaningOwnedPartial','NeedsAttention')
+                      AND ownership.state IN ('Planned','CleaningOwnedPartial','NeedsAttention') AND NOT EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=step.source_item_id)
                 )",
                 [generation_id],
                 |row| row.get(0),
@@ -1555,7 +1704,7 @@ impl ImportExecutionService {
             .map(|item| (item.source_relative_path.to_lowercase(), item))
             .collect::<HashMap<_, _>>();
         let connection = self.database.open_read_connection()?;
-        let mut statement = connection.prepare("SELECT item.source_relative_path,step.plan_kind,step.final_relative_path,step.expected_bytes FROM import_asset_step AS step JOIN import_source_item AS item ON item.source_item_id=step.source_item_id LEFT JOIN import_published_fact AS published ON published.source_item_id=step.source_item_id WHERE step.generation_id=?1 AND published.published_fact_id IS NULL").map_err(map_sqlite_error)?;
+        let mut statement = connection.prepare("SELECT item.source_relative_path,step.plan_kind,step.final_relative_path,step.expected_bytes FROM import_asset_step AS step JOIN import_source_item AS item ON item.source_item_id=step.source_item_id LEFT JOIN import_published_fact AS published ON published.source_item_id=step.source_item_id WHERE step.generation_id=?1 AND published.published_fact_id IS NULL AND NOT EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=step.source_item_id)").map_err(map_sqlite_error)?;
         let rows = statement
             .query_map([generation_id], |row| {
                 Ok((
@@ -1595,7 +1744,7 @@ impl ImportExecutionService {
         &self,
         job_id: &[u8],
         old_generation: &[u8],
-        generation_no: i64,
+        _generation_no: i64,
         seed: &ExecutionDraftSeed,
     ) -> Result<(), DomainError> {
         let job_id = job_id.to_vec();
@@ -1606,6 +1755,7 @@ impl ImportExecutionService {
                 transaction.execute("UPDATE import_plan_generation SET generation_state='Rejected' WHERE generation_id=?1 AND generation_state='Proposed'",[&existing]).map_err(map_sqlite_error)?;
             }
             let source_items=load_source_item_map(transaction,&job_id)?;
+            let generation_no:i64=transaction.query_row("SELECT MAX(generation_no)+1 FROM import_plan_generation WHERE job_id=?1",[&job_id],|r|r.get(0)).map_err(map_sqlite_error)?;
             let generation=insert_generation(transaction,&job_id,generation_no,"Proposed","RetryRefresh",Some(&old),&seed,&source_items,now_micros())?;
             transaction.execute("UPDATE import_job SET proposed_generation_id=?2,job_state='AwaitingPlanConfirmation',row_version=row_version+1 WHERE job_id=?1",params![&job_id,&generation]).map_err(map_sqlite_error)?;
             transaction.execute("UPDATE task_intent SET lifecycle='AwaitingUser',row_version=row_version+1 WHERE task_id=?1 AND lifecycle IN ('Prepared','Active','NeedsAttention','AwaitingSource')",[&job_id]).map_err(map_sqlite_error)?;
@@ -1793,7 +1943,7 @@ impl ImportExecutionService {
                     if step.disposition=="CopyNewBytes"{
                         let ownership_ordinal:i64=transaction.query_row("SELECT COALESCE(MAX(ownership_ordinal),0)+1 FROM import_partial_ownership WHERE step_id=?1",[&step.step_id],|row|row.get(0)).map_err(map_sqlite_error)?;
                         let nonce=Uuid::new_v4();let final_relative=step.final_relative_path.as_ref().unwrap();let partial=partial_name(final_relative,&job.job_id,ownership_ordinal,nonce);let partial_key=path_key(Path::new(&partial));let partial_res=id();insert_reservation(transaction,&partial_res,&job.job_id,&attempt_id,lease_generation,"PartialPath",&job.target_root_id,&job.target_binding_id,None,None,Some(&partial_key),now)?;
-                        let ownership=id();transaction.execute("INSERT INTO import_partial_ownership(ownership_id,step_id,ownership_ordinal,created_by_attempt_step_id,nonce,root_id,root_binding_id,relative_path,path_key,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'Planned')",params![&ownership,&step.step_id,ownership_ordinal,&step.attempt_step_id,nonce.as_bytes().as_slice(),&job.target_root_id,&job.target_binding_id,&partial,&partial_key]).map_err(map_sqlite_error)?;
+                        let ownership=id();transaction.execute("INSERT INTO import_partial_ownership(ownership_id,step_id,ownership_ordinal,created_by_attempt_step_id,nonce,root_id,root_binding_id,relative_path,path_key,state,creation_started) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,'Planned',0)",params![&ownership,&step.step_id,ownership_ordinal,&step.attempt_step_id,nonce.as_bytes().as_slice(),&job.target_root_id,&job.target_binding_id,&partial,&partial_key]).map_err(map_sqlite_error)?;
                         step.partial_reservation_id=Some(partial_res);step.ownership_id=Some(ownership);step.partial_relative_path=Some(partial);
                     } else if step.disposition=="ReverifyOwnedPartial" {
                         let partial=step.partial_relative_path.clone().ok_or_else(||DomainError::new(ErrorCode::Internal,"Owned partial 缺少冻结路径。"))?;
@@ -1846,7 +1996,9 @@ impl ImportExecutionService {
                 )
             })
             .collect::<HashMap<_, _>>();
-        let mut had_error = false;
+        let excluded: i64 = self.database.open_read_connection()?.query_row("SELECT COUNT(*) FROM import_recovery_exclusion e JOIN import_source_item i ON i.source_item_id=e.source_item_id WHERE i.job_id=?1", [&attempt.job.job_id], |r|r.get(0)).map_err(map_sqlite_error)?;
+        let mut had_error = excluded > 0;
+        self.lock_status()?.failed_files = u64::try_from(excluded).unwrap_or(0);
         let mut cancelled = false;
         for (index, step) in attempt.steps.iter().enumerate() {
             if self.cancel_requested.load(Ordering::Acquire) {
@@ -1920,7 +2072,8 @@ impl ImportExecutionService {
             self.catalog.reconcile_import_groups(library).err()
         };
         had_error |= pairing_error.is_some();
-        self.finalize_attempt(&attempt, had_error, cancelled)?;
+        let paused = cancelled && self.pause_requested.load(Ordering::Acquire);
+        self.finalize_attempt(&attempt, had_error || paused, cancelled && !paused)?;
         if let Some(error) = pairing_error {
             self.lock_status()?.message = Some(format!(
                 "照片已安全发布，但 JPG/RAF 配对需要在下次图库扫描时重试：{}",
@@ -2078,6 +2231,10 @@ impl ImportExecutionService {
             "Copying",
         )?;
         self.safety_gate.revalidate(permit, FeatureGate::Import)?;
+        let ownership_start = step.ownership_id.clone().unwrap();
+        self.database.writer()?.transaction(move |tx| {
+            require_one(tx.execute("UPDATE import_partial_ownership SET creation_started=1 WHERE ownership_id=?1 AND state='Planned' AND creation_started=0", [&ownership_start]).map_err(map_sqlite_error)?, "creation boundary")
+        })?;
         let mut writer = PartialWriteHandle::create_new(&partial_path, &self.faults)?;
         let created = writer.probe()?;
         let file_id = created.file_id.clone().ok_or_else(|| {
@@ -2099,7 +2256,8 @@ impl ImportExecutionService {
         if let Err(error) = copied_hash {
             drop(source);
             let _ = writer.flush(&self.faults);
-            self.cleanup_owned_partial(attempt, step, &claim, &partial_path)?;
+            // Retain partial bytes on cancellation or failure; never clean automatically.
+
             return Err(error);
         }
         writer.flush(&self.faults)?;
@@ -2374,14 +2532,15 @@ impl ImportExecutionService {
         {
             drop(source);
             drop(partial);
-            return self
-                .clean_incomplete_owned(attempt, step, &partial_path)
-                .and_then(|_| {
-                    Err(DomainError::new(
-                        ErrorCode::StaleVersion,
-                        "不完整 partial 已安全清理；请重试以创建新 incarnation。",
-                    ))
-                });
+            let ownership = step.ownership_id.clone().unwrap();
+            self.database.writer()?.transaction(move |tx| {
+                tx.execute("UPDATE import_partial_ownership SET state='NeedsAttention' WHERE ownership_id=?1 AND state='Owned'",[ownership]).map_err(map_sqlite_error)?;
+                Ok(())
+            })?;
+            return Err(DomainError::new(
+                ErrorCode::StaleVersion,
+                "不完整临时文件已保留，请核对并隔离该项后继续其他文件。",
+            ));
         }
         let time_preserved = partial
             .set_last_write_time(source_record.identity.mtime_filetime)
@@ -2440,50 +2599,6 @@ impl ImportExecutionService {
         )
     }
 
-    fn clean_incomplete_owned(
-        &self,
-        attempt: &AttemptContext,
-        step: &AttemptStep,
-        partial_path: &Path,
-    ) -> Result<(), DomainError> {
-        let claim = self.active_claim_for_step(&step.attempt_step_id)?;
-        let handle = VerifiedPartialHandle::open(partial_path)?;
-        let observed = handle.probe()?;
-        let expected = self.load_ownership_probe(step.ownership_id.as_ref().unwrap())?;
-        if observed.file_id != expected.file_id {
-            return Err(DomainError::new(
-                ErrorCode::IdentityMismatch,
-                "partial 身份异常，禁止清理。",
-            ));
-        }
-        let deleted_snapshot = id();
-        let attempt_c = attempt.clone();
-        let step_c = step.clone();
-        let ownership = step.ownership_id.as_ref().unwrap().clone();
-        let deleted_snapshot_tx = deleted_snapshot.clone();
-        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt_c,&step_c)?;insert_snapshot_with_id(transaction,&deleted_snapshot_tx,&attempt_c.job.target_root_id,&attempt_c.job.target_binding_id,&attempt_c.job.target_volume_id,step_c.partial_relative_path.as_ref().unwrap(),&path_key(Path::new(step_c.partial_relative_path.as_ref().unwrap())),&observed,None,now_micros())?;require_one(transaction.execute("UPDATE import_partial_ownership SET state='CleaningOwnedPartial' WHERE ownership_id=?1 AND state='Owned'",[&ownership]).map_err(map_sqlite_error)?,"owned partial")?;require_one(transaction.execute("UPDATE import_attempt_step SET step_state='CleaningOwnedPartial',row_version=row_version+1 WHERE attempt_step_id=?1 AND step_state IN ('Copying','ValidatingOwnedPartial')",[&step_c.attempt_step_id]).map_err(map_sqlite_error)?,"cleaning attempt step")?;Ok(())})?;
-        let cleanup_permit = self.safety_gate.require_feature(FeatureGate::Import)?;
-        self.safety_gate
-            .revalidate(&cleanup_permit, FeatureGate::Import)?;
-        handle.delete_owned(&self.faults)?;
-        let cleanup = id();
-        let attempt_c = attempt.clone();
-        let step_c = step.clone();
-        let ownership = step.ownership_id.as_ref().unwrap().clone();
-        let claim_c = claim.clone();
-        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt_c,&step_c)?;transaction.execute("INSERT INTO import_partial_cleanup_fact(cleanup_fact_id,ownership_id,claim_id,attempt_step_id,deleted_snapshot_id,outcome,cleaned_at) VALUES(?1,?2,?3,?4,?5,'DeleteSucceeded',?6)",params![&cleanup,&ownership,&claim_c,&step_c.attempt_step_id,&deleted_snapshot,now_micros()]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_partial_ownership SET state='Cleaned' WHERE ownership_id=?1 AND state='CleaningOwnedPartial'",[&ownership]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_partial_claim SET released_at=?2,release_reason='Cleaned' WHERE claim_id=?1 AND released_at IS NULL",params![&claim_c,now_micros()]).map_err(map_sqlite_error)?;finish_step_row(transaction,&step_c.attempt_step_id,"CleaningOwnedPartial","CleanedPartial",None,None)?;Ok(())})
-    }
-
-    fn cleanup_owned_partial(
-        &self,
-        attempt: &AttemptContext,
-        step: &AttemptStep,
-        _claim: &[u8],
-        partial_path: &Path,
-    ) -> Result<(), DomainError> {
-        self.clean_incomplete_owned(attempt, step, partial_path)
-    }
-
     fn finish_simple_step(
         &self,
         attempt: &AttemptContext,
@@ -2533,7 +2648,7 @@ impl ImportExecutionService {
         let state = state.to_string();
         let is_cancelled = state == "Cancelled";
         let error = error.map(|value| format!("{value:?}"));
-        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt,&step)?;transaction.execute("UPDATE import_attempt_step SET step_state=?2,error_code=?3,finished_at=?4,row_version=row_version+1 WHERE attempt_step_id=?1 AND finished_at IS NULL",params![&step.attempt_step_id,&state,&error,now_micros()]).map_err(map_sqlite_error)?;append_report_item(transaction,&attempt.report_id,&step,&state,None,0)?;if let Some(ownership)=&step.ownership_id{transaction.execute("UPDATE import_partial_ownership SET state='NeedsAttention' WHERE ownership_id=?1 AND state='Planned'",[ownership]).map_err(map_sqlite_error)?;}Ok(())})?;
+        self.database.writer()?.transaction(move|transaction|{require_fence(transaction,&attempt,&step)?;transaction.execute("UPDATE import_attempt_step SET step_state=?2,error_code=?3,finished_at=?4,row_version=row_version+1 WHERE attempt_step_id=?1 AND finished_at IS NULL",params![&step.attempt_step_id,&state,&error,now_micros()]).map_err(map_sqlite_error)?;append_report_item(transaction,&attempt.report_id,&step,&state,None,0)?;if let Some(ownership)=&step.ownership_id{transaction.execute("UPDATE import_partial_ownership SET state=CASE WHEN creation_started=0 THEN 'Cleaned' ELSE 'NeedsAttention' END WHERE ownership_id=?1 AND state='Planned'",[ownership]).map_err(map_sqlite_error)?;if state!="Cancelled" && state!="AwaitingSource" { transaction.execute("UPDATE import_partial_ownership SET state='NeedsAttention' WHERE ownership_id=?1 AND state='Owned'",[ownership]).map_err(map_sqlite_error)?; }}Ok(())})?;
         let mut status = self.lock_status()?;
         status.failed_files += u64::from(!is_cancelled);
         status.not_started_files = status.not_started_files.saturating_sub(1);
@@ -2548,7 +2663,7 @@ impl ImportExecutionService {
     ) -> Result<(), DomainError> {
         let attempt = attempt.clone();
         let job_id = attempt.job.job_id.clone();
-        self.database.writer()?.transaction(move|transaction|{let now=now_micros();let (attempt_state,job_state,task_state,report_result,terminal)=if cancelled{("Cancelled","Cancelled","Cancelled","Cancelled",true)}else if had_error{("CompletedWithErrors","CompletedWithErrors","AwaitingUser","Partial",false)}else{("Completed","Completed","Completed","Success",true)};transaction.execute("UPDATE import_attempt SET attempt_state=?2,finished_at=?3,row_version=row_version+1 WHERE attempt_id=?1 AND attempt_state='Running'",params![&attempt.attempt_id,attempt_state,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE operation_report SET report_state='Finalized',completed_at=?2,result=?3,item_count=(SELECT COUNT(*) FROM operation_report_item WHERE report_id=?1),total_bytes=(SELECT COALESCE(SUM(size_bytes),0) FROM operation_report_item WHERE report_id=?1) WHERE report_id=?1 AND report_state='Open'",params![&attempt.report_id,now,report_result]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_job SET job_state=?2,completed_at=CASE WHEN ?3 THEN ?4 ELSE NULL END,row_version=row_version+1 WHERE job_id=?1",params![&attempt.job.job_id,job_state,terminal,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE task_intent SET lifecycle=?2,resolved_at=CASE WHEN ?3 THEN ?4 ELSE NULL END,row_version=row_version+1 WHERE task_id=?1",params![&attempt.job.job_id,task_state,terminal,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_partial_claim SET released_at=?2,release_reason='AttemptClosed' WHERE attempt_step_id IN (SELECT attempt_step_id FROM import_attempt_step WHERE attempt_id=?1) AND released_at IS NULL",params![&attempt.attempt_id,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE operation_reservation SET released_at=?2,release_reason='AttemptClosed' WHERE attempt_id=?1 AND released_at IS NULL",params![&attempt.attempt_id,now]).map_err(map_sqlite_error)?;if terminal{let (generation,version):(i64,i64)=transaction.query_row("SELECT lease_generation,row_version FROM file_write_lease WHERE slot=1 AND task_id=?1",[&attempt.job.job_id],|row|Ok((row.get(0)?,row.get(1)?))).map_err(map_sqlite_error)?;transaction.execute("UPDATE file_write_lease SET task_id=NULL,lease_generation=?1,released_at=?2,row_version=?3 WHERE slot=1",params![generation+1,now,version+1]).map_err(map_sqlite_error)?;}Ok(())})?;
+        self.database.writer()?.transaction(move|transaction|{let now=now_micros(); transaction.execute("UPDATE import_partial_ownership SET state='Cleaned' WHERE state='Planned' AND creation_started=0 AND created_by_attempt_step_id IN (SELECT attempt_step_id FROM import_attempt_step WHERE attempt_id=?1)",[&attempt.attempt_id]).map_err(map_sqlite_error)?; if cancelled { retain_import_paths(transaction, &attempt.job.job_id, true)?; } let (attempt_state,job_state,task_state,report_result,terminal)=if cancelled{("Cancelled","Cancelled","Cancelled","Cancelled",true)}else if had_error{("CompletedWithErrors","CompletedWithErrors","AwaitingUser","Partial",false)}else{("Completed","Completed","Completed","Success",true)};transaction.execute("UPDATE import_attempt SET attempt_state=?2,finished_at=?3,row_version=row_version+1 WHERE attempt_id=?1 AND attempt_state='Running'",params![&attempt.attempt_id,attempt_state,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE operation_report SET report_state='Finalized',completed_at=?2,result=?3,item_count=(SELECT COUNT(*) FROM operation_report_item WHERE report_id=?1),total_bytes=(SELECT COALESCE(SUM(size_bytes),0) FROM operation_report_item WHERE report_id=?1) WHERE report_id=?1 AND report_state='Open'",params![&attempt.report_id,now,report_result]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_job SET job_state=?2,completed_at=CASE WHEN ?3 THEN ?4 ELSE NULL END,row_version=row_version+1 WHERE job_id=?1",params![&attempt.job.job_id,job_state,terminal,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE task_intent SET lifecycle=?2,resolved_at=CASE WHEN ?3 THEN ?4 ELSE NULL END,row_version=row_version+1 WHERE task_id=?1",params![&attempt.job.job_id,task_state,terminal,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE import_partial_claim SET released_at=?2,release_reason='AttemptClosed' WHERE attempt_step_id IN (SELECT attempt_step_id FROM import_attempt_step WHERE attempt_id=?1) AND released_at IS NULL",params![&attempt.attempt_id,now]).map_err(map_sqlite_error)?;transaction.execute("UPDATE operation_reservation SET released_at=?2,release_reason='AttemptClosed' WHERE attempt_id=?1 AND released_at IS NULL",params![&attempt.attempt_id,now]).map_err(map_sqlite_error)?;if terminal{let (generation,version):(i64,i64)=transaction.query_row("SELECT lease_generation,row_version FROM file_write_lease WHERE slot=1 AND task_id=?1",[&attempt.job.job_id],|row|Ok((row.get(0)?,row.get(1)?))).map_err(map_sqlite_error)?;transaction.execute("UPDATE file_write_lease SET task_id=NULL,lease_generation=?1,released_at=?2,row_version=?3 WHERE slot=1",params![generation+1,now,version+1]).map_err(map_sqlite_error)?;}Ok(())})?;
         let phase = if cancelled {
             ImportExecutionPhase::Cancelled
         } else if had_error {
@@ -2646,7 +2761,7 @@ impl ImportExecutionService {
         generation_id: &[u8],
     ) -> Result<Vec<AttemptStep>, DomainError> {
         let connection = self.database.open_read_connection()?;
-        let mut statement=connection.prepare("SELECT step.step_id,step.source_item_id,item.source_relative_path,item.source_path_key,item.source_file_id,item.source_snapshot_id,item.role,CASE WHEN indexed.indexed_fact_id IS NOT NULL THEN 'AlreadyResolved' WHEN published.published_fact_id IS NOT NULL THEN 'IndexPublished' WHEN ownership.state='Owned' THEN 'ReverifyOwnedPartial' WHEN step.plan_kind='SkipDuplicate' THEN 'SkipWithCurrentProof' WHEN step.plan_kind='Unreadable' THEN 'Unreadable' ELSE 'CopyNewBytes' END,step.final_relative_path,step.final_path_key,COALESCE(step.expected_bytes,0),snapshot.root_id,snapshot.root_binding_id,snapshot.volume_id,ownership.ownership_id,ownership.relative_path,ownership.file_id FROM import_asset_step AS step JOIN import_source_item AS item ON item.source_item_id=step.source_item_id JOIN file_identity_snapshot AS snapshot ON snapshot.snapshot_id=item.source_snapshot_id LEFT JOIN import_partial_ownership AS ownership ON ownership.step_id=step.step_id AND ownership.state='Owned' LEFT JOIN import_published_fact AS published ON published.source_item_id=step.source_item_id LEFT JOIN import_indexed_fact AS indexed ON indexed.published_fact_id=published.published_fact_id WHERE step.generation_id=?1 ORDER BY item.source_relative_path COLLATE NOCASE").map_err(map_sqlite_error)?;
+        let mut statement=connection.prepare("SELECT step.step_id,step.source_item_id,item.source_relative_path,item.source_path_key,item.source_file_id,item.source_snapshot_id,item.role,CASE WHEN indexed.indexed_fact_id IS NOT NULL THEN 'AlreadyResolved' WHEN published.published_fact_id IS NOT NULL THEN 'IndexPublished' WHEN ownership.state='Owned' THEN 'ReverifyOwnedPartial' WHEN step.plan_kind='SkipDuplicate' THEN 'SkipWithCurrentProof' WHEN step.plan_kind='Unreadable' THEN 'Unreadable' ELSE 'CopyNewBytes' END,step.final_relative_path,step.final_path_key,COALESCE(step.expected_bytes,0),snapshot.root_id,snapshot.root_binding_id,snapshot.volume_id,ownership.ownership_id,ownership.relative_path,ownership.file_id FROM import_asset_step AS step JOIN import_source_item AS item ON item.source_item_id=step.source_item_id JOIN file_identity_snapshot AS snapshot ON snapshot.snapshot_id=item.source_snapshot_id LEFT JOIN import_partial_ownership AS ownership ON ownership.step_id=step.step_id AND ownership.state='Owned' LEFT JOIN import_published_fact AS published ON published.source_item_id=step.source_item_id LEFT JOIN import_indexed_fact AS indexed ON indexed.published_fact_id=published.published_fact_id WHERE step.generation_id=?1 AND NOT EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=step.source_item_id) ORDER BY item.source_relative_path COLLATE NOCASE").map_err(map_sqlite_error)?;
         let rows = statement
             .query_map([generation_id], |row| {
                 let role: String = row.get(6)?;
@@ -2739,7 +2854,7 @@ impl ImportExecutionService {
         let job = job_id.to_vec();
         self.database.writer()?.transaction(move|transaction|{
             let now=now_micros();
-            transaction.execute("UPDATE import_partial_ownership SET state='NeedsAttention' WHERE created_by_attempt_step_id IN (SELECT attempt_step_id FROM import_attempt_step WHERE attempt_id=?1) AND state='Planned'",[&attempt_id]).map_err(map_sqlite_error)?;
+            transaction.execute("UPDATE import_partial_ownership SET state=CASE WHEN creation_started=0 THEN 'Cleaned' ELSE 'NeedsAttention' END WHERE created_by_attempt_step_id IN (SELECT attempt_step_id FROM import_attempt_step WHERE attempt_id=?1) AND state='Planned'",[&attempt_id]).map_err(map_sqlite_error)?;
             transaction.execute("UPDATE import_attempt_step SET step_state='Interrupted',finished_at=?2,row_version=row_version+1 WHERE attempt_id=?1 AND finished_at IS NULL",params![&attempt_id,now]).map_err(map_sqlite_error)?;
             transaction.execute("INSERT OR IGNORE INTO operation_report_item(report_item_id,report_id,item_kind,stable_item_id,result_code,display_path_snapshot,size_bytes) SELECT randomblob(16),report.report_id,'ImportAssetStep',step.step_id,attempt_step.step_state,step.final_relative_path,COALESCE(step.expected_bytes,0) FROM operation_report AS report JOIN import_attempt_step AS attempt_step ON attempt_step.attempt_id=report.task_attempt_id JOIN import_asset_step AS step ON step.step_id=attempt_step.step_id WHERE report.task_attempt_id=?1",[&attempt_id]).map_err(map_sqlite_error)?;
             require_one(transaction.execute("UPDATE import_attempt SET attempt_state='Interrupted',finished_at=?2,row_version=row_version+1 WHERE attempt_id=?1 AND attempt_state IN ('Prepared','Running')",params![&attempt_id,now]).map_err(map_sqlite_error)?,"interrupted attempt")?;
@@ -2981,4 +3096,35 @@ impl ImportExecutionService {
     fn lock_status(&self) -> Result<std::sync::MutexGuard<'_, ImportExecutionStatus>, DomainError> {
         self.status.lock().map_err(lock_error)
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryItem {
+    pub ownership_id: String,
+    pub source_item_id: String,
+    pub source_path: String,
+    pub retained_path: String,
+    pub observed_bytes: Option<i64>,
+    pub state: String,
+    pub excluded: bool,
+    pub can_exclude: bool,
+    pub target_path: Option<String>,
+}
+
+fn retain_import_paths(tx: &Transaction<'_>, job: &[u8], all: bool) -> Result<(), DomainError> {
+    tx.execute("INSERT OR IGNORE INTO import_retained_path(root_id,path_key,job_id,relative_path,size_bytes,reason) SELECT o.root_id,o.path_key,i.job_id,o.relative_path,o.created_size_observed,'RetainedPartial' FROM import_partial_ownership o JOIN import_asset_step s ON s.step_id=o.step_id JOIN import_source_item i ON i.source_item_id=s.source_item_id WHERE i.job_id=?1 AND (?2 OR EXISTS(SELECT 1 FROM import_recovery_exclusion e WHERE e.source_item_id=i.source_item_id)) AND o.creation_started=1 AND o.state IN ('Planned','Owned','CleaningOwnedPartial','NeedsAttention')",params![job,all]).map_err(map_sqlite_error)?;
+    tx.execute("INSERT OR IGNORE INTO import_retained_path(root_id,path_key,job_id,relative_path,size_bytes,reason) SELECT o.root_id,s.final_path_key,i.job_id,s.final_relative_path,s.expected_bytes,'UncertainPublish' FROM import_partial_ownership o JOIN import_asset_step s ON s.step_id=o.step_id JOIN import_source_item i ON i.source_item_id=s.source_item_id WHERE i.job_id=?1 AND (o.state='NeedsAttention' OR EXISTS(SELECT 1 FROM import_publish_intent pi JOIN import_partial_claim pc ON pc.claim_id=pi.partial_claim_id WHERE pc.ownership_id=o.ownership_id AND pi.intent_state IN ('Publishing','NeedsAttention'))) AND s.final_path_key IS NOT NULL",[job]).map_err(map_sqlite_error)?;
+    Ok(())
+}
+
+// Cancellation abandons authorization, not files. It must also work with an offline target.
+fn abandon_import_attempts(tx: &Transaction<'_>, job: &[u8]) -> Result<(), DomainError> {
+    let now = now_micros();
+    tx.execute("UPDATE import_partial_ownership SET state=CASE WHEN creation_started=0 THEN 'Cleaned' ELSE 'NeedsAttention' END WHERE state='Planned' AND step_id IN (SELECT s.step_id FROM import_asset_step s JOIN import_source_item i ON i.source_item_id=s.source_item_id WHERE i.job_id=?1)",[job]).map_err(map_sqlite_error)?;
+    tx.execute("UPDATE import_attempt_step SET step_state='Interrupted',finished_at=?2,row_version=row_version+1 WHERE finished_at IS NULL AND attempt_id IN (SELECT attempt_id FROM import_attempt WHERE job_id=?1 AND attempt_state IN ('Prepared','Running'))",params![job,now]).map_err(map_sqlite_error)?;
+    tx.execute("INSERT OR IGNORE INTO operation_report_item(report_item_id,report_id,item_kind,stable_item_id,result_code,display_path_snapshot,size_bytes) SELECT randomblob(16),r.report_id,'ImportAssetStep',s.step_id,a.step_state,s.final_relative_path,COALESCE(s.expected_bytes,0) FROM operation_report r JOIN import_attempt_step a ON a.attempt_id=r.task_attempt_id JOIN import_asset_step s ON s.step_id=a.step_id JOIN import_attempt attempt ON attempt.attempt_id=a.attempt_id WHERE attempt.job_id=?1 AND r.report_state='Open'",[job]).map_err(map_sqlite_error)?;
+    tx.execute("UPDATE operation_report SET report_state='Finalized',completed_at=?2,result='Cancelled',item_count=(SELECT COUNT(*) FROM operation_report_item WHERE report_id=operation_report.report_id),total_bytes=(SELECT COALESCE(SUM(size_bytes),0) FROM operation_report_item WHERE report_id=operation_report.report_id) WHERE report_state='Open' AND task_attempt_id IN (SELECT attempt_id FROM import_attempt WHERE job_id=?1)",params![job,now]).map_err(map_sqlite_error)?;
+    tx.execute("UPDATE import_attempt SET attempt_state='Interrupted',finished_at=?2,row_version=row_version+1 WHERE job_id=?1 AND attempt_state IN ('Prepared','Running')",params![job,now]).map_err(map_sqlite_error)?;
+    Ok(())
 }

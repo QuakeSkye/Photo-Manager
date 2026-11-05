@@ -138,6 +138,9 @@ pub fn run() {
             commands::import_preflight::get_import_preflight_status,
             commands::import_preflight::cancel_import_preflight,
             commands::import_execution::start_import,
+            commands::import_execution::reselect_import_source,
+            commands::import_execution::get_import_recovery_items,
+            commands::import_execution::exclude_import_recovery_items,
             commands::import_execution::retry_import,
             commands::import_execution::get_import_execution_status,
             commands::import_execution::cancel_remaining_import,
@@ -172,7 +175,53 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build the Tauri application");
 
-    app.run(|_application, _event| {});
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+    let closing = Arc::new(AtomicBool::new(false));
+    app.run(move |application, event| {
+        if let tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } = event
+        {
+            let service = application
+                .state::<Arc<import_execution::ImportExecutionService>>()
+                .inner()
+                .clone();
+            if service.is_worker_active() || closing.load(Ordering::Acquire) {
+                api.prevent_close();
+                if closing.swap(true, Ordering::AcqRel) {
+                    return;
+                }
+                let handle = application.clone();
+                let closing = closing.clone();
+                application
+                    .dialog()
+                    .message("导入仍在运行。停止后会保留已导入照片和临时文件，下次启动可确认恢复。")
+                    .title("导入期间退出")
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "停止并退出".into(),
+                        "继续导入".into(),
+                    ))
+                    .show(move |stop| {
+                        if !stop {
+                            closing.store(false, Ordering::Release);
+                            return;
+                        }
+                        service.request_pause_for_exit();
+                        std::thread::spawn(move || {
+                            while service.is_worker_active() {
+                                std::thread::sleep(std::time::Duration::from_millis(100));
+                            }
+                            handle.exit(0);
+                        });
+                    });
+            }
+        }
+    });
 }
 
 fn resolve_app_data_directory(

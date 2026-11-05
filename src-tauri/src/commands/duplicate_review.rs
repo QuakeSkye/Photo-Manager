@@ -20,7 +20,10 @@ pub async fn get_duplicate_review_status(
 pub async fn start_duplicate_review_scan(
     service: tauri::State<'_, Arc<DuplicateReviewService>>,
 ) -> Result<DuplicateReviewStatus, DomainError> {
-    service.inner().start()
+    let service = Arc::clone(service.inner());
+    tauri::async_runtime::spawn_blocking(move || service.start())
+        .await
+        .map_err(|_| background_error())?
 }
 
 #[tauri::command]

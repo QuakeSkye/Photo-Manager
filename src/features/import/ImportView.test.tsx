@@ -8,6 +8,8 @@ import {
 import { createRef } from 'react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
+import * as commands from '../../shared/commands/import';
+
 import { ImportView } from './ImportView';
 
 const pendingDeleteSummary = {
@@ -19,7 +21,10 @@ const pendingDeleteSummary = {
   executableBytes: 0,
 };
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('phase six import execution UI', () => {
   test('shows a closed safety reason and disables every write entry', async () => {
@@ -90,4 +95,128 @@ describe('phase six import execution UI', () => {
       expect(screen.queryByText('正在只读预检')).not.toBeInTheDocument(),
     );
   });
+});
+
+const executionStatus = (
+  phase: commands.ImportExecutionPhase,
+): commands.ImportExecutionStatus => ({
+  phase,
+  jobId: 'test-job',
+  attemptOrdinal: null,
+  completedFiles: 0,
+  publishedFiles: 0,
+  skippedFiles: 0,
+  failedFiles: 0,
+  notStartedFiles: 1,
+  currentFile: null,
+  currentAction: null,
+  message: null,
+  updatedPlan: null,
+  space: null,
+  sourceWriteRequests: 0,
+});
+function renderImport() {
+  return render(
+    <ImportView
+      pendingDeleteSummary={pendingDeleteSummary}
+      settingsButtonRef={createRef<HTMLButtonElement>()}
+      onOpenLibrary={vi.fn()}
+      onOpenPendingDelete={vi.fn()}
+      onOpenSettings={vi.fn()}
+      onBindTarget={vi.fn()}
+    />,
+  );
+}
+async function confirmInitialImport() {
+  await screen.findByRole('button', { name: '开始只读预检' });
+  fireEvent.click(screen.getByRole('button', { name: '开始只读预检' }));
+  fireEvent.click(await screen.findByRole('button', { name: '确认并导入…' }));
+  fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
+}
+
+test('async updated plan is the exact draft submitted on reconfirmation', async () => {
+  const draft = await commands.startImportPreflight();
+  const updated = { ...draft, draftDigest: 'new-authoritative-digest' };
+  const start = vi
+    .spyOn(commands, 'startImport')
+    .mockResolvedValueOnce(executionStatus('validatingPlan'))
+    .mockResolvedValue(executionStatus('completed'));
+  vi.spyOn(commands, 'getImportExecutionStatus').mockResolvedValue({
+    ...executionStatus('awaitingPlanConfirmation'),
+    updatedPlan: updated,
+  });
+  renderImport();
+  await confirmInitialImport();
+  fireEvent.click(
+    await screen.findByRole('button', { name: '重新确认并导入…' }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: '开始导入' }));
+  await waitFor(() =>
+    expect(start).toHaveBeenLastCalledWith('new-authoritative-digest'),
+  );
+});
+
+test('waiting for space can be cancelled while preserving files', async () => {
+  vi.spyOn(commands, 'startImport').mockResolvedValue(
+    executionStatus('awaitingSpace'),
+  );
+  const cancel = vi
+    .spyOn(commands, 'cancelRemainingImport')
+    .mockResolvedValue();
+  vi.spyOn(commands, 'getImportExecutionStatus').mockResolvedValue(
+    executionStatus('cancelled'),
+  );
+  renderImport();
+  await confirmInitialImport();
+  fireEvent.click(await screen.findByRole('button', { name: '取消剩余导入' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent(
+    '已导入照片和临时文件均保留',
+  );
+  expect(cancel).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '保留文件并取消' }));
+  await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+  expect(
+    await screen.findByRole('heading', { name: '导入已取消' }),
+  ).toBeInTheDocument();
+});
+
+test('recovery lists uncertain paths and requires explicit isolation before retry', async () => {
+  vi.spyOn(commands, 'getImportRecoverySummary').mockResolvedValue({
+    hasUnfinishedImport: true,
+    jobId: 'test-job',
+    phase: 'needsAttention',
+    completedFiles: 0,
+    publishedFiles: 0,
+    unresolvedFiles: 2,
+    message: '等待核对',
+  });
+  vi.spyOn(commands, 'getImportRecoveryItems').mockResolvedValue([
+    {
+      ownershipId: 'abc',
+      sourceItemId: 'source',
+      sourcePath: 'DSCF0001.JPG',
+      retainedPath: 'D:/test/retained.partial',
+      observedBytes: null,
+      state: 'NeedsAttention',
+      excluded: false,
+      canExclude: true,
+    },
+  ]);
+  const exclude = vi
+    .spyOn(commands, 'excludeImportRecoveryItems')
+    .mockResolvedValue();
+  const retry = vi
+    .spyOn(commands, 'retryImport')
+    .mockResolvedValue(executionStatus('validatingPlan'));
+  renderImport();
+  expect(
+    await screen.findByText('D:/test/retained.partial'),
+  ).toBeInTheDocument();
+  fireEvent.click(
+    await screen.findByRole('button', { name: '隔离异常项并继续…' }),
+  );
+  expect(retry).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '隔离并继续安全项' }));
+  await waitFor(() => expect(exclude).toHaveBeenCalledWith(['abc']));
+  await waitFor(() => expect(retry).toHaveBeenCalledTimes(1));
 });

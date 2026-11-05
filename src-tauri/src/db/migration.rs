@@ -9,7 +9,7 @@ use crate::{
     safety::{FaultInjector, FaultPoint},
 };
 
-pub const LATEST_SCHEMA_VERSION: u32 = 11;
+pub const LATEST_SCHEMA_VERSION: u32 = 12;
 pub const MIGRATION_SQL: &str = include_str!("../../migrations/0001_phase_zero.sql");
 pub const PHASE_ONE_MIGRATION_SQL: &str = include_str!("../../migrations/0002_phase_one.sql");
 pub const PHASE_THREE_MIGRATION_SQL: &str = include_str!("../../migrations/0003_phase_three.sql");
@@ -24,6 +24,8 @@ pub const IMPORT_DEDUP_DUPLICATE_REVIEW_MIGRATION_SQL: &str =
     include_str!("../../migrations/0010_import_dedup_duplicate_review.sql");
 pub const DUPLICATE_RESULT_RECONCILIATION_MIGRATION_SQL: &str =
     include_str!("../../migrations/0011_duplicate_result_reconciliation.sql");
+
+const IMPORT_RECOVERY_SQL: &str = include_str!("../../migrations/0012_import_recovery.sql");
 
 const MIGRATIONS: &[(u32, &str, &str)] = &[
     (1, "0001_phase_zero.sql", MIGRATION_SQL),
@@ -49,6 +51,7 @@ const MIGRATIONS: &[(u32, &str, &str)] = &[
         "0011_duplicate_result_reconciliation.sql",
         DUPLICATE_RESULT_RECONCILIATION_MIGRATION_SQL,
     ),
+    (12, "0012_import_recovery.sql", IMPORT_RECOVERY_SQL),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -33,8 +33,8 @@ struct AssetRow {
 }
 
 #[derive(Debug, Clone)]
-struct RunContext {
-    run_id: Vec<u8>,
+pub(super) struct RunContext {
+    pub(super) run_id: Vec<u8>,
     library_id: Vec<u8>,
     root_id: Vec<u8>,
     root_binding_id: Vec<u8>,
@@ -63,11 +63,13 @@ pub(super) fn execute(
     database: &Arc<Database>,
     scheduler: &Arc<IoScheduler>,
     cancelled: &Arc<AtomicBool>,
+    context: RunContext,
 ) -> Result<(), DomainError> {
-    cancelled.store(false, Ordering::Release);
-    let _bulk_io = scheduler.acquire_bulk_io(|| cancelled.load(Ordering::Acquire))?;
-    let context = begin_run(database)?;
-    match execute_inner(database, scheduler, cancelled, &context) {
+    let result = (|| {
+        let _bulk_io = scheduler.acquire_bulk_io(|| cancelled.load(Ordering::Acquire))?;
+        execute_inner(database, scheduler, cancelled, &context)
+    })();
+    match result {
         Ok(()) => Ok(()),
         Err(_error) if cancelled.load(Ordering::Acquire) => {
             finish_cancelled(database, &context.run_id)?;
@@ -249,7 +251,7 @@ fn execute_inner(
     )
 }
 
-fn begin_run(database: &Arc<Database>) -> Result<RunContext, DomainError> {
+pub(super) fn prepare_run(database: &Arc<Database>) -> Result<RunContext, DomainError> {
     let connection = database.open_read_connection()?;
     let row: Option<BeginRunRow> = connection
         .query_row(
@@ -605,6 +607,13 @@ fn finish_cancelled(database: &Arc<Database>, run_id: &[u8]) -> Result<(), Domai
 
 fn finish_failed(database: &Arc<Database>, run_id: &[u8], code: &str) -> Result<(), DomainError> {
     finish(database, run_id, "Failed", Some(code))
+}
+
+pub(super) fn finish_start_failure(
+    database: &Arc<Database>,
+    run_id: &[u8],
+) -> Result<(), DomainError> {
+    finish_failed(database, run_id, "WorkerSpawnFailed")
 }
 
 fn finish(

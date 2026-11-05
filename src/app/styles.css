@@ -2006,3 +2006,21 @@ kbd {
     animation-iteration-count: 1 !important;
   }
 }
+
+.import-recovery-files {
+  margin-top: 24px;
+}
+.import-recovery-files > div {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.import-recovery-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 48px);
+}
+.import-recovery-modal .modal-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}

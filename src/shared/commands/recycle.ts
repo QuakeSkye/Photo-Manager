@@ -8,6 +8,7 @@ export interface RecycleConfirmation {
   readonly totalBytes: number;
   readonly retry: boolean;
   readonly canExecute: boolean;
+  readonly selectionDigest: string;
 }
 
 export type RecyclePhase =
@@ -45,6 +46,7 @@ export async function getRecycleConfirmation(): Promise<RecycleConfirmation> {
       physicalFileCount: pending.summary.executableFileCount,
       totalBytes: pending.summary.executableBytes,
       retry: false,
+      selectionDigest: 'demo',
       canExecute: pending.summary.executableCount > 0,
     };
   }
@@ -63,6 +65,7 @@ export async function startRecycle(
     logicalPhotoCount: confirmation.logicalPhotoCount,
     physicalFileCount: confirmation.physicalFileCount,
     totalBytes: confirmation.totalBytes,
+    selectionDigest: confirmation.selectionDigest,
   });
 }
 
@@ -78,6 +81,7 @@ export async function retryRecycle(
     logicalPhotoCount: confirmation.logicalPhotoCount,
     physicalFileCount: confirmation.physicalFileCount,
     totalBytes: confirmation.totalBytes,
+    selectionDigest: confirmation.selectionDigest,
   });
 }
 

@@ -62,6 +62,7 @@ pub struct RecycleConfirmation {
     pub total_bytes: i64,
     pub retry: bool,
     pub can_execute: bool,
+    pub selection_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -258,6 +259,18 @@ impl RecycleService {
         if let Some(batch_id) = active_batch_id(&self.database.open_read_connection()?)? {
             status = status_for_batch(&self.database.open_read_connection()?, &batch_id)?;
         }
+        if let Some(id) = &status.batch_id {
+            let bytes = Uuid::parse_str(id)
+                .map_err(|_| DomainError::new(ErrorCode::InvalidId, "回收任务标识无效。"))?;
+            if let Err(error) =
+                require_current_batch(&self.database.open_read_connection()?, bytes.as_bytes())
+            {
+                if error.code == ErrorCode::StaleVersion {
+                    return Ok(RecycleStatus::default());
+                }
+                return Err(error);
+            }
+        }
         Ok(status)
     }
 
@@ -294,6 +307,7 @@ impl RecycleService {
         expected_photos: usize,
         expected_files: usize,
         expected_bytes: i64,
+        selection_digest: String,
     ) -> Result<RecycleStatus, DomainError> {
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let _gate = self.execution_gate.try_lock().map_err(|_| {
@@ -311,6 +325,7 @@ impl RecycleService {
             total_bytes: expected_bytes,
             retry: false,
             can_execute: true,
+            selection_digest,
         };
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let attempt = self.create_initial_attempt(operation_id, expected)?;
@@ -328,6 +343,7 @@ impl RecycleService {
         expected_photos: usize,
         expected_files: usize,
         expected_bytes: i64,
+        selection_digest: String,
     ) -> Result<RecycleStatus, DomainError> {
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
         let _gate = self.execution_gate.try_lock().map_err(|_| {
@@ -341,6 +357,7 @@ impl RecycleService {
         if actual.logical_photo_count != expected_photos
             || actual.physical_file_count != expected_files
             || actual.total_bytes != expected_bytes
+            || actual.selection_digest != selection_digest
         {
             return Err(DomainError::new(
                 ErrorCode::StaleVersion,
@@ -348,7 +365,7 @@ impl RecycleService {
             ));
         }
         self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
-        let attempt = self.create_retry_attempt(operation_id, &batch_id)?;
+        let attempt = self.create_retry_attempt(operation_id, &batch_id, &selection_digest)?;
         self.execute_attempt(attempt)?;
         self.finalize_stable_batch(&batch_id)?;
         self.status()
@@ -367,6 +384,7 @@ impl RecycleService {
         let batch = batch_id.clone();
         self.database.writer()?.transaction(move |transaction| {
             let now = now_micros();
+            require_current_batch(transaction, &batch)?;
             insert_operation(transaction, &operation, "CancelRemainingRecycle", &batch)?;
             transaction.execute(
                 "UPDATE deletion_batch_asset SET resolution_state='CancelledRemaining'
@@ -526,9 +544,11 @@ impl RecycleService {
         &self,
         operation_id: Uuid,
         batch_id: &[u8],
+        selection_digest: &str,
     ) -> Result<AttemptContext, DomainError> {
         let operation = operation_id.as_bytes().to_vec();
         let batch = batch_id.to_vec();
+        let expected_digest = selection_digest.to_string();
         let faults = self.faults.clone();
         self.database.writer()?.transaction(move |transaction| {
             let state: String = transaction.query_row(
@@ -540,6 +560,10 @@ impl RecycleService {
                 return Err(DomainError::invalid_transition("DeletionBatch", &state, "Running"));
             }
             let photos = load_remaining_batch(transaction, &batch)?;
+            require_current_batch(transaction, &batch)?;
+            if confirmation_for_photos(&photos, true).selection_digest != expected_digest {
+                return Err(DomainError::new(ErrorCode::StaleVersion, "回收文件集合已变化，请重新确认。"));
+            }
             for photo in &photos {
                 for asset in &photo.assets {
                     validate_frozen_asset(asset)?;
@@ -609,6 +633,7 @@ impl RecycleService {
                     }
                     continue;
                 }
+                require_current_batch(&self.database.open_read_connection()?, &attempt.batch_id)?;
                 let permit = self.safety_gate.require_feature(FeatureGate::Recycle)?;
                 self.safety_gate.revalidate(&permit, FeatureGate::Recycle)?;
                 let shell_photo = ShellPhoto {
@@ -1173,7 +1198,7 @@ fn assert_callback_chain(
 }
 
 fn load_eligible_marks(connection: &Connection) -> Result<Vec<FrozenPhoto>, DomainError> {
-    let mut statement=connection.prepare("SELECT mark.mark_id,mark.photo_id,mark.photo_version,photo.photo_version,photo.lifecycle,snapshot.mark_asset_snapshot_id,snapshot.asset_id,snapshot.asset_version,snapshot.role,snapshot.file_identity_snapshot_id,identity.root_id,identity.root_binding_id,identity.volume_id,identity.relative_path,identity.path_key,identity.path_key_version,identity.file_id,identity.size_bytes,identity.mtime_filetime,asset.library_id,asset.current_version,asset.presence_state,asset.deletion_supported,revision.root_id,revision.root_binding_id,revision.relative_path,revision.path_key,revision.path_key_version,revision.file_id,revision.size_bytes,revision.mtime_filetime,revision.hard_link_count,relation.role,root.lifecycle,root.current_binding_id,root.capability_mask,binding.binding_state,binding.absolute_path_display,binding.absolute_path_key,binding.root_directory_file_id,binding.filesystem_kind,binding.reparse_checked,(CASE WHEN mark.mark_scope='DuplicateSubset' THEN (SELECT COUNT(*) FROM deletion_mark_asset_snapshot selected_snapshot WHERE selected_snapshot.mark_id=mark.mark_id) ELSE (SELECT COUNT(*) FROM photo_asset current_member WHERE current_member.photo_id=mark.photo_id AND current_member.to_photo_version IS NULL) END) FROM deletion_mark mark JOIN photo ON photo.photo_id=mark.photo_id JOIN deletion_mark_asset_snapshot snapshot ON snapshot.mark_id=mark.mark_id JOIN file_identity_snapshot identity ON identity.snapshot_id=snapshot.file_identity_snapshot_id JOIN asset ON asset.asset_id=snapshot.asset_id JOIN asset_revision revision ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version LEFT JOIN photo_asset relation ON relation.photo_id=mark.photo_id AND relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL JOIN root ON root.root_id=identity.root_id JOIN root_binding binding ON binding.binding_id=identity.root_binding_id WHERE mark.released_at IS NULL AND NOT EXISTS(SELECT 1 FROM deletion_batch_photo consumed WHERE consumed.mark_id=mark.mark_id) ORDER BY mark.mark_id,snapshot.role").map_err(map_sqlite_error)?;
+    let mut statement=connection.prepare("SELECT mark.mark_id,mark.photo_id,mark.photo_version,photo.photo_version,photo.lifecycle,snapshot.mark_asset_snapshot_id,snapshot.asset_id,snapshot.asset_version,snapshot.role,snapshot.file_identity_snapshot_id,identity.root_id,identity.root_binding_id,identity.volume_id,identity.relative_path,identity.path_key,identity.path_key_version,identity.file_id,identity.size_bytes,identity.mtime_filetime,asset.library_id,asset.current_version,asset.presence_state,asset.deletion_supported,revision.root_id,revision.root_binding_id,revision.relative_path,revision.path_key,revision.path_key_version,revision.file_id,revision.size_bytes,revision.mtime_filetime,revision.hard_link_count,relation.role,root.lifecycle,root.current_binding_id,root.capability_mask,binding.binding_state,binding.absolute_path_display,binding.absolute_path_key,binding.root_directory_file_id,binding.filesystem_kind,binding.reparse_checked,(CASE WHEN mark.mark_scope='DuplicateSubset' THEN (SELECT COUNT(*) FROM deletion_mark_asset_snapshot selected_snapshot WHERE selected_snapshot.mark_id=mark.mark_id) ELSE (SELECT COUNT(*) FROM photo_asset current_member WHERE current_member.photo_id=mark.photo_id AND current_member.to_photo_version IS NULL) END) FROM deletion_mark mark JOIN photo ON photo.photo_id=mark.photo_id JOIN deletion_mark_asset_snapshot snapshot ON snapshot.mark_id=mark.mark_id JOIN file_identity_snapshot identity ON identity.snapshot_id=snapshot.file_identity_snapshot_id JOIN asset ON asset.asset_id=snapshot.asset_id JOIN asset_revision revision ON revision.asset_id=asset.asset_id AND revision.asset_version=asset.current_version LEFT JOIN photo_asset relation ON relation.photo_id=mark.photo_id AND relation.asset_id=asset.asset_id AND relation.to_photo_version IS NULL JOIN root ON root.root_id=identity.root_id JOIN root_binding binding ON binding.binding_id=identity.root_binding_id WHERE photo.library_id=(SELECT library_id FROM current_library WHERE slot=1) AND asset.library_id=photo.library_id AND identity.root_binding_id=root.current_binding_id AND mark.released_at IS NULL AND NOT EXISTS(SELECT 1 FROM deletion_batch_photo consumed WHERE consumed.mark_id=mark.mark_id) ORDER BY mark.mark_id,snapshot.role").map_err(map_sqlite_error)?;
     let rows = statement
         .query_map((), |row| {
             Ok((
@@ -1399,17 +1424,58 @@ fn confirmation_for_photos(photos: &[FrozenPhoto], retry: bool) -> RecycleConfir
         total_bytes,
         retry,
         can_execute: !photos.is_empty(),
+        selection_digest: selection_digest(photos, retry),
     }
 }
 fn remaining_confirmation(
     connection: &Connection,
     batch_id: &[u8],
 ) -> Result<RecycleConfirmation, DomainError> {
+    require_current_batch(connection, batch_id)?;
     Ok(confirmation_for_photos(
         &load_remaining_batch(connection, batch_id)?,
         true,
     ))
 }
+fn selection_digest(photos: &[FrozenPhoto], retry: bool) -> String {
+    let mut entries = Vec::new();
+    for photo in photos {
+        for a in &photo.assets {
+            entries.push(format!(
+                "{:?}:{:?}:{:?}:{}:{:?}:{}:{:?}:{:?}:{:?}",
+                a.library_id,
+                a.root_binding_id,
+                a.photo_id,
+                a.photo_version,
+                a.asset_id,
+                a.asset_version,
+                a.mark_id,
+                a.mark_snapshot_id,
+                a.path_key
+            ));
+        }
+    }
+    entries.sort();
+    let mut hash = Sha256::new();
+    hash.update([u8::from(retry)]);
+    for entry in entries {
+        hash.update((entry.len() as u64).to_le_bytes());
+        hash.update(entry.as_bytes());
+    }
+    hex::encode(hash.finalize())
+}
+
+fn require_current_batch(connection: &Connection, batch: &[u8]) -> Result<(), DomainError> {
+    let valid: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM deletion_batch b JOIN current_library c ON c.library_id=b.library_id AND c.slot=1 JOIN root_binding binding ON binding.binding_id=b.root_binding_id JOIN root r ON r.root_id=binding.root_id AND r.current_binding_id=binding.binding_id WHERE b.batch_id=?1 AND binding.binding_state='Active')", [batch], |r| r.get(0)).map_err(map_sqlite_error)?;
+    if !valid {
+        return Err(DomainError::new(
+            ErrorCode::StaleVersion,
+            "请切回该回收任务所属图库后处理。",
+        ));
+    }
+    Ok(())
+}
+
 fn common_root(photos: &[FrozenPhoto]) -> Result<&FrozenAsset, DomainError> {
     let first = photos
         .first()

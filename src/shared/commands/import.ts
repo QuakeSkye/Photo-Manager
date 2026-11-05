@@ -356,3 +356,31 @@ function demoDraft(): ImportPreflightDraft {
     },
   };
 }
+
+export interface ImportRecoveryItem {
+  readonly ownershipId: string;
+  readonly sourceItemId: string;
+  readonly sourcePath: string;
+  readonly retainedPath: string;
+  readonly observedBytes: number | null;
+  readonly state: string;
+  readonly excluded: boolean;
+  readonly canExclude: boolean;
+  readonly targetPath?: string | null;
+}
+export async function getImportRecoveryItems(): Promise<ImportRecoveryItem[]> {
+  if (useDemoBackend()) return [];
+  return invoke('get_import_recovery_items');
+}
+export async function excludeImportRecoveryItems(
+  ownershipIds: string[],
+): Promise<void> {
+  if (useDemoBackend()) return;
+  await invoke('exclude_import_recovery_items', { ownershipIds });
+}
+export async function reselectImportSource(
+  path: string,
+): Promise<ImportSetupSnapshot> {
+  if (useDemoBackend()) return demoSetup();
+  return invoke('reselect_import_source', { path });
+}

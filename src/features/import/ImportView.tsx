@@ -1,7 +1,17 @@
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from 'react';
 
 import {
   cancelImportPreflight,
+  getImportRecoveryItems,
+  excludeImportRecoveryItems,
+  reselectImportSource,
+  type ImportRecoveryItem,
   cancelRemainingImport,
   chooseImportSourceFolder,
   getImportExecutionStatus,
@@ -59,6 +69,15 @@ export function ImportView({
   );
   const [recovery, setRecovery] = useState<ImportRecoverySummary | null>(null);
   const [confirmImport, setConfirmImport] = useState(false);
+  const [recoveryItems, setRecoveryItems] = useState<ImportRecoveryItem[]>([]);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmIsolation, setConfirmIsolation] = useState(false);
+  const requestVersion = useRef(0);
+  const applyExecution = useCallback((value: ImportExecutionStatus) => {
+    setExecution(value);
+    setRecovery(null);
+    if (value.updatedPlan !== null) setDraft(value.updatedPlan);
+  }, []);
   const [startingImport, setStartingImport] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [targetCandidate, setTargetCandidate] = useState<{
@@ -82,10 +101,38 @@ export function ImportView({
   }, []);
 
   useEffect(() => {
-    void getImportRecoverySummary()
-      .then((value) => setRecovery(value.hasUnfinishedImport ? value : null))
-      .catch((reason) => setError(readError(reason)));
-  }, []);
+    setConfirmImport(false);
+  }, [draft?.draftDigest]);
+
+  useEffect(() => {
+    let active = true;
+    const version = ++requestVersion.current;
+    const live =
+      '__TAURI_INTERNALS__' in window
+        ? getImportExecutionStatus()
+        : Promise.resolve(null);
+    void Promise.all([live, getImportRecoverySummary()])
+      .then(([value, summary]) => {
+        if (!active || version !== requestVersion.current) return;
+        if (value !== null && value.phase !== 'idle') applyExecution(value);
+        else setRecovery(summary.hasUnfinishedImport ? summary : null);
+      })
+      .catch((reason) => active && setError(readError(reason)));
+    return () => {
+      active = false;
+      requestVersion.current++;
+    };
+  }, [applyExecution]);
+
+  useEffect(() => {
+    let active = true;
+    void getImportRecoveryItems()
+      .then((items) => active && setRecoveryItems(items))
+      .catch((reason) => active && setError(readError(reason)));
+    return () => {
+      active = false;
+    };
+  }, [execution?.phase]);
 
   useEffect(() => {
     if (!preflightRunning) return;
@@ -100,13 +147,28 @@ export function ImportView({
   useEffect(() => {
     if (execution?.phase !== 'running' && execution?.phase !== 'validatingPlan')
       return;
+    let active = true;
+    let inFlight = false;
     const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      const version = ++requestVersion.current;
       void getImportExecutionStatus()
-        .then(setExecution)
-        .catch((reason) => setError(readError(reason)));
+        .then((value) => {
+          if (active && version === requestVersion.current)
+            applyExecution(value);
+        })
+        .catch((reason) => active && setError(readError(reason)))
+        .finally(() => {
+          inFlight = false;
+        });
     }, 250);
-    return () => window.clearInterval(timer);
-  }, [execution?.phase]);
+    return () => {
+      active = false;
+      requestVersion.current++;
+      window.clearInterval(timer);
+    };
+  }, [execution?.phase, applyExecution]);
 
   const chooseSource = async () => {
     setError(null);
@@ -200,11 +262,13 @@ export function ImportView({
 
   const beginImport = async () => {
     if (draft === null) return;
+    requestVersion.current++;
     setStartingImport(true);
     setError(null);
     try {
       const next = await startImport(draft.draftDigest);
-      setExecution(next);
+      requestVersion.current++;
+      applyExecution(next);
       setRecovery(null);
       setConfirmImport(false);
       if (next.updatedPlan !== null) setDraft(next.updatedPlan);
@@ -216,10 +280,12 @@ export function ImportView({
   };
 
   const resumeImport = async () => {
+    requestVersion.current++;
     setError(null);
     try {
       const next = await retryImport();
-      setExecution(next);
+      requestVersion.current++;
+      applyExecution(next);
       setRecovery(null);
       if (next.updatedPlan !== null) setDraft(next.updatedPlan);
     } catch (reason) {
@@ -230,7 +296,43 @@ export function ImportView({
   const cancelRemaining = async () => {
     try {
       await cancelRemainingImport();
-      setExecution(await getImportExecutionStatus());
+      requestVersion.current++;
+      applyExecution(await getImportExecutionStatus());
+      setConfirmCancel(false);
+    } catch (reason) {
+      setError(readError(reason));
+    }
+  };
+
+  const reconnectSource = async () => {
+    const path = await chooseImportSourceFolder();
+    if (path === null) return;
+    try {
+      requestVersion.current++;
+      setSetup(await reselectImportSource(path));
+      const latest = await getImportExecutionStatus();
+      if (latest.phase === 'idle') {
+        setExecution(null);
+        setRecovery(null);
+        setDraft(null);
+        setError(
+          '原来源身份不足以直接恢复。旧任务已结束，照片和临时文件保留，请重新预检并确认。',
+        );
+      } else applyExecution(latest);
+    } catch (reason) {
+      setError(readError(reason));
+    }
+  };
+  const isolateAndContinue = async () => {
+    try {
+      await excludeImportRecoveryItems(
+        recoveryItems
+          .filter((item) => !item.excluded && item.canExclude)
+          .map((item) => item.ownershipId),
+      );
+      setConfirmIsolation(false);
+      setRecoveryItems(await getImportRecoveryItems());
+      await resumeImport();
     } catch (reason) {
       setError(readError(reason));
     }
@@ -385,6 +487,39 @@ export function ImportView({
             (execution !== null || recovery !== null) && (
               <ExecutionPanel execution={execution} recovery={recovery} />
             )}
+          {recoveryItems.length > 0 && (
+            <section
+              className="import-recovery-files"
+              aria-label="保留文件与异常项"
+            >
+              <h2>保留文件与异常项</h2>
+              <p>文件不会自动删除；大小为已记录值，未知或中断时可能不完整。</p>
+              {recoveryItems.map((item) => (
+                <div key={item.ownershipId}>
+                  <p>
+                    {item.sourcePath} ·{' '}
+                    {item.excluded
+                      ? '已隔离'
+                      : item.state === 'Owned'
+                        ? '临时文件保留'
+                        : '结果待核对'}
+                  </p>
+                  <p className="long-path">{item.retainedPath}</p>
+                  {item.targetPath && (
+                    <p className="long-path">
+                      原计划目标（结果不明时需核对）：{item.targetPath}
+                    </p>
+                  )}
+                  <p>
+                    {item.observedBytes === null
+                      ? '大小未知'
+                      : formatBytes(item.observedBytes)}
+                  </p>
+                </div>
+              ))}
+            </section>
+          )}
+
           {error !== null && (
             <p className="inline-error import-error" role="alert">
               {error}
@@ -420,8 +555,42 @@ export function ImportView({
           )}
           <div className="summary-spacer" />
           <div className="summary-actions">
+            {(recovery !== null ||
+              (execution !== null &&
+                execution.phase !== 'completed' &&
+                execution.phase !== 'cancelled')) &&
+              execution?.phase !== 'running' && (
+                <button type="button" onClick={() => setConfirmCancel(true)}>
+                  取消剩余导入
+                </button>
+              )}
+            {(recovery !== null ||
+              execution?.phase === 'awaitingSource' ||
+              execution?.phase === 'needsAttention') && (
+              <button
+                type="button"
+                disabled={!writeEnabled}
+                onClick={() => void reconnectSource()}
+              >
+                重新选择原来源
+              </button>
+            )}
+            {(recovery !== null ||
+              execution?.phase === 'needsAttention' ||
+              execution?.phase === 'completedWithErrors') &&
+              recoveryItems.some(
+                (item) => !item.excluded && item.canExclude,
+              ) && (
+                <button
+                  type="button"
+                  disabled={!writeEnabled}
+                  onClick={() => setConfirmIsolation(true)}
+                >
+                  隔离异常项并继续…
+                </button>
+              )}
             {execution?.phase === 'running' ? (
-              <button type="button" onClick={() => void cancelRemaining()}>
+              <button type="button" onClick={() => setConfirmCancel(true)}>
                 取消剩余导入
               </button>
             ) : execution?.phase === 'awaitingPlanConfirmation' ? (
@@ -503,6 +672,38 @@ export function ImportView({
         </span>
       </footer>
 
+      {confirmCancel && (
+        <Modal
+          title="取消剩余导入"
+          confirmLabel="保留文件并取消"
+          onConfirm={() => void cancelRemaining()}
+          onCancel={() => setConfirmCancel(false)}
+        >
+          <p>
+            已导入照片和临时文件均保留。等待当前操作安全收尾后结束任务，结果不明路径仍受保护。
+          </p>
+        </Modal>
+      )}
+      {confirmIsolation && (
+        <Modal
+          title="隔离异常项"
+          className="import-recovery-modal"
+          confirmLabel="隔离并继续安全项"
+          onConfirm={() => void isolateAndContinue()}
+          onCancel={() => setConfirmIsolation(false)}
+        >
+          <p>
+            下列项目将保留并从后续导入中排除，剩余文件会重新验证；计划变化仍需确认。
+          </p>
+          {recoveryItems
+            .filter((item) => !item.excluded && item.canExclude)
+            .map((item) => (
+              <p className="long-path" key={item.ownershipId}>
+                {item.sourcePath} → {item.retainedPath}
+              </p>
+            ))}
+        </Modal>
+      )}
       {targetCandidate !== null && (
         <Modal
           title={

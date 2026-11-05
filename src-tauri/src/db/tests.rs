@@ -305,7 +305,7 @@ fn import_dedup_duplicate_review_schema_is_versioned_constrained_and_immutable()
     let test = open_test_database();
     let connection = test.database.open_read_connection().unwrap();
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 11);
+    assert_eq!(LATEST_SCHEMA_VERSION, 12);
     for table in [
         "library_catalog_revision",
         "asset_import_candidate_key",
@@ -1275,7 +1275,7 @@ fn migration_manifest_and_schema_checksum_cover_the_complete_published_chain() {
     assert_eq!(manifest.first().unwrap().filename, "0001_phase_zero.sql");
     assert_eq!(
         manifest.last().unwrap().filename,
-        "0011_duplicate_result_reconciliation.sql"
+        "0012_import_recovery.sql"
     );
     assert!(manifest.iter().all(|entry| entry.sha256.len() == 64));
     assert_eq!(crate::db::migration_chain_checksum().len(), 64);

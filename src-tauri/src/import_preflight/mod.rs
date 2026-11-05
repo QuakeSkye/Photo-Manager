@@ -319,7 +319,11 @@ impl ImportPreflightService {
         let target = self.current_target()?;
         self.reject_source_conflicts(&source_probe, &target)?;
         let selected = self.register_source_profile(source_probe)?;
-        self.state()?.selected_source = Some(selected);
+        {
+            let mut state = self.state()?;
+            state.selected_source = Some(selected);
+            state.last_draft = None;
+        }
         let report = audit.snapshot();
         debug_assert_eq!(report.source_write_requests, 0);
         self.setup_snapshot()
@@ -327,6 +331,37 @@ impl ImportPreflightService {
 
     pub fn status(&self) -> Result<ImportPreflightStatus, DomainError> {
         Ok(self.state()?.status.clone())
+    }
+
+    pub(crate) fn request_execution_cancel(&self) {
+        self.cancel_requested.store(true, Ordering::Release);
+    }
+    pub(crate) fn reset_execution_cancel(&self) {
+        self.cancel_requested.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn reselect_for_job(&self, job: &[u8], path: &Path) -> Result<bool, DomainError> {
+        let connection = self.database.open_read_connection()?;
+        let (profile_id, strong): (Vec<u8>,bool) = connection.query_row("SELECT j.source_profile_id,p.identity_strength='Strong' FROM import_job j JOIN import_source_profile p ON p.profile_id=j.source_profile_id JOIN current_library c ON c.library_id=j.library_id AND c.slot=1 WHERE j.job_id=?1 AND j.job_state NOT IN ('Completed','Cancelled')",[job],|r|Ok((r.get(0)?,r.get(1)?))).map_err(crate::db::migration::map_sqlite_error)?;
+        let profile = self.load_profile(&profile_id)?;
+        let probe = probe_directory(path)?;
+        self.reject_source_conflicts(&probe, &self.current_target()?)?;
+        if probe.volume_identity_key != profile.volume_key
+            || probe.directory_file_id != profile.directory_file_id
+        {
+            return Err(DomainError::new(
+                ErrorCode::IdentityMismatch,
+                "无法证明这是原来源；可取消旧任务后重新选择并预检，不会沿用旧授权。",
+            ));
+        }
+        if !strong || !probe.strong_identity {
+            return Ok(false);
+        }
+        self.state()?.selected_source = Some(SelectedSource {
+            profile_id,
+            display_path: probe.absolute_path,
+        });
+        Ok(true)
     }
 
     pub fn cancel(&self) -> Result<(), DomainError> {
@@ -482,7 +517,24 @@ impl ImportPreflightService {
         let target = self.current_target()?;
         self.reject_source_conflicts(&source.root_probe, &target)?;
         let audit = ProcessIoAudit::default();
-        let enumerated = self.enumerate_source(&source, &audit)?;
+        let mut enumerated = self.enumerate_source(&source, &audit)?;
+        let connection = self.database.open_read_connection()?;
+        let mut statement=connection.prepare("SELECT i.source_relative_path FROM import_recovery_exclusion e JOIN import_source_item i ON i.source_item_id=e.source_item_id WHERE i.job_id=?1").map_err(crate::db::migration::map_sqlite_error)?;
+        let excluded = statement
+            .query_map([job_id], |r| r.get::<_, String>(0))
+            .map_err(crate::db::migration::map_sqlite_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::db::migration::map_sqlite_error)?;
+        enumerated.files.retain(|file| {
+            !excluded
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&display_relative(&file.relative_path)))
+        });
+        enumerated.unreadable.retain(|file| {
+            !excluded
+                .iter()
+                .any(|path| path.eq_ignore_ascii_case(&display_relative(&file.relative_path)))
+        });
         let draft = planner::build_draft(
             &self.database,
             &source,

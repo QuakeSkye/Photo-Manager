@@ -63,6 +63,7 @@ fn confirmation_counts_logical_photos_physical_files_and_bytes() {
             total_bytes: 60,
             retry: false,
             can_execute: true,
+            selection_digest: selection_digest(&photos, false),
         }
     );
 }
@@ -270,6 +271,7 @@ fn successful_callback_commits_fact_before_finishing_and_clears_pending_entry() 
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap();
 
@@ -305,6 +307,7 @@ fn permit_from_another_gate_instance_cannot_start_recycle() {
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap_err();
 
@@ -333,6 +336,7 @@ fn initial_transaction_fault_rolls_back_every_intent_and_never_calls_shell() {
                 1,
                 1,
                 confirmation.total_bytes,
+                confirmation.selection_digest.clone(),
             )
             .is_err()
     );
@@ -356,6 +360,7 @@ fn ordinary_failure_is_retryable_and_retry_creates_a_new_attempt() {
             1,
             1,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap();
     assert_eq!(first.phase, RecyclePhase::AwaitingUser);
@@ -371,6 +376,7 @@ fn ordinary_failure_is_retryable_and_retry_creates_a_new_attempt() {
             1,
             1,
             retry.total_bytes,
+            retry.selection_digest.clone(),
         )
         .unwrap();
     assert_eq!(final_status.phase, RecyclePhase::Completed);
@@ -396,6 +402,7 @@ fn empty_recycle_object_and_predelete_replacement_stop_as_needs_attention() {
                 1,
                 1,
                 confirmation.total_bytes,
+                confirmation.selection_digest.clone(),
             )
             .unwrap();
         let status = service.status().unwrap();
@@ -425,6 +432,7 @@ fn postdelete_database_failure_stops_and_preserves_unknown_result() {
                 1,
                 1,
                 confirmation.total_bytes,
+                confirmation.selection_digest.clone(),
             )
             .is_err()
     );
@@ -478,6 +486,7 @@ fn gate_closing_after_shell_does_not_reject_recycled_fact_commit() {
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap();
 
@@ -520,6 +529,7 @@ fn gate_closing_after_first_asset_stops_before_second_shell_action() {
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap_err();
 
@@ -527,4 +537,58 @@ fn gate_closing_after_first_asset_stops_before_second_shell_action() {
     assert_eq!(count(&fixture.database, "deletion_recycled_fact"), 1);
     assert_eq!(shell.calls.load(Ordering::SeqCst), 1);
     assert_eq!(shell.photos.lock().unwrap().as_slice(), &[1]);
+}
+
+#[cfg(windows)]
+#[test]
+fn switching_libraries_keeps_marks_but_rejects_old_confirmation() {
+    let fixture = fixture();
+    let shell = Arc::new(FakeShell::new([]));
+    let service = service(&fixture, shell.clone());
+    let old = service.confirmation().unwrap();
+    let other = TestRoot::create_in(fixture._parent.path()).unwrap();
+    fs::write(
+        other.path().join("DSCF9000.JPG"),
+        b"phase-seven-jpg-fixture",
+    )
+    .unwrap();
+    let binding = FujiLibraryService::new(fixture.database.clone(), fixture._app_root.path())
+        .bind(other.path())
+        .unwrap();
+    let catalog = Arc::new(CatalogService::new(fixture.database.clone()));
+    LibraryScanner::new(catalog.clone())
+        .scan(ScanRequest {
+            library_id: binding.library_id,
+            root_id: binding.root_id,
+            root_binding_id: binding.root_binding_id,
+            root_path: other.path().to_path_buf(),
+        })
+        .unwrap();
+    assert_eq!(service.confirmation().unwrap().physical_file_count, 0);
+    let photo = catalog
+        .timeline(binding.library_id, SortMode::CaptureDesc)
+        .unwrap()
+        .remove(0);
+    fixture
+        .pending
+        .toggle(photo.photo_id, photo.photo_version, OperationId::new())
+        .unwrap();
+    let current = service.confirmation().unwrap();
+    assert_eq!(current.physical_file_count, 1);
+    assert_eq!(fixture.pending.summary().unwrap().total_count, 1);
+    assert_eq!(count(&fixture.database, "deletion_mark"), 2);
+    assert_ne!(current.selection_digest, old.selection_digest);
+    // Counts/bytes from the CURRENT set with an OLD authorization must still fail.
+    let error = service
+        .start(
+            service.test_permit(),
+            Uuid::new_v4(),
+            current.logical_photo_count,
+            current.physical_file_count,
+            current.total_bytes,
+            old.selection_digest,
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleVersion);
+    assert_eq!(shell.calls.load(Ordering::SeqCst), 0);
 }

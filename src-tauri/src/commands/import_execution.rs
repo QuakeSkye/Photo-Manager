@@ -47,3 +47,28 @@ pub fn get_import_recovery_summary(
 ) -> Result<ImportRecoverySummary, DomainError> {
     service.recovery_summary()
 }
+
+#[tauri::command]
+pub fn reselect_import_source(
+    path: String,
+    service: tauri::State<'_, Arc<ImportExecutionService>>,
+    safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
+) -> Result<crate::import_preflight::ImportSetupSnapshot, DomainError> {
+    service.reselect_source(
+        &safety_gate.require_feature(FeatureGate::Import)?,
+        std::path::Path::new(&path),
+    )
+}
+#[tauri::command]
+pub fn get_import_recovery_items(
+    service: tauri::State<'_, Arc<ImportExecutionService>>,
+) -> Result<Vec<crate::import_execution::RecoveryItem>, DomainError> {
+    service.recovery_items()
+}
+#[tauri::command]
+pub fn exclude_import_recovery_items(
+    ownership_ids: Vec<String>,
+    service: tauri::State<'_, Arc<ImportExecutionService>>,
+) -> Result<(), DomainError> {
+    service.exclude_recovery_items(ownership_ids)
+}

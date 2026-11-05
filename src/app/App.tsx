@@ -88,6 +88,7 @@ function AppContent() {
   const [safetyStatus, setSafetyStatus] = useState<SafetyStatus | null>(null);
   const [duplicateReviewStatus, setDuplicateReviewStatus] =
     useState<DuplicateReviewStatus>(idleDuplicateStatus);
+  const duplicateStatusRequestId = useRef(0);
   const mutationInFlight = useRef(false);
   const sortInFlight = useRef(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -113,6 +114,26 @@ function AppContent() {
     }
   }, []);
 
+  const applyDuplicateReviewStatus = useCallback(
+    (status: DuplicateReviewStatus) => {
+      duplicateStatusRequestId.current += 1;
+      setDuplicateReviewStatus(status);
+    },
+    [],
+  );
+
+  const refreshDuplicateReviewStatus = useCallback(async () => {
+    const requestId = ++duplicateStatusRequestId.current;
+    try {
+      const status = await getDuplicateReviewStatus();
+      if (requestId === duplicateStatusRequestId.current) {
+        setDuplicateReviewStatus(status);
+      }
+    } catch {
+      // A transient status read must not replace the last confirmed state.
+    }
+  }, []);
+
   useEffect(() => {
     void refreshSafetyStatus();
     const timer = window.setInterval(() => void refreshSafetyStatus(), 2000);
@@ -120,17 +141,13 @@ function AppContent() {
   }, [refreshSafetyStatus]);
 
   useEffect(() => {
-    const refresh = () =>
-      void getDuplicateReviewStatus()
-        .then(setDuplicateReviewStatus)
-        .catch(() => undefined);
-    refresh();
+    void refreshDuplicateReviewStatus();
     const timer = window.setInterval(
-      refresh,
+      () => void refreshDuplicateReviewStatus(),
       duplicateReviewStatus.state === 'running' ? 500 : 4000,
     );
     return () => window.clearInterval(timer);
-  }, [duplicateReviewStatus.state]);
+  }, [duplicateReviewStatus.state, refreshDuplicateReviewStatus]);
 
   const load = useCallback(
     async (mode: SortMode, preserveSelection = false) => {
@@ -395,7 +412,7 @@ function AppContent() {
   const refreshAfterRecycle = async (result: RecycleStatus) => {
     const { nextLibrary, nextPending } = await refreshDeletionState();
     if (result.duplicateReconciliation !== 'notApplicable') {
-      setDuplicateReviewStatus(await getDuplicateReviewStatus());
+      applyDuplicateReviewStatus(await getDuplicateReviewStatus());
     }
     const mustReviewProblems =
       result.remainingProblemCount > 0 ||
@@ -702,7 +719,7 @@ function AppContent() {
           status={duplicateReviewStatus}
           pendingDeleteSummary={snapshot.pendingDeleteSummary}
           settingsButtonRef={settingsButtonRef}
-          onStatusChange={setDuplicateReviewStatus}
+          onStatusChange={applyDuplicateReviewStatus}
           onOpenLibrary={openLibrary}
           onOpenPendingDelete={() => void openPendingDelete()}
           onOpenSettings={openSettings}

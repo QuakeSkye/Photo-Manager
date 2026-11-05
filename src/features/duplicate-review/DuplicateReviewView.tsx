@@ -672,7 +672,7 @@ function phaseLabel(phase: string | null): string {
   return (
     (
       {
-        Enumerating: '正在枚举',
+        Enumerating: '正在准备检测',
         Hashing: '正在完整哈希',
         Comparing: '正在逐字节比较',
         Publishing: '正在发布结果',

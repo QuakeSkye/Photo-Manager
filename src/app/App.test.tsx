@@ -6,16 +6,46 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import {
   resetDemoDeletionState,
   simulateDemoRestart,
 } from '../shared/commands/library';
 import { resetDemoSettings } from '../shared/commands/settings';
+import * as duplicateCommands from '../shared/commands/duplicate-review';
 import { App } from './App';
 
+vi.mock('../shared/commands/duplicate-review', async () => {
+  const actual = await vi.importActual<typeof duplicateCommands>(
+    '../shared/commands/duplicate-review',
+  );
+  return {
+    ...actual,
+    getDuplicateReviewStatus: vi.fn(),
+    startDuplicateReviewScan: vi.fn(),
+  };
+});
+
+const idleDuplicateStatus: duplicateCommands.DuplicateReviewStatus = {
+  state: 'idle',
+  runId: null,
+  phase: null,
+  checkedFiles: 0,
+  candidateFiles: 0,
+  hashedFiles: 0,
+  currentRelativePath: null,
+  familyCount: 0,
+  expiredReason: null,
+  resultVersionId: null,
+  lastReceipt: null,
+};
+
 beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(duplicateCommands.getDuplicateReviewStatus).mockResolvedValue(
+    idleDuplicateStatus,
+  );
   resetDemoDeletionState();
   resetDemoSettings();
   window.history.replaceState(null, '', '/');
@@ -24,6 +54,49 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('阶段 3 图库与既有只读能力', () => {
+  test('does not let a stale status request overwrite a newly started duplicate scan', async () => {
+    let resolveStaleStatus!: (
+      status: duplicateCommands.DuplicateReviewStatus,
+    ) => void;
+    const staleStatus = new Promise<duplicateCommands.DuplicateReviewStatus>(
+      (resolve) => {
+        resolveStaleStatus = resolve;
+      },
+    );
+    const running: duplicateCommands.DuplicateReviewStatus = {
+      ...idleDuplicateStatus,
+      state: 'running',
+      runId: '84cb7556-c9f6-4a0d-830e-f4de593df233',
+      phase: 'Enumerating',
+      resultVersionId: '84cb7556-c9f6-4a0d-830e-f4de593df233',
+    };
+    vi.mocked(duplicateCommands.getDuplicateReviewStatus)
+      .mockReturnValueOnce(staleStatus)
+      .mockResolvedValue(running);
+    vi.mocked(duplicateCommands.startDuplicateReviewScan).mockResolvedValue(
+      running,
+    );
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: '检查重复' }));
+    fireEvent.click(screen.getByRole('button', { name: '开始检测' }));
+
+    expect(
+      await screen.findByRole('button', { name: '取消检测' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('正在准备检测')).toBeInTheDocument();
+
+    resolveStaleStatus(idleDuplicateStatus);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: '取消检测' }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole('button', { name: '开始检测' }),
+    ).not.toBeInTheDocument();
+  });
+
   test('renders marking controls while keeping the conditional entry hidden at zero', async () => {
     render(<App />);
 

@@ -596,7 +596,7 @@ fn crash_between_create_new_and_owned_commit_never_adopts_or_deletes_partial() {
         return;
     };
     faults
-        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 7)
+        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 8)
         .unwrap();
     let execution = ImportExecutionService::with_faults(
         fixture.database.clone(),
@@ -650,7 +650,7 @@ fn publish_fact_commit_crash_is_reconciled_without_second_rename_or_overwrite() 
         return;
     };
     faults
-        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 11)
+        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 12)
         .unwrap();
     let execution = ImportExecutionService::with_faults(
         fixture.database.clone(),
@@ -696,56 +696,49 @@ fn publish_fact_commit_crash_is_reconciled_without_second_rename_or_overwrite() 
 
 #[cfg(windows)]
 #[test]
-fn crash_after_handle_delete_records_observed_missing_then_uses_new_incarnation() {
+fn incomplete_owned_partial_is_retained_and_can_be_explicitly_isolated() {
     let faults = FaultInjector::default();
     let Some(fixture) = import_fixture(faults.clone(), "6104") else {
         return;
     };
     faults
-        .fail_on_hit(FaultPoint::SqliteAfterCommit, 7)
+        .fail_on_hit(FaultPoint::SqliteAfterCommit, 8)
         .unwrap();
     let execution = ImportExecutionService::with_faults(
         fixture.database.clone(),
         fixture.preflight.clone(),
         fixture.catalog.clone(),
         ready_gate(&fixture.database),
-        faults.clone(),
+        faults,
     );
-    assert_eq!(
+    assert!(
         execution
             .start(execution.test_permit(), &fixture.draft_digest)
-            .unwrap_err()
-            .code,
-        ErrorCode::FaultInjected
+            .is_err()
     );
-    faults.fail_on_hit(FaultPoint::Win32AfterCall, 1).unwrap();
-    assert_eq!(
-        execution.retry(execution.test_permit()).unwrap_err().code,
-        ErrorCode::FaultInjected
-    );
-    let connection = fixture.database.open_read_connection().unwrap();
-    let cleaning: (String, i64) = connection
-        .query_row(
-            "SELECT state,(SELECT COUNT(*) FROM import_partial_cleanup_fact) FROM import_partial_ownership",
-            (),
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(cleaning, ("CleaningOwnedPartial".into(), 0));
-    drop(connection);
+    let retained = execution.recovery_items().unwrap();
+    assert_eq!(retained.len(), 1);
+    let partial = PathBuf::from(&retained[0].retained_path);
+    assert!(partial.exists());
+    let before = file_hash(&partial);
     assert_eq!(
         execution.retry(execution.test_permit()).unwrap().phase,
-        ImportExecutionPhase::Completed
+        ImportExecutionPhase::CompletedWithErrors
     );
-    let connection = fixture.database.open_read_connection().unwrap();
-    let cleanup: (String, i64, i64) = connection
-        .query_row(
-            "SELECT outcome,(SELECT COUNT(*) FROM import_partial_ownership),(SELECT MAX(ownership_ordinal) FROM import_partial_ownership) FROM import_partial_cleanup_fact",
-            (),
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+    assert_eq!(file_hash(&partial), before);
+    let items = execution.recovery_items().unwrap();
+    assert_eq!(items[0].state, "NeedsAttention");
+    execution
+        .exclude_recovery_items(vec![items[0].ownership_id.clone()])
         .unwrap();
-    assert_eq!(cleanup, ("ObservedMissingAfterCleaningIntent".into(), 2, 2));
+    execution.request_cancel().unwrap();
+    assert!(!execution.recovery_summary().unwrap().has_unfinished_import);
+    assert_eq!(file_hash(&partial), before);
+    let connection = fixture.database.open_read_connection().unwrap();
+    let (lease,reservations,cleanups):(Option<Vec<u8>>,i64,i64)=connection.query_row("SELECT task_id,(SELECT COUNT(*) FROM operation_reservation WHERE released_at IS NULL),(SELECT COUNT(*) FROM import_partial_cleanup_fact) FROM file_write_lease WHERE slot=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert!(lease.is_none());
+    assert_eq!(reservations, 0);
+    assert_eq!(cleanups, 0);
     assert_source_unchanged(&fixture);
 }
 
@@ -922,5 +915,391 @@ fn permit_from_another_gate_instance_cannot_start_import() {
             .unwrap(),
         0
     );
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn queued_steps_survive_a_crash_before_creation_and_resume() {
+    let faults = FaultInjector::default();
+    let Some(fixture) = import_fixture(faults.clone(), "6201") else {
+        return;
+    };
+    let second = fixture.source_file.parent().unwrap().join("DSCF6202.JPG");
+    fs::write(&second, generated_jpeg(b"second queued file")).unwrap();
+    let draft = fixture
+        .preflight
+        .run_preflight(&fixture.preflight.test_permit())
+        .unwrap();
+    let execution = ImportExecutionService::with_faults(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+        faults.clone(),
+    );
+    // Stop before committing the first file's creation boundary, after queuing both.
+    faults
+        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 7)
+        .unwrap();
+    assert!(
+        execution
+            .start(execution.test_permit(), &draft.draft_digest)
+            .is_err()
+    );
+    execution.reconcile_startup().unwrap();
+    let connection = fixture.database.open_read_connection().unwrap();
+    let (unstarted,uncertain):(i64,i64)=connection.query_row("SELECT SUM(state='Cleaned' AND creation_started=0),SUM(state='NeedsAttention') FROM import_partial_ownership",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!((unstarted, uncertain), (2, 0));
+    drop(connection);
+    assert_eq!(
+        execution.retry(execution.test_permit()).unwrap().phase,
+        ImportExecutionPhase::Completed
+    );
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn refreshed_plan_requires_its_exact_digest_and_retry_does_not_confirm_it() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6203") else {
+        return;
+    };
+    let target = fixture
+        .target
+        .path()
+        .join("2026")
+        .join("20260807")
+        .join("DSCF6203.JPG");
+    fs::create_dir_all(target.parent().unwrap()).unwrap();
+    fs::write(&target, b"occupied").unwrap();
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    let updated = execution
+        .start(execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    assert_eq!(
+        updated.phase,
+        ImportExecutionPhase::AwaitingPlanConfirmation
+    );
+    assert_eq!(
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleVersion
+    );
+    let retried = execution.retry(execution.test_permit()).unwrap();
+    assert_eq!(
+        retried.phase,
+        ImportExecutionPhase::AwaitingPlanConfirmation
+    );
+    let digest = retried.updated_plan.unwrap().draft_digest;
+    assert_eq!(
+        execution
+            .start(execution.test_permit(), &digest)
+            .unwrap()
+            .phase,
+        ImportExecutionPhase::Completed
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"occupied");
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn original_source_can_be_reselected_for_an_existing_task_after_restart() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6204") else {
+        return;
+    };
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    execution
+        .prepare_start(&execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    let reopened_preflight = Arc::new(ImportPreflightService::new(
+        fixture.database.clone(),
+        fixture._app_data.path(),
+    ));
+    let reopened = ImportExecutionService::new(
+        fixture.database.clone(),
+        reopened_preflight,
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    reopened
+        .reselect_source(
+            &reopened.test_permit(),
+            fixture.source_file.parent().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        reopened.status().unwrap().phase,
+        ImportExecutionPhase::NeedsAttention
+    );
+    assert_eq!(
+        reopened.retry(reopened.test_permit()).unwrap().phase,
+        ImportExecutionPhase::Completed
+    );
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn pause_during_validation_keeps_task_recoverable_and_blocks_new_workers() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6205") else {
+        return;
+    };
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    execution
+        .prepare_start(&execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    execution.request_pause_for_exit();
+    assert!(execution.stop_validation_if_requested().unwrap());
+    assert!(execution.recovery_summary().unwrap().has_unfinished_import);
+    assert!(execution.acquire_worker().is_err());
+    let resumed = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    assert_eq!(
+        resumed.retry(resumed.test_permit()).unwrap().phase,
+        ImportExecutionPhase::Completed
+    );
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn limited_source_identity_ends_old_authorization_and_requires_fresh_preflight() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6206") else {
+        return;
+    };
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    execution
+        .prepare_start(&execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    fixture
+        .database
+        .writer()
+        .unwrap()
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE import_source_profile SET identity_strength='UserConfirmedLimited'",
+                [],
+            )
+            .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .unwrap();
+    let gate = ready_gate(&fixture.database);
+    let preflight = Arc::new(ImportPreflightService::with_scheduler(
+        fixture.database.clone(),
+        fixture._app_data.path(),
+        Arc::new(crate::io_scheduler::IoScheduler::for_rotational()),
+        gate.clone(),
+    ));
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        preflight.clone(),
+        fixture.catalog.clone(),
+        gate,
+    );
+    let setup = execution
+        .reselect_source(
+            &execution.test_permit(),
+            fixture.source_file.parent().unwrap(),
+        )
+        .unwrap();
+    assert!(setup.can_start_preflight);
+    assert!(!execution.recovery_summary().unwrap().has_unfinished_import);
+    assert_eq!(
+        execution.status().unwrap().phase,
+        ImportExecutionPhase::Idle
+    );
+    assert!(
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .is_err()
+    );
+    let draft = preflight.run_preflight(&preflight.test_permit()).unwrap();
+    assert_eq!(draft.summary.new_files, 1);
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn isolated_ambiguous_first_file_does_not_block_the_second_queued_file() {
+    let faults = FaultInjector::default();
+    let Some(fixture) = import_fixture(faults.clone(), "6207") else {
+        return;
+    };
+    fs::write(
+        fixture.source_file.parent().unwrap().join("DSCF6208.JPG"),
+        generated_jpeg(b"safe second file"),
+    )
+    .unwrap();
+    let draft = fixture
+        .preflight
+        .run_preflight(&fixture.preflight.test_permit())
+        .unwrap();
+    let execution = ImportExecutionService::with_faults(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+        faults.clone(),
+    );
+    faults
+        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 8)
+        .unwrap();
+    assert!(
+        execution
+            .start(execution.test_permit(), &draft.draft_digest)
+            .is_err()
+    );
+    execution.reconcile_startup().unwrap();
+    let items = execution.recovery_items().unwrap();
+    assert_eq!(items.len(), 1);
+    let before = file_hash(Path::new(&items[0].retained_path));
+    execution
+        .exclude_recovery_items(vec![items[0].ownership_id.clone()])
+        .unwrap();
+    assert_eq!(
+        execution.retry(execution.test_permit()).unwrap().phase,
+        ImportExecutionPhase::CompletedWithErrors
+    );
+    assert!(
+        fixture
+            .target
+            .path()
+            .join("2026")
+            .join("20260807")
+            .join("DSCF6208.JPG")
+            .exists()
+    );
+    assert!(
+        !fixture
+            .target
+            .path()
+            .join("2026")
+            .join("20260807")
+            .join("DSCF6207.JPG")
+            .exists()
+    );
+    assert_eq!(file_hash(Path::new(&items[0].retained_path)), before);
+    execution.request_cancel().unwrap();
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn changing_current_library_cannot_redirect_a_prepared_import() {
+    let Some(fixture) = import_fixture(FaultInjector::default(), "6209") else {
+        return;
+    };
+    let execution = ImportExecutionService::new(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+    );
+    let job = execution
+        .prepare_start(&execution.test_permit(), &fixture.draft_digest)
+        .unwrap();
+    let other = TestRoot::create_in(fixture.target.path().parent().unwrap()).unwrap();
+    FujiLibraryService::new(fixture.database.clone(), fixture._app_data.path())
+        .bind(other.path())
+        .unwrap();
+    assert_eq!(
+        execution
+            .continue_start(execution.test_permit(), &job)
+            .unwrap_err()
+            .code,
+        ErrorCode::StaleVersion
+    );
+    assert!(!other.path().join("2026").exists());
+    assert!(!fixture.target.path().join("2026").exists());
+    assert_source_unchanged(&fixture);
+}
+
+#[cfg(windows)]
+#[test]
+fn cancelling_an_interrupted_import_does_not_require_the_target_to_be_online() {
+    let faults = FaultInjector::default();
+    let Some(fixture) = import_fixture(faults.clone(), "6210") else {
+        return;
+    };
+    let execution = ImportExecutionService::with_faults(
+        fixture.database.clone(),
+        fixture.preflight.clone(),
+        fixture.catalog.clone(),
+        ready_gate(&fixture.database),
+        faults.clone(),
+    );
+    faults
+        .fail_on_hit(FaultPoint::SqliteBeforeCommit, 8)
+        .unwrap();
+    assert!(
+        execution
+            .start(execution.test_permit(), &fixture.draft_digest)
+            .is_err()
+    );
+    TestRoot::verify(fixture.target.path()).unwrap();
+    let parent = fixture
+        .target
+        .path()
+        .parent()
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let expected = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .canonicalize()
+        .unwrap();
+    assert_eq!(parent, expected);
+    let offline = parent.join(format!("offline-{}", Uuid::new_v4()));
+    assert_eq!(offline.parent(), Some(parent.as_path()));
+    fs::rename(fixture.target.path(), &offline).unwrap();
+    let result = execution.request_cancel();
+    fs::rename(&offline, fixture.target.path()).unwrap();
+    result.unwrap();
+    assert_eq!(
+        execution.status().unwrap().phase,
+        ImportExecutionPhase::Cancelled
+    );
+    assert!(!execution.recovery_summary().unwrap().has_unfinished_import);
+    let items = execution.recovery_items().unwrap();
+    assert_eq!(items.len(), 1);
+    assert!(Path::new(&items[0].retained_path).exists());
+    let connection = fixture.database.open_read_connection().unwrap();
+    let active: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM operation_reservation WHERE released_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(active, 0);
     assert_source_unchanged(&fixture);
 }

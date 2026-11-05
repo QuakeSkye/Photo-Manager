@@ -28,6 +28,7 @@ pub fn start_recycle(
     logical_photo_count: usize,
     physical_file_count: usize,
     total_bytes: i64,
+    selection_digest: String,
     service: tauri::State<'_, Arc<RecycleService>>,
     safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<RecycleStatus, DomainError> {
@@ -38,6 +39,7 @@ pub fn start_recycle(
         logical_photo_count,
         physical_file_count,
         total_bytes,
+        selection_digest,
     )
 }
 
@@ -47,6 +49,7 @@ pub fn retry_recycle(
     logical_photo_count: usize,
     physical_file_count: usize,
     total_bytes: i64,
+    selection_digest: String,
     service: tauri::State<'_, Arc<RecycleService>>,
     safety_gate: tauri::State<'_, Arc<RuntimeSafetyGate>>,
 ) -> Result<RecycleStatus, DomainError> {
@@ -57,6 +60,7 @@ pub fn retry_recycle(
         logical_photo_count,
         physical_file_count,
         total_bytes,
+        selection_digest,
     )
 }
 

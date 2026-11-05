@@ -1,4 +1,8 @@
-use std::{fs, sync::Arc};
+use std::{
+    fs,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 #[cfg(windows)]
 use std::sync::Mutex;
@@ -109,6 +113,45 @@ fn cancel_finishes_a_running_record_when_no_worker_exists() {
     assert_eq!(row.0, "Finished");
     assert_eq!(row.1, "CancelledWithoutWorker");
     assert!(row.2 > 0);
+}
+
+#[test]
+fn queued_scan_persists_running_status_and_can_be_cancelled() {
+    let parent = tempfile::tempdir().unwrap();
+    let app_root = TestRoot::create_in(parent.path()).unwrap();
+    let library_path = parent.path().join("generated-queued-duplicate-library");
+    fs::create_dir_all(&library_path).unwrap();
+    let database = Arc::new(Database::open(app_root.path()).unwrap());
+    FujiLibraryService::new(database.clone(), app_root.path())
+        .bind(&library_path)
+        .unwrap();
+    let scheduler = Arc::new(IoScheduler::for_rotational());
+    let bulk_io = scheduler.acquire_bulk_io(|| false).unwrap();
+    let service = Arc::new(DuplicateReviewService::new(database, scheduler.clone()));
+
+    let started = service.start().unwrap();
+
+    assert_eq!(started.state, DuplicateReviewState::Running);
+    assert!(started.run_id.is_some());
+    assert_eq!(started.phase.as_deref(), Some("Enumerating"));
+    assert_eq!(service.status().unwrap(), started);
+    assert!(service.start().is_err());
+
+    let cancelling = service.cancel().unwrap();
+    assert!(matches!(
+        cancelling.state,
+        DuplicateReviewState::Running | DuplicateReviewState::Cancelled
+    ));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let status = service.status().unwrap();
+        if status.state == DuplicateReviewState::Cancelled {
+            break;
+        }
+        assert!(Instant::now() < deadline, "queued scan did not cancel");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(bulk_io);
 }
 
 #[cfg(windows)]
@@ -629,6 +672,7 @@ fn recycled_duplicate_subset_updates_catalog_and_derives_empty_result_without_re
             confirmation.logical_photo_count,
             confirmation.physical_file_count,
             confirmation.total_bytes,
+            confirmation.selection_digest.clone(),
         )
         .unwrap();
     assert_eq!(status.phase, RecyclePhase::Completed);

@@ -174,7 +174,23 @@ impl DuplicateReviewService {
             ));
         }
         self.cancel_requested.store(false, Ordering::Release);
+        let context = match scanner::prepare_run(&self.database) {
+            Ok(context) => context,
+            Err(error) => {
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
+        let status = match self.status() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = scanner::finish_start_failure(&self.database, &context.run_id);
+                self.worker_active.store(false, Ordering::Release);
+                return Err(error);
+            }
+        };
         let service = Arc::clone(self);
+        let worker_context = context.clone();
         std::thread::Builder::new()
             .name("duplicate-review-scan".into())
             .spawn(move || {
@@ -183,26 +199,16 @@ impl DuplicateReviewService {
                     &service.database,
                     &service.scheduler,
                     &service.cancel_requested,
+                    worker_context,
                 );
             })
             .map_err(|error| {
+                let _ = scanner::finish_start_failure(&self.database, &context.run_id);
                 self.worker_active.store(false, Ordering::Release);
                 DomainError::new(ErrorCode::Internal, "无法启动重复检测后台任务。")
                     .with_diagnostic(error.to_string())
             })?;
-        Ok(DuplicateReviewStatus {
-            state: DuplicateReviewState::Running,
-            run_id: None,
-            phase: Some("Enumerating".into()),
-            checked_files: 0,
-            candidate_files: 0,
-            hashed_files: 0,
-            current_relative_path: None,
-            family_count: 0,
-            expired_reason: None,
-            result_version_id: None,
-            last_receipt: None,
-        })
+        Ok(status)
     }
 
     pub fn cancel(&self) -> Result<DuplicateReviewStatus, DomainError> {
@@ -368,7 +374,14 @@ impl DuplicateReviewService {
 
     #[cfg(test)]
     pub(crate) fn scan_blocking_for_test(&self) -> Result<(), DomainError> {
-        scanner::execute(&self.database, &self.scheduler, &self.cancel_requested)
+        self.cancel_requested.store(false, Ordering::Release);
+        let context = scanner::prepare_run(&self.database)?;
+        scanner::execute(
+            &self.database,
+            &self.scheduler,
+            &self.cancel_requested,
+            context,
+        )
     }
 
     pub fn database(&self) -> &Arc<Database> {
