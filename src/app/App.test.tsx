@@ -270,7 +270,7 @@ describe('阶段 3 图库与既有只读能力', () => {
       screen.queryByRole('button', { name: /^待删除 \d+$/ }),
     ).not.toBeInTheDocument();
 
-    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
+    const searchInput = screen.getByRole('combobox', { name: '拍摄日期筛选' });
     searchInput.focus();
     fireEvent.keyDown(searchInput, { key: 'ArrowRight' });
     fireEvent.keyDown(searchInput, { key: 'd' });
@@ -283,56 +283,21 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).not.toBeInTheDocument();
   });
 
-  test('filters by search keyword and capture date, advances within filtered results, and restores photo on clear', async () => {
+  test('filters by date and preserves selection when clearing', async () => {
     render(<App />);
-    expect(
-      await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
-    ).toHaveAttribute('aria-current', 'true');
-
-    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
-    fireEvent.change(searchInput, { target: { value: 'DSCF103' } });
-
-    expect(screen.getByText('结果 2 / 12')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: '第 2 张：DSCF1031.JPG' }),
-    ).toHaveAttribute('aria-current', 'true');
-
-    fireEvent.keyDown(window, { key: 'ArrowLeft' });
-    expect(
-      screen.getByRole('button', { name: '第 1 张：DSCF1039.RAF' }),
-    ).toHaveAttribute('aria-current', 'true');
-
-    fireEvent.keyDown(window, { key: 'd' });
-    await within(
-      await screen.findByRole('navigation', { name: '照片视图' }),
-    ).findByRole('button', { name: /^待删除 1$/ });
-    expect(
-      screen.getByRole('button', { name: '第 2 张：DSCF1031.JPG' }),
-    ).toHaveAttribute('aria-current', 'true');
-
-    fireEvent.change(searchInput, { target: { value: 'NO_SUCH_FILE_XYZ' } });
-    expect(screen.getByText('结果 0 / 12')).toBeInTheDocument();
-    expect(screen.getByText('当前筛选没有结果')).toBeInTheDocument();
-    expect(screen.queryByText('图库中还没有照片')).not.toBeInTheDocument();
-    expect(
-      within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
-        'button',
-        { name: /^待删除 1$/ },
-      ),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选条件' }));
-    expect(searchInput).toHaveValue('');
-    expect(
-      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
-    ).toHaveAttribute('aria-current', 'true');
-
-    const dateSelect = screen.getByRole('combobox', { name: '拍摄日期筛选' });
-    fireEvent.change(dateSelect, { target: { value: 'unknown' } });
+    const date = await screen.findByRole('combobox', { name: '拍摄日期筛选' });
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
+    fireEvent.change(date, { target: { value: '2026-07-27' } });
     expect(screen.getByText('结果 1 / 12')).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: /第 1 张：一段很长的文件名/ }),
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
+    fireEvent.click(screen.getByRole('button', { name: '清除筛选' }));
+    expect(
+      screen.getByRole('button', { name: '第 4 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    fireEvent.change(date, { target: { value: 'unknown' } });
+    expect(screen.getByText('结果 1 / 12')).toBeInTheDocument();
   });
 
   test('restores library photo, sort order, and active filter when returning from pending-delete or settings', async () => {
@@ -344,8 +309,8 @@ describe('阶段 3 图库与既有只读能力', () => {
       screen.getByRole('navigation', { name: '照片视图' }),
     ).findByRole('button', { name: /^待删除 1$/ });
 
-    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
-    fireEvent.change(searchInput, { target: { value: 'DSCF1028' } });
+    const searchInput = screen.getByRole('combobox', { name: '拍摄日期筛选' });
+    fireEvent.change(searchInput, { target: { value: '2026-07-27' } });
     expect(
       screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
@@ -372,8 +337,8 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
       'captureDesc',
     );
-    expect(screen.getByRole('searchbox', { name: '搜索文件名' })).toHaveValue(
-      'DSCF1028',
+    expect(screen.getByRole('combobox', { name: '拍摄日期筛选' })).toHaveValue(
+      '2026-07-27',
     );
     expect(
       screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
@@ -444,7 +409,7 @@ describe('阶段 3 图库与既有只读能力', () => {
 
     expect(await screen.findByText('照片大小')).toBeInTheDocument();
     expect(screen.getAllByText('未知').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('参考文件时间')).toBeInTheDocument();
+    expect(screen.queryByText('参考文件时间')).not.toBeInTheDocument();
     expect(screen.getByLabelText('当前照片日期')).toHaveTextContent('日期未知');
   });
 
@@ -1024,7 +989,7 @@ describe('phase one integration regressions', () => {
       },
     );
     fireEvent.click(within(dialog).getByRole('button', { name: '移入回收站' }));
-    await screen.findByRole('searchbox', { name: '搜索文件名' });
+    await screen.findByRole('combobox', { name: '拍摄日期筛选' });
     expect(screen.getByRole('combobox', { name: '拍摄日期筛选' })).toHaveValue(
       'unknown',
     );
@@ -1036,8 +1001,10 @@ describe('phase one integration regressions', () => {
 
   test('restores the filtered selection through settings', async () => {
     render(<App />);
-    const search = await screen.findByRole('searchbox', { name: '搜索文件名' });
-    fireEvent.change(search, { target: { value: 'DSCF1028' } });
+    const search = await screen.findByRole('combobox', {
+      name: '拍摄日期筛选',
+    });
+    fireEvent.change(search, { target: { value: '2026-07-27' } });
     fireEvent.click(screen.getByRole('button', { name: /设置/ }));
     fireEvent.click(
       within(screen.getByRole('banner')).getByRole('button', {
@@ -1045,8 +1012,8 @@ describe('phase one integration regressions', () => {
       }),
     );
     expect(
-      await screen.findByRole('searchbox', { name: '搜索文件名' }),
-    ).toHaveValue('DSCF1028');
+      await screen.findByRole('combobox', { name: '拍摄日期筛选' }),
+    ).toHaveValue('2026-07-27');
     expect(
       screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
@@ -1055,8 +1022,10 @@ describe('phase one integration regressions', () => {
   test('restores the filtered selection after an incremental scan completes', async () => {
     window.history.replaceState(null, '', '/?scenario=scan-incremental');
     render(<App />);
-    const search = await screen.findByRole('searchbox', { name: '搜索文件名' });
-    fireEvent.change(search, { target: { value: 'DSCF1028' } });
+    const search = await screen.findByRole('combobox', {
+      name: '拍摄日期筛选',
+    });
+    fireEvent.change(search, { target: { value: '2026-07-27' } });
     fireEvent.click(screen.getByRole('button', { name: /查看进度/ }));
     window.history.replaceState(
       null,
@@ -1067,8 +1036,8 @@ describe('phase one integration regressions', () => {
     const actions = document.querySelector('.summary-actions') as HTMLElement;
     fireEvent.click(within(actions).getByRole('button', { name: '返回图库' }));
     expect(
-      await screen.findByRole('searchbox', { name: '搜索文件名' }),
-    ).toHaveValue('DSCF1028');
+      await screen.findByRole('combobox', { name: '拍摄日期筛选' }),
+    ).toHaveValue('2026-07-27');
     expect(
       screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
     ).toHaveAttribute('aria-current', 'true');

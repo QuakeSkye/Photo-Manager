@@ -20,12 +20,10 @@ const filmstripSizing = {
 } as CSSProperties;
 
 export interface FilmstripFilterControls {
-  readonly searchQuery: string;
   readonly dateFilter: DateFilterValue;
   readonly dateOptions: readonly DateFilterOption[];
   readonly totalPhotoCount: number;
   readonly hasActiveFilter: boolean;
-  readonly onSearchChange: (value: string) => void;
   readonly onDateFilterChange: (value: DateFilterValue) => void;
   readonly onClearFilters: () => void;
 }
@@ -108,31 +106,9 @@ export function VirtualFilmstrip({
       {showFilterBar && (
         <div
           className="filmstrip-filter-bar"
-          role="search"
+          role="group"
           aria-label="照片定位与筛选"
         >
-          <div className="filmstrip-search-box">
-            <input
-              type="search"
-              className="filmstrip-search-input"
-              aria-label="搜索文件名"
-              placeholder="搜索文件名…"
-              value={filterControls.searchQuery}
-              onChange={(event) =>
-                filterControls.onSearchChange(event.target.value)
-              }
-            />
-            {filterControls.searchQuery.length > 0 && (
-              <button
-                type="button"
-                className="filmstrip-search-clear"
-                aria-label="清除搜索关键词"
-                onClick={() => filterControls.onSearchChange('')}
-              >
-                ×
-              </button>
-            )}
-          </div>
           <label className="filmstrip-date-filter">
             <span className="sr-only">拍摄日期筛选</span>
             <select

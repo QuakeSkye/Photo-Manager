@@ -84,7 +84,10 @@ describe('PhotoCanvas', () => {
     resize(600, 400);
     loadImage(1000, 2000);
 
-    expect(screen.getByLabelText('缩放状态')).toHaveTextContent('适合窗口 20%');
+    expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     expect(image).toHaveStyle({ width: '200px', height: '400px' });
     fireEvent.wheel(screen.getByLabelText('当前照片'), { deltaY: 40 });
     expect(onWheel).toHaveBeenCalledTimes(1);
@@ -104,8 +107,9 @@ describe('PhotoCanvas', () => {
     }
     onWheel.mockClear();
     fireEvent.doubleClick(image);
-    expect(screen.getByLabelText('缩放状态')).toHaveTextContent(
-      '100% 预览尺寸',
+    expect(screen.getByRole('button', { name: '100%' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     );
     expect(image).toHaveStyle({ width: '1000px', height: '2000px' });
     fireEvent.wheel(screen.getByLabelText('当前照片'), { deltaY: 40 });
@@ -116,8 +120,16 @@ describe('PhotoCanvas', () => {
       expect(viewport?.scrollTop).toBe(800);
     });
 
-    fireEvent.click(screen.getByLabelText('缩放状态'));
-    expect(screen.getByLabelText('缩放状态')).toHaveTextContent('适合窗口 20%');
+    fireEvent.click(screen.getByRole('button', { name: '100%' }));
+    expect(screen.getByRole('button', { name: '100%' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '适应窗口' }));
+    expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     expect(onZoomModeChange).toHaveBeenLastCalledWith('fit');
   });
 
@@ -126,15 +138,17 @@ describe('PhotoCanvas', () => {
     const image = await screen.findByRole('img');
     resize(1200, 800);
     loadImage(400, 300);
-    expect(screen.getByLabelText('缩放状态')).toHaveTextContent(
-      '适合窗口 100%',
+    expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     );
     expect(image).toHaveStyle({ width: '400px', height: '300px' });
 
     resize(200, 150);
     await waitFor(() => {
-      expect(screen.getByLabelText('缩放状态')).toHaveTextContent(
-        '适合窗口 50%',
+      expect(screen.getByRole('button', { name: '适应窗口' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
       );
       expect(image).toHaveStyle({ width: '200px', height: '150px' });
     });
@@ -172,7 +186,9 @@ describe('PhotoCanvas', () => {
     );
     expect(viewport.scrollLeft).toBe(0);
     expect(viewport.scrollTop).toBe(0);
-    expect(screen.queryByLabelText('缩放状态')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: '缩放方式' }),
+    ).not.toBeInTheDocument();
 
     rerender(
       <PhotoCanvas
@@ -200,7 +216,9 @@ describe('PhotoCanvas', () => {
     ).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '打开当前文件位置' }));
     expect(onOpenFileLocation).toHaveBeenCalledTimes(1);
-    expect(screen.queryByLabelText('缩放状态')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: '缩放方式' }),
+    ).not.toBeInTheDocument();
 
     rerender(
       <PhotoCanvas
@@ -217,6 +235,8 @@ describe('PhotoCanvas', () => {
 
     rerender(<PhotoCanvas photo={null} onWheel={vi.fn()} />);
     expect(screen.getByText('图库中还没有照片')).toBeInTheDocument();
-    expect(screen.queryByLabelText('缩放状态')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: '缩放方式' }),
+    ).not.toBeInTheDocument();
   });
 });

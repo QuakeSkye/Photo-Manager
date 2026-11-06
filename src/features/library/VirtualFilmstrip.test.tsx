@@ -80,7 +80,6 @@ describe('VirtualFilmstrip', () => {
   });
 
   test('renders filter controls, distinct D / ! badges, and zero-match empty state', () => {
-    const onSearchChange = vi.fn();
     const onDateFilterChange = vi.fn();
     const onClearFilters = vi.fn();
     const items: PhotoSummary[] = [
@@ -110,7 +109,6 @@ describe('VirtualFilmstrip', () => {
         onSelectIndex={vi.fn()}
         onWheel={vi.fn()}
         filterControls={{
-          searchQuery: 'DSCF',
           dateFilter: 'all',
           dateOptions: [
             { value: 'all', label: '全部日期', count: 12 },
@@ -119,7 +117,6 @@ describe('VirtualFilmstrip', () => {
           ],
           totalPhotoCount: 12,
           hasActiveFilter: true,
-          onSearchChange,
           onDateFilterChange,
           onClearFilters,
         }}
@@ -130,8 +127,7 @@ describe('VirtualFilmstrip', () => {
     expect(screen.getByLabelText('待删除标记需要处理')).toHaveTextContent('!');
     expect(screen.getByText('结果 2 / 12')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '清除搜索关键词' }));
-    expect(onSearchChange).toHaveBeenCalledWith('');
+    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '清除筛选' }));
     expect(onClearFilters).toHaveBeenCalledTimes(1);
@@ -144,12 +140,10 @@ describe('VirtualFilmstrip', () => {
         onSelectIndex={vi.fn()}
         onWheel={vi.fn()}
         filterControls={{
-          searchQuery: 'NONE',
           dateFilter: 'all',
           dateOptions: [{ value: 'all', label: '全部日期', count: 12 }],
           totalPhotoCount: 12,
           hasActiveFilter: true,
-          onSearchChange,
           onDateFilterChange,
           onClearFilters,
         }}

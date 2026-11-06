@@ -55,33 +55,24 @@ describe('library filtering helpers', () => {
     ]);
   });
 
-  test('filters by case-insensitive filename keyword and capture date', () => {
+  test('filters by capture date', () => {
     expect(filterLibraryPhotos(samplePhotos, DEFAULT_LIBRARY_FILTER)).toBe(
       samplePhotos,
     );
     expect(hasActiveLibraryFilter(DEFAULT_LIBRARY_FILTER)).toBe(false);
 
-    const byKeyword = filterLibraryPhotos(samplePhotos, {
-      searchQuery: 'dscf10',
-      dateFilter: 'all',
-    });
-    expect(byKeyword.map((photo) => photo.photoId)).toEqual(['p1', 'p2']);
-
     const byDate = filterLibraryPhotos(samplePhotos, {
-      searchQuery: '',
       dateFilter: '2026-07-29',
     });
     expect(byDate.map((photo) => photo.photoId)).toEqual(['p3']);
 
     const byUnknownDate = filterLibraryPhotos(samplePhotos, {
-      searchQuery: '',
       dateFilter: 'unknown',
     });
     expect(byUnknownDate.map((photo) => photo.photoId)).toEqual(['p4']);
 
     const combinedZero = filterLibraryPhotos(samplePhotos, {
-      searchQuery: 'portrait',
-      dateFilter: '2026-07-30',
+      dateFilter: '2000-01-01',
     });
     expect(combinedZero).toHaveLength(0);
   });

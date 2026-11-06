@@ -148,17 +148,10 @@ export function PhotoInspector({
                   }
                 />
                 <MetadataRow
-                  label="参考文件时间"
-                  value={formatReferenceFileTime(detail.fileTimeMs)}
-                />
-                <MetadataRow
                   label="照片大小"
                   value={formatBytes(detail.totalSizeBytes)}
                 />
               </dl>
-              <p className="metadata-note">
-                参考文件时间来自文件系统记录，不代表实际拍摄时间或导入时间。
-              </p>
             </MetadataAccordion>
             <MetadataAccordion
               title="拍摄参数"
@@ -353,21 +346,6 @@ function InspectorSkeleton() {
       <i />
     </div>
   );
-}
-
-function formatReferenceFileTime(fileTimeMs: number | null): string {
-  if (fileTimeMs === null || !Number.isFinite(fileTimeMs) || fileTimeMs <= 0) {
-    return '未记录';
-  }
-  const date = new Date(fileTimeMs);
-  if (Number.isNaN(date.getTime())) return '未记录';
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const hours = String(date.getUTCHours()).padStart(2, '0');
-  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 function formatBytes(bytes: number): string {

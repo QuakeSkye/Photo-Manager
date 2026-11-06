@@ -4,7 +4,6 @@ import type { PhotoSummary } from '../../shared/commands/library';
 export type DateFilterValue = string;
 
 export interface LibraryFilterState {
-  readonly searchQuery: string;
   readonly dateFilter: DateFilterValue;
 }
 
@@ -15,7 +14,6 @@ export interface DateFilterOption {
 }
 
 export const DEFAULT_LIBRARY_FILTER: LibraryFilterState = {
-  searchQuery: '',
   dateFilter: 'all',
 };
 
@@ -27,7 +25,7 @@ export function extractCaptureDateKey(
 }
 
 export function hasActiveLibraryFilter(filter: LibraryFilterState): boolean {
-  return filter.searchQuery.trim().length > 0 || filter.dateFilter !== 'all';
+  return filter.dateFilter !== 'all';
 }
 
 export function buildDateFilterOptions(
@@ -77,10 +75,9 @@ export function filterLibraryPhotos(
   photos: readonly PhotoSummary[],
   filter: LibraryFilterState,
 ): readonly PhotoSummary[] {
-  const keyword = filter.searchQuery.trim().toLowerCase();
   const dateFilter = filter.dateFilter;
 
-  if (keyword.length === 0 && dateFilter === 'all') {
+  if (dateFilter === 'all') {
     return photos;
   }
 
@@ -91,17 +88,6 @@ export function filterLibraryPhotos(
       if (extractCaptureDateKey(photo.captureLocalKey) !== dateFilter) {
         return false;
       }
-    }
-
-    if (keyword.length > 0) {
-      const fileNameMatch = photo.fileName.toLowerCase().includes(keyword);
-      const relativeDir = (
-        photo as PhotoSummary & { readonly relativeDirectory?: string }
-      ).relativeDirectory;
-      const dirMatch =
-        typeof relativeDir === 'string' &&
-        relativeDir.toLowerCase().includes(keyword);
-      if (!fileNameMatch && !dirMatch) return false;
     }
 
     return true;

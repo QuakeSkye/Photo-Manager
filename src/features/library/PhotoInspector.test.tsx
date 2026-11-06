@@ -132,10 +132,7 @@ describe('PhotoInspector', () => {
       'D 已标记待删除',
     );
     expect(screen.getAllByText('未知')).toHaveLength(2);
-    expect(screen.getByText('2026-07-30 14:26:00')).toBeInTheDocument();
-    expect(
-      screen.getByText(/参考文件时间来自文件系统记录/),
-    ).toBeInTheDocument();
+    expect(screen.queryByText('参考文件时间')).not.toBeInTheDocument();
   });
 
   test('formats long exposure and unknown film codes while keeping missing fields local', () => {

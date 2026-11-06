@@ -366,16 +366,6 @@ function AppContent() {
     [selectedPhotoId, snapshot],
   );
 
-  const handleSearchChange = useCallback(
-    (searchQuery: string) => {
-      applyLibraryFilter({
-        ...effectiveFilter,
-        searchQuery,
-      });
-    },
-    [applyLibraryFilter, effectiveFilter],
-  );
-
   const handleDateFilterChange = useCallback(
     (dateFilter: DateFilterValue) => {
       applyLibraryFilter({
@@ -421,7 +411,7 @@ function AppContent() {
       if (
         target instanceof Element &&
         (target.closest(
-          'input, select, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"], button:not(.filmstrip-item):not(.zoom-status), [role="dialog"]',
+          'input, select, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"], button:not(.filmstrip-item):not(.zoom-mode-button), [role="dialog"]',
         ) !== null ||
           (target instanceof HTMLElement && target.isContentEditable))
       )
@@ -990,12 +980,10 @@ function AppContent() {
           selectedIndex={selectedIndex}
           sortMode={sortMode}
           filterControls={{
-            searchQuery: effectiveFilter.searchQuery,
             dateFilter: effectiveFilter.dateFilter,
             dateOptions,
             totalPhotoCount: snapshot.photos.length,
             hasActiveFilter,
-            onSearchChange: handleSearchChange,
             onDateFilterChange: handleDateFilterChange,
             onClearFilters: handleClearFilters,
           }}

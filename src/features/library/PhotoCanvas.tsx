@@ -167,12 +167,7 @@ export function PhotoCanvas({
     [],
   );
 
-  const statusText =
-    previewState !== 'ready' || displayScale === null
-      ? null
-      : zoomMode === 'actual'
-        ? '100% 预览尺寸'
-        : `适合窗口 ${Math.round(displayScale * 100)}%`;
+  const showZoomControls = previewState === 'ready' && displayScale !== null;
 
   const canRetryPreview =
     photo !== null &&
@@ -199,7 +194,7 @@ export function PhotoCanvas({
               ⌕
             </div>
             <h2>当前筛选没有结果</h2>
-            <p>图库中仍有照片，但没有匹配当前搜索关键词或拍摄日期的项目。</p>
+            <p>图库中仍有照片，但没有匹配当前拍摄日期的项目。</p>
             {onClearFilters !== undefined && (
               <button
                 type="button"
@@ -307,7 +302,7 @@ export function PhotoCanvas({
           )}
         </div>
       )}
-      {(statusText !== null || feedbackMessage !== null) && (
+      {(showZoomControls || feedbackMessage !== null) && (
         <div className="canvas-overlay-footer">
           {feedbackMessage !== null ? (
             <div
@@ -320,19 +315,31 @@ export function PhotoCanvas({
           ) : (
             <span />
           )}
-          {statusText !== null && (
-            <button
-              type="button"
-              className="zoom-status"
-              aria-label="缩放状态"
-              title="按已加载预览图像尺寸切换适应窗口与 100% 视图（非完整 RAW 解码）"
-              onClick={toggleZoom}
-            >
-              <span>{statusText}</span>
-              <span className="zoom-toggle-action" aria-hidden="true">
-                {zoomMode === 'actual' ? '适应窗口' : '切换 100%'}
-              </span>
-            </button>
+          {showZoomControls && (
+            <div className="zoom-controls" role="group" aria-label="缩放方式">
+              <button
+                type="button"
+                className="zoom-mode-button"
+                aria-pressed={zoomMode === 'fit'}
+                title="完整显示照片，不裁切"
+                onClick={() => {
+                  if (zoomMode !== 'fit') toggleZoom();
+                }}
+              >
+                适应窗口
+              </button>
+              <button
+                type="button"
+                className="zoom-mode-button"
+                aria-pressed={zoomMode === 'actual'}
+                title="按预览图的实际像素显示；照片较大时可滚动查看"
+                onClick={() => {
+                  if (zoomMode !== 'actual') toggleZoom();
+                }}
+              >
+                100%
+              </button>
+            </div>
           )}
         </div>
       )}
