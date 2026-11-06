@@ -14,6 +14,7 @@ interface PreviewImageProps {
   readonly reference: PreviewReference | null;
   readonly alt: string;
   readonly thumbnail?: boolean;
+  readonly retryToken?: number;
   readonly onStateChange?: (state: 'loading' | 'ready' | 'unavailable') => void;
   readonly onImageLoad?: (size: {
     readonly width: number;
@@ -27,6 +28,7 @@ export function PreviewImage({
   reference,
   alt,
   thumbnail = false,
+  retryToken = 0,
   onStateChange,
   onImageLoad,
   onImageDoubleClick,
@@ -34,7 +36,7 @@ export function PreviewImage({
 }: PreviewImageProps) {
   const [source, setSource] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(
-    reference?.state === 'Unavailable',
+    reference === null || reference.state === 'Unavailable',
   );
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export function PreviewImage({
     return () => {
       active = false;
     };
-  }, [onStateChange, reference]);
+  }, [onStateChange, reference, retryToken]);
 
   if (unavailable)
     return (
@@ -73,7 +75,7 @@ export function PreviewImage({
         }
         aria-label="预览不可用"
       >
-        RAF
+        {thumbnail ? '无预览' : ''}
       </span>
     );
   if (source === null)

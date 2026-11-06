@@ -15,6 +15,7 @@ import {
 import { resetDemoSettings } from '../shared/commands/settings';
 import * as duplicateCommands from '../shared/commands/duplicate-review';
 import { App } from './App';
+import * as libraryCommands from '../shared/commands/library';
 
 vi.mock('../shared/commands/duplicate-review', async () => {
   const actual = await vi.importActual<typeof duplicateCommands>(
@@ -51,7 +52,10 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/');
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('阶段 3 图库与既有只读能力', () => {
   test('does not let a stale status request overwrite a newly started duplicate scan', async () => {
@@ -116,6 +120,7 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(
       screen.getByRole('button', { name: /标记待删除/ }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /撤销/ })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
       'captureDesc',
     );
@@ -204,22 +209,25 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 
-  test('switches oldest/newest order and selects the first photo in each order', async () => {
+  test('switches oldest/newest order while preserving the currently selected photo', async () => {
     render(<App />);
     const sort = await screen.findByRole('combobox', { name: '照片排序' });
+    expect(
+      await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
 
     fireEvent.change(sort, { target: { value: 'captureAsc' } });
 
     await waitFor(() => expect(sort).toHaveValue('captureAsc'));
     expect(
-      await screen.findByRole('button', { name: '第 1 张：DSCF0942.RAF' }),
+      await screen.findByRole('button', { name: '第 9 张：DSCF1031.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
 
     fireEvent.change(sort, { target: { value: 'captureDesc' } });
 
     await waitFor(() => expect(sort).toHaveValue('captureDesc'));
     expect(
-      await screen.findByRole('button', { name: '第 1 张：DSCF1042.JPG' }),
+      await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
     ).toHaveAttribute('aria-current', 'true');
   });
 
@@ -242,7 +250,7 @@ describe('阶段 3 图库与既有只读能力', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 
-  test('does not steal navigation or D/R from focused controls', async () => {
+  test('does not steal navigation or D/R from focused controls, inputs, or open modals', async () => {
     render(<App />);
     expect(
       await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
@@ -261,6 +269,115 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(
       screen.queryByRole('button', { name: /^待删除 \d+$/ }),
     ).not.toBeInTheDocument();
+
+    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
+    searchInput.focus();
+    fireEvent.keyDown(searchInput, { key: 'ArrowRight' });
+    fireEvent.keyDown(searchInput, { key: 'd' });
+    fireEvent.keyDown(searchInput, { key: 'r' });
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+    expect(
+      screen.queryByRole('button', { name: /^待删除 \d+$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  test('filters by search keyword and capture date, advances within filtered results, and restores photo on clear', async () => {
+    render(<App />);
+    expect(
+      await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
+    fireEvent.change(searchInput, { target: { value: 'DSCF103' } });
+
+    expect(screen.getByText('结果 2 / 12')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: '第 2 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1039.RAF' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.keyDown(window, { key: 'd' });
+    await within(
+      await screen.findByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    expect(
+      screen.getByRole('button', { name: '第 2 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.change(searchInput, { target: { value: 'NO_SUCH_FILE_XYZ' } });
+    expect(screen.getByText('结果 0 / 12')).toBeInTheDocument();
+    expect(screen.getByText('当前筛选没有结果')).toBeInTheDocument();
+    expect(screen.queryByText('图库中还没有照片')).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
+        'button',
+        { name: /^待删除 1$/ },
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选条件' }));
+    expect(searchInput).toHaveValue('');
+    expect(
+      screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    const dateSelect = screen.getByRole('combobox', { name: '拍摄日期筛选' });
+    fireEvent.change(dateSelect, { target: { value: 'unknown' } });
+    expect(screen.getByText('结果 1 / 12')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /第 1 张：一段很长的文件名/ }),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
+  test('restores library photo, sort order, and active filter when returning from pending-delete or settings', async () => {
+    render(<App />);
+    await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' });
+
+    fireEvent.keyDown(window, { key: 'd' });
+    await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+
+    const searchInput = screen.getByRole('searchbox', { name: '搜索文件名' });
+    fireEvent.change(searchInput, { target: { value: 'DSCF1028' } });
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
+        'button',
+        { name: /^待删除 1$/ },
+      ),
+    );
+    expect(await screen.findByText('待删除 · 第 1 / 1 张')).toBeInTheDocument();
+
+    const pendingSort = screen.getByRole('combobox', { name: '照片排序' });
+    fireEvent.change(pendingSort, { target: { value: 'captureAsc' } });
+    await waitFor(() => expect(pendingSort).toHaveValue('captureAsc'));
+
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: '照片视图' })).getByRole(
+        'button',
+        { name: '图库' },
+      ),
+    );
+    await waitFor(() => expect(window.location.hash).toBe('#/library'));
+    expect(screen.getByRole('combobox', { name: '照片排序' })).toHaveValue(
+      'captureDesc',
+    );
+    expect(screen.getByRole('searchbox', { name: '搜索文件名' })).toHaveValue(
+      'DSCF1028',
+    );
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
   });
 
   test('keeps D/R and arrow navigation active after a filmstrip click', async () => {
@@ -321,13 +438,13 @@ describe('阶段 3 图库与既有只读能力', () => {
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 
-  test('keeps unknown capture dates last and hides unavailable time fields', async () => {
+  test('keeps unknown capture dates last and explicitly shows unknown capture time and reference file time', async () => {
     window.history.replaceState(null, '', '/?scenario=unknown');
     render(<App />);
 
     expect(await screen.findByText('照片大小')).toBeInTheDocument();
-    expect(screen.queryByText('拍摄时间未知')).not.toBeInTheDocument();
-    expect(screen.queryByText('文件时间')).not.toBeInTheDocument();
+    expect(screen.getAllByText('未知').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('参考文件时间')).toBeInTheDocument();
     expect(screen.getByLabelText('当前照片日期')).toHaveTextContent('日期未知');
   });
 
@@ -335,13 +452,16 @@ describe('阶段 3 图库与既有只读能力', () => {
     render(<App />);
 
     expect(await screen.findByText('JPG ✓')).toBeInTheDocument();
-    expect(screen.getByText('RAF ×')).toBeInTheDocument();
+    expect(screen.getByText('未找到 RAF')).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole('button', { name: '第 2 张：DSCF1039.RAF' }),
     );
-    await waitFor(() => expect(screen.getByText('JPG ×')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('未找到 JPG')).toBeInTheDocument(),
+    );
     expect(screen.getByText('RAF ✓')).toBeInTheDocument();
+    expect(screen.getByText('当前为 RAF 内嵌预览')).toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole('button', { name: '第 1 张：DSCF1042.JPG' }),
@@ -370,6 +490,9 @@ describe('阶段 3 图库与既有只读能力', () => {
     expect(
       (await screen.findAllByLabelText('预览不可用')).length,
     ).toBeGreaterThan(0);
+    expect(
+      screen.getByText('暂时无法生成这张照片的预览。'),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('当前照片')).toBeInTheDocument();
   });
 
@@ -872,5 +995,82 @@ describe('Root 与扫描视觉状态', () => {
     expect(document.body.textContent).not.toMatch(
       /RootId|LibraryId|PhotoId|AssetId|volume GUID|文件 ID|hash/i,
     );
+  });
+});
+
+describe('phase one integration regressions', () => {
+  test('keeps an emptied date filter after recycling its last photo', async () => {
+    render(<App />);
+    const date = await screen.findByRole('combobox', { name: '拍摄日期筛选' });
+    fireEvent.change(date, { target: { value: 'unknown' } });
+    expect(screen.getByText('结果 1 / 12')).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: 'd' });
+    const pending = await within(
+      screen.getByRole('navigation', { name: '照片视图' }),
+    ).findByRole('button', { name: /^待删除 1$/ });
+    fireEvent.click(pending);
+    fireEvent.click(await screen.findByRole('button', { name: '执行删除…' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: '确认移入 Windows 回收站',
+    });
+    const getSnapshot = libraryCommands.getLibrarySnapshot;
+    vi.spyOn(libraryCommands, 'getLibrarySnapshot').mockImplementation(
+      async (mode) => {
+        const next = await getSnapshot(mode);
+        return {
+          ...next,
+          photos: next.photos.filter((photo) => photo.captureLocalKey !== null),
+        };
+      },
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: '移入回收站' }));
+    await screen.findByRole('searchbox', { name: '搜索文件名' });
+    expect(screen.getByRole('combobox', { name: '拍摄日期筛选' })).toHaveValue(
+      'unknown',
+    );
+    expect(screen.getByText('当前筛选没有结果')).toBeInTheDocument();
+    expect(screen.getByText('结果 0 / 11')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选条件' }));
+    expect(screen.queryByText('当前筛选没有结果')).not.toBeInTheDocument();
+  });
+
+  test('restores the filtered selection through settings', async () => {
+    render(<App />);
+    const search = await screen.findByRole('searchbox', { name: '搜索文件名' });
+    fireEvent.change(search, { target: { value: 'DSCF1028' } });
+    fireEvent.click(screen.getByRole('button', { name: /设置/ }));
+    fireEvent.click(
+      within(screen.getByRole('banner')).getByRole('button', {
+        name: '返回图库',
+      }),
+    );
+    expect(
+      await screen.findByRole('searchbox', { name: '搜索文件名' }),
+    ).toHaveValue('DSCF1028');
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
+  });
+
+  test('restores the filtered selection after an incremental scan completes', async () => {
+    window.history.replaceState(null, '', '/?scenario=scan-incremental');
+    render(<App />);
+    const search = await screen.findByRole('searchbox', { name: '搜索文件名' });
+    fireEvent.change(search, { target: { value: 'DSCF1028' } });
+    fireEvent.click(screen.getByRole('button', { name: /查看进度/ }));
+    window.history.replaceState(
+      null,
+      '',
+      '/?scenario=scan-incremental-completed',
+    );
+    await screen.findByText('扫描完成');
+    const actions = document.querySelector('.summary-actions') as HTMLElement;
+    fireEvent.click(within(actions).getByRole('button', { name: '返回图库' }));
+    expect(
+      await screen.findByRole('searchbox', { name: '搜索文件名' }),
+    ).toHaveValue('DSCF1028');
+    expect(
+      screen.getByRole('button', { name: '第 1 张：DSCF1028.JPG' }),
+    ).toHaveAttribute('aria-current', 'true');
   });
 });

@@ -104,7 +104,9 @@ describe('PhotoCanvas', () => {
     }
     onWheel.mockClear();
     fireEvent.doubleClick(image);
-    expect(screen.getByLabelText('缩放状态')).toHaveTextContent('100%');
+    expect(screen.getByLabelText('缩放状态')).toHaveTextContent(
+      '100% 预览尺寸',
+    );
     expect(image).toHaveStyle({ width: '1000px', height: '2000px' });
     fireEvent.wheel(screen.getByLabelText('当前照片'), { deltaY: 40 });
     expect(onWheel).not.toHaveBeenCalled();
@@ -113,6 +115,10 @@ describe('PhotoCanvas', () => {
       expect(viewport?.scrollLeft).toBe(200);
       expect(viewport?.scrollTop).toBe(800);
     });
+
+    fireEvent.click(screen.getByLabelText('缩放状态'));
+    expect(screen.getByLabelText('缩放状态')).toHaveTextContent('适合窗口 20%');
+    expect(onZoomModeChange).toHaveBeenLastCalledWith('fit');
   });
 
   test('never enlarges small images and recomputes after a resize', async () => {
@@ -134,7 +140,9 @@ describe('PhotoCanvas', () => {
     });
   });
 
-  test('switching photos resets fit and scroll while empty and unavailable states hide zoom', async () => {
+  test('switching photos resets fit and scroll while empty, filtered-empty and unavailable states behave accurately', async () => {
+    const onClearFilters = vi.fn();
+    const onOpenFileLocation = vi.fn();
     const { rerender } = render(
       <PhotoCanvas photo={photo} onWheel={vi.fn()} />,
     );
@@ -179,12 +187,36 @@ describe('PhotoCanvas', () => {
           },
         }}
         onWheel={vi.fn()}
+        canOpenFileLocation
+        onOpenFileLocation={onOpenFileLocation}
       />,
     );
     expect(await screen.findByLabelText('预览不可用')).toBeInTheDocument();
+    expect(
+      screen.getByText('暂时无法生成这张照片的预览。'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: '重试预览' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '打开当前文件位置' }));
+    expect(onOpenFileLocation).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText('缩放状态')).not.toBeInTheDocument();
 
+    rerender(
+      <PhotoCanvas
+        photo={null}
+        onWheel={vi.fn()}
+        isFilteredEmpty
+        onClearFilters={onClearFilters}
+      />,
+    );
+    expect(screen.getByText('当前筛选没有结果')).toBeInTheDocument();
+    expect(screen.queryByText('图库中还没有照片')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选条件' }));
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+
     rerender(<PhotoCanvas photo={null} onWheel={vi.fn()} />);
+    expect(screen.getByText('图库中还没有照片')).toBeInTheDocument();
     expect(screen.queryByLabelText('缩放状态')).not.toBeInTheDocument();
   });
 });

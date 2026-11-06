@@ -161,6 +161,7 @@ export function SettingsView({
       <TopBar
         context={isBindingGate ? '首次设置' : '设置'}
         settingsButtonRef={settingsButtonRef}
+        onOpenLibrary={isBindingGate ? undefined : onBack}
         onOpenSettings={() => undefined}
         onBack={isBindingGate ? undefined : onBack}
       />

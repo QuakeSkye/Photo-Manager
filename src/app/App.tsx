@@ -1,6 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { LibraryView } from '../features/library/LibraryView';
+import {
+  DEFAULT_LIBRARY_FILTER,
+  buildDateFilterOptions,
+  filterLibraryPhotos,
+  hasActiveLibraryFilter,
+  resolveSelectedPhotoId,
+  type DateFilterValue,
+  type LibraryFilterState,
+} from '../features/library/filtering';
 import { ImportView } from '../features/import/ImportView';
 import { PendingDeleteView } from '../features/pending-delete/PendingDeleteView';
 import { DuplicateReviewView } from '../features/duplicate-review/DuplicateReviewView';
@@ -44,6 +53,13 @@ type Route =
   | 'scan'
   | 'import';
 
+interface SavedLibraryContext {
+  readonly photoId: string | null;
+  readonly orderedPhotoIds: readonly string[];
+  readonly sortMode: SortMode;
+  readonly filter: LibraryFilterState;
+}
+
 const idleDuplicateStatus: DuplicateReviewStatus = {
   state: 'idle',
   runId: null,
@@ -71,6 +87,9 @@ export function App() {
 
 function AppContent() {
   const [sortMode, setSortMode] = useState<SortMode>('captureDesc');
+  const [libraryFilter, setLibraryFilter] = useState<LibraryFilterState>(
+    DEFAULT_LIBRARY_FILTER,
+  );
   const [snapshot, setSnapshot] = useState<LibrarySnapshot | null>(null);
   const [pendingSnapshot, setPendingSnapshot] =
     useState<PendingDeleteSnapshot | null>(null);
@@ -78,6 +97,7 @@ function AppContent() {
   const [route, setRoute] = useState<Route>('library');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [mutationPending, setMutationPending] = useState(false);
   const [recycleConfirmation, setRecycleConfirmation] =
     useState<RecycleConfirmation | null>(null);
@@ -91,12 +111,39 @@ function AppContent() {
   const duplicateStatusRequestId = useRef(0);
   const mutationInFlight = useRef(false);
   const sortInFlight = useRef(false);
+  const feedbackTimerRef = useRef<number | null>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const lastSelectedLibraryPhotoIdRef = useRef<string | null>(null);
+  const savedLibraryContextRef = useRef<SavedLibraryContext>({
+    photoId: null,
+    orderedPhotoIds: [],
+    sortMode: 'captureDesc',
+    filter: DEFAULT_LIBRARY_FILTER,
+  });
   const restoreAfterSettings = useRef<{
     photoId: string | null;
     route: Route;
   } | null>(null);
   const scanReturnRoute = useRef<'library' | 'import'>('library');
+
+  const showFeedback = useCallback((message: string) => {
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current);
+    }
+    setFeedbackMessage(message);
+    feedbackTimerRef.current = window.setTimeout(() => {
+      setFeedbackMessage(null);
+      feedbackTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+    };
+  }, []);
 
   const refreshSafetyStatus = useCallback(async () => {
     try {
@@ -163,7 +210,10 @@ function AppContent() {
           ) {
             return current;
           }
-          return next.restoredPhotoId ?? next.photos[0]?.photoId ?? null;
+          const initial =
+            next.restoredPhotoId ?? next.photos[0]?.photoId ?? null;
+          lastSelectedLibraryPhotoIdRef.current = initial;
+          return initial;
         });
         return next;
       } catch (reason) {
@@ -208,20 +258,51 @@ function AppContent() {
     return () => window.clearInterval(timer);
   }, [snapshot?.scan?.phase]);
 
+  const dateOptions = useMemo(() => {
+    const options = buildDateFilterOptions(snapshot?.photos ?? []);
+    const selectedDate = libraryFilter.dateFilter;
+    if (!options.some((option) => option.value === selectedDate)) {
+      return [
+        ...options,
+        {
+          value: selectedDate,
+          label: selectedDate === 'unknown' ? '日期未知' : selectedDate,
+          count: 0,
+        },
+      ];
+    }
+    return options;
+  }, [snapshot?.photos, libraryFilter.dateFilter]);
+
+  const effectiveFilter = libraryFilter;
+
+  const filteredLibraryPhotos = useMemo(
+    () => filterLibraryPhotos(snapshot?.photos ?? [], effectiveFilter),
+    [effectiveFilter, snapshot?.photos],
+  );
+
+  const hasActiveFilter = hasActiveLibraryFilter(effectiveFilter);
+
   const activePhotos =
     route === 'pending-delete'
       ? (pendingSnapshot?.items ?? [])
-      : (snapshot?.photos ?? []);
+      : filteredLibraryPhotos;
+
   const selectedIndex = activePhotos.findIndex(
     (photo) => photo.photoId === selectedPhotoId,
   );
+
   const selectIndex = useCallback(
     (index: number) => {
       if (mutationInFlight.current || activePhotos.length === 0) return;
       const bounded = Math.max(0, Math.min(activePhotos.length - 1, index));
-      setSelectedPhotoId(activePhotos[bounded]?.photoId ?? null);
+      const nextId = activePhotos[bounded]?.photoId ?? null;
+      if (route === 'library' && nextId !== null) {
+        lastSelectedLibraryPhotoIdRef.current = nextId;
+      }
+      setSelectedPhotoId(nextId);
     },
-    [activePhotos],
+    [activePhotos, route],
   );
 
   const navigate = useCallback(
@@ -234,10 +315,95 @@ function AppContent() {
 
   useEffect(() => {
     if (loading || route !== 'library' || selectedPhotoId === null) return;
+    lastSelectedLibraryPhotoIdRef.current = selectedPhotoId;
     void saveViewingCursor(sortMode, selectedPhotoId).catch((reason) =>
       setError(readError(reason)),
     );
   }, [loading, route, selectedPhotoId, sortMode]);
+
+  useEffect(() => {
+    if (route !== 'library' || snapshot === null) return;
+    const filteredOrder = filteredLibraryPhotos.map((photo) => photo.photoId);
+    savedLibraryContextRef.current = {
+      photoId: selectedPhotoId ?? lastSelectedLibraryPhotoIdRef.current,
+      orderedPhotoIds:
+        filteredOrder.length > 0
+          ? filteredOrder
+          : snapshot.photos.map((photo) => photo.photoId),
+      sortMode,
+      filter: effectiveFilter,
+    };
+  }, [
+    effectiveFilter,
+    filteredLibraryPhotos,
+    route,
+    selectedPhotoId,
+    snapshot,
+    sortMode,
+  ]);
+
+  const applyLibraryFilter = useCallback(
+    (nextFilter: LibraryFilterState) => {
+      if (snapshot === null) {
+        setLibraryFilter(nextFilter);
+        return;
+      }
+      if (selectedPhotoId !== null) {
+        lastSelectedLibraryPhotoIdRef.current = selectedPhotoId;
+      }
+      const nextFiltered = filterLibraryPhotos(snapshot.photos, nextFilter);
+      const preferred =
+        selectedPhotoId ?? lastSelectedLibraryPhotoIdRef.current;
+      const nextSelected = resolveSelectedPhotoId(
+        nextFiltered,
+        preferred,
+        savedLibraryContextRef.current.orderedPhotoIds,
+        snapshot.restoredPhotoId,
+      );
+      setLibraryFilter(nextFilter);
+      setSelectedPhotoId(nextSelected);
+    },
+    [selectedPhotoId, snapshot],
+  );
+
+  const handleSearchChange = useCallback(
+    (searchQuery: string) => {
+      applyLibraryFilter({
+        ...effectiveFilter,
+        searchQuery,
+      });
+    },
+    [applyLibraryFilter, effectiveFilter],
+  );
+
+  const handleDateFilterChange = useCallback(
+    (dateFilter: DateFilterValue) => {
+      applyLibraryFilter({
+        ...effectiveFilter,
+        dateFilter,
+      });
+    },
+    [applyLibraryFilter, effectiveFilter],
+  );
+
+  const handleClearFilters = useCallback(() => {
+    if (snapshot === null) {
+      setLibraryFilter(DEFAULT_LIBRARY_FILTER);
+      return;
+    }
+    const preferred =
+      selectedPhotoId ??
+      lastSelectedLibraryPhotoIdRef.current ??
+      snapshot.restoredPhotoId;
+    const nextSelected = resolveSelectedPhotoId(
+      snapshot.photos,
+      preferred,
+      savedLibraryContextRef.current.orderedPhotoIds,
+      snapshot.restoredPhotoId,
+    );
+    setLibraryFilter(DEFAULT_LIBRARY_FILTER);
+    setSelectedPhotoId(nextSelected);
+  }, [selectedPhotoId, snapshot]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -250,12 +416,14 @@ function AppContent() {
         event.metaKey
       )
         return;
+      if (document.querySelector('[role="dialog"]') !== null) return;
       const target = event.target as HTMLElement | null;
       if (
         target instanceof Element &&
-        target.closest(
-          'input, select, textarea, button:not(.filmstrip-item), [role="dialog"]',
-        ) !== null
+        (target.closest(
+          'input, select, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"], button:not(.filmstrip-item):not(.zoom-status), [role="dialog"]',
+        ) !== null ||
+          (target instanceof HTMLElement && target.isContentEditable))
       )
         return;
       if (event.key === 'ArrowLeft') {
@@ -276,8 +444,74 @@ function AppContent() {
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
+  const snapshotLibraryContextIfNeeded = () => {
+    if (route === 'library' && snapshot !== null) {
+      const filteredOrder = filteredLibraryPhotos.map((photo) => photo.photoId);
+      savedLibraryContextRef.current = {
+        photoId: selectedPhotoId ?? lastSelectedLibraryPhotoIdRef.current,
+        orderedPhotoIds:
+          filteredOrder.length > 0
+            ? filteredOrder
+            : snapshot.photos.map((photo) => photo.photoId),
+        sortMode,
+        filter: effectiveFilter,
+      };
+    }
+  };
+
+  const restoreLibraryContext = async (
+    providedSnapshot?: LibrarySnapshot,
+    preferredOverridePhotoId?: string | null,
+  ) => {
+    const saved = savedLibraryContextRef.current;
+    const targetSortMode = saved.sortMode;
+    const targetFilter = saved.filter;
+    let targetSnapshot = providedSnapshot ?? snapshot;
+
+    if (targetSnapshot === null) return;
+
+    if (sortMode !== targetSortMode && providedSnapshot === undefined) {
+      try {
+        targetSnapshot = await getLibrarySnapshot(targetSortMode);
+        setSnapshot(targetSnapshot);
+      } catch (reason) {
+        setError(readError(reason));
+        return;
+      }
+    } else if (providedSnapshot !== undefined) {
+      setSnapshot(providedSnapshot);
+    }
+
+    setSortMode(targetSortMode);
+    setLibraryFilter(targetFilter);
+
+    const nextFiltered = filterLibraryPhotos(
+      targetSnapshot.photos,
+      targetFilter,
+    );
+    const preferred =
+      preferredOverridePhotoId !== undefined
+        ? preferredOverridePhotoId
+        : (saved.photoId ?? lastSelectedLibraryPhotoIdRef.current);
+
+    const resolvedPhotoId = resolveSelectedPhotoId(
+      nextFiltered,
+      preferred,
+      saved.orderedPhotoIds,
+      targetSnapshot.restoredPhotoId,
+    );
+
+    if (resolvedPhotoId !== null) {
+      lastSelectedLibraryPhotoIdRef.current = resolvedPhotoId;
+    }
+    setSelectedPhotoId(resolvedPhotoId);
+    setRoute('library');
+    window.history.replaceState(null, '', '#/library');
+  };
+
   const openSettings = () => {
     if (mutationInFlight.current) return;
+    snapshotLibraryContextIfNeeded();
     restoreAfterSettings.current = { photoId: selectedPhotoId, route };
     setRoute('settings');
   };
@@ -293,14 +527,25 @@ function AppContent() {
               (snapshot?.pendingDeleteSummary.totalCount ?? 0) > 0
             ? 'pending-delete'
             : 'library';
-    if (
-      restore !== null &&
-      restore.photoId !== null &&
-      snapshot?.photos.some((photo) => photo.photoId === restore.photoId)
-    ) {
-      setSelectedPhotoId(restore.photoId);
+
+    if (target === 'library') {
+      void restoreLibraryContext(
+        undefined,
+        restore?.route === 'library' ? restore.photoId : undefined,
+      );
+    } else {
+      if (
+        restore !== null &&
+        restore.photoId !== null &&
+        target === 'pending-delete' &&
+        pendingSnapshot?.items.some(
+          (photo) => photo.photoId === restore.photoId,
+        )
+      ) {
+        setSelectedPhotoId(restore.photoId);
+      }
+      setRoute(target);
     }
-    setRoute(target);
     window.requestAnimationFrame(() => settingsButtonRef.current?.focus());
   };
 
@@ -323,12 +568,34 @@ function AppContent() {
         setSortMode(mode);
         setSnapshot(nextLibrary);
         setPendingSnapshot(nextPending);
-        setSelectedPhotoId(nextPending.items[0]?.photoId ?? null);
+        setSelectedPhotoId((current) =>
+          resolveSelectedPhotoId(
+            nextPending.items,
+            current,
+            pendingSnapshot?.items.map((item) => item.photoId),
+          ),
+        );
       } else {
+        const previousOrder = filteredLibraryPhotos.map(
+          (photo) => photo.photoId,
+        );
         const nextLibrary = await getLibrarySnapshot(mode);
+        const nextFiltered = filterLibraryPhotos(
+          nextLibrary.photos,
+          effectiveFilter,
+        );
         setSortMode(mode);
         setSnapshot(nextLibrary);
-        setSelectedPhotoId(nextLibrary.photos[0]?.photoId ?? null);
+        const nextSelected = resolveSelectedPhotoId(
+          nextFiltered,
+          selectedPhotoId ?? lastSelectedLibraryPhotoIdRef.current,
+          previousOrder,
+          nextLibrary.restoredPhotoId,
+        );
+        if (nextSelected !== null) {
+          lastSelectedLibraryPhotoIdRef.current = nextSelected;
+        }
+        setSelectedPhotoId(nextSelected);
       }
     } catch (reason) {
       setError(readError(reason));
@@ -340,32 +607,26 @@ function AppContent() {
 
   const openLibrary = () => {
     if (mutationInFlight.current || snapshot === null) return;
-    setRoute('library');
-    window.history.replaceState(null, '', '#/library');
-    if (
-      selectedPhotoId === null ||
-      !snapshot.photos.some((photo) => photo.photoId === selectedPhotoId)
-    ) {
-      setSelectedPhotoId(
-        snapshot.restoredPhotoId ?? snapshot.photos[0]?.photoId ?? null,
-      );
-    }
+    void restoreLibraryContext();
   };
 
   const openImport = () => {
     if (mutationInFlight.current || snapshot === null) return;
+    snapshotLibraryContextIfNeeded();
     setRoute('import');
     window.history.replaceState(null, '', '#/import');
   };
 
   const openDuplicateReview = () => {
     if (mutationInFlight.current || snapshot === null) return;
+    snapshotLibraryContextIfNeeded();
     setRoute('duplicate-review');
     window.history.replaceState(null, '', '#/duplicate-review');
   };
 
   const openPendingDelete = async () => {
     if (mutationInFlight.current || snapshot === null) return;
+    snapshotLibraryContextIfNeeded();
     if (snapshot.pendingDeleteSummary.totalCount === 0) {
       openLibrary();
       return;
@@ -399,9 +660,10 @@ function AppContent() {
     }
   };
 
-  const refreshDeletionState = async () => {
+  const refreshDeletionState = async (librarySortOverride?: SortMode) => {
+    const targetLibrarySort = librarySortOverride ?? sortMode;
     const [nextLibrary, nextPending] = await Promise.all([
-      getLibrarySnapshot(sortMode),
+      getLibrarySnapshot(targetLibrarySort),
       getPendingDeleteSnapshot(sortMode),
     ]);
     setSnapshot(nextLibrary);
@@ -410,7 +672,10 @@ function AppContent() {
   };
 
   const refreshAfterRecycle = async (result: RecycleStatus) => {
-    const { nextLibrary, nextPending } = await refreshDeletionState();
+    const saved = savedLibraryContextRef.current;
+    const { nextLibrary, nextPending } = await refreshDeletionState(
+      saved.sortMode,
+    );
     if (result.duplicateReconciliation !== 'notApplicable') {
       applyDuplicateReviewStatus(await getDuplicateReviewStatus());
     }
@@ -434,11 +699,7 @@ function AppContent() {
       setSelectedPhotoId(null);
       return;
     }
-    setRoute('library');
-    window.history.replaceState(null, '', '#/library');
-    setSelectedPhotoId(
-      nextLibrary.restoredPhotoId ?? nextLibrary.photos[0]?.photoId ?? null,
-    );
+    await restoreLibraryContext(nextLibrary);
   };
 
   const performToggle = async () => {
@@ -456,30 +717,46 @@ function AppContent() {
         current.photoVersion,
         crypto.randomUUID(),
       );
-      const { nextLibrary, nextPending } = await refreshDeletionState();
+      const saved = savedLibraryContextRef.current;
+      const targetLibrarySort =
+        sourceRoute === 'pending-delete' && result.summary.totalCount === 0
+          ? saved.sortMode
+          : sortMode;
+      const { nextLibrary, nextPending } =
+        await refreshDeletionState(targetLibrarySort);
+
       if (sourceRoute === 'pending-delete') {
         if (result.summary.totalCount === 0) {
-          setRoute('library');
-          window.history.replaceState(null, '', '#/library');
-          setSelectedPhotoId(
-            nextLibrary.photos.some((photo) => photo.photoId === result.photoId)
-              ? result.photoId
-              : (nextLibrary.restoredPhotoId ??
-                  nextLibrary.photos[0]?.photoId ??
-                  null),
+          const nextFiltered = filterLibraryPhotos(
+            nextLibrary.photos,
+            saved.filter,
           );
+          const preferred = nextFiltered.some(
+            (photo) => photo.photoId === result.photoId,
+          )
+            ? result.photoId
+            : saved.photoId;
+          await restoreLibraryContext(nextLibrary, preferred);
         } else {
           const nextIndex = Math.min(sourceIndex, nextPending.items.length - 1);
           setSelectedPhotoId(nextPending.items[nextIndex]?.photoId ?? null);
         }
       } else {
-        const nextIndex = Math.min(
-          sourceIndex + 1,
-          nextLibrary.photos.length - 1,
+        const nextFiltered = filterLibraryPhotos(
+          nextLibrary.photos,
+          effectiveFilter,
         );
-        setSelectedPhotoId(
-          nextLibrary.photos[nextIndex]?.photoId ?? result.photoId,
-        );
+        const nextIndex = Math.min(sourceIndex + 1, nextFiltered.length - 1);
+        const nextPhotoId =
+          nextFiltered[nextIndex]?.photoId ??
+          (nextFiltered.some((photo) => photo.photoId === result.photoId)
+            ? result.photoId
+            : null);
+        if (nextPhotoId !== null) {
+          lastSelectedLibraryPhotoIdRef.current = nextPhotoId;
+        }
+        setSelectedPhotoId(nextPhotoId);
+        showFeedback(result.marked ? '已标记待删除' : '已取消待删除');
       }
     } catch (reason) {
       setError(readError(reason));
@@ -491,27 +768,65 @@ function AppContent() {
 
   const performUndo = async () => {
     if (mutationInFlight.current) return;
+    const sourceRoute = route;
+    const sourceIndex = selectedIndex;
     mutationInFlight.current = true;
     setMutationPending(true);
     setError(null);
     try {
       const result = await undoDeletionMark(crypto.randomUUID());
-      const { nextLibrary, nextPending } = await refreshDeletionState();
+      const saved = savedLibraryContextRef.current;
+      const targetLibrarySort =
+        sourceRoute === 'pending-delete' && result.summary.totalCount === 0
+          ? saved.sortMode
+          : sortMode;
+      const { nextLibrary, nextPending } =
+        await refreshDeletionState(targetLibrarySort);
+
       if (
-        route === 'pending-delete' &&
-        result.marked &&
-        nextPending.items.some((photo) => photo.photoId === result.photoId)
+        sourceRoute === 'pending-delete' &&
+        nextPending.summary.totalCount > 0
       ) {
-        setSelectedPhotoId(result.photoId);
+        if (
+          result.marked &&
+          nextPending.items.some((photo) => photo.photoId === result.photoId)
+        ) {
+          setSelectedPhotoId(result.photoId);
+        } else {
+          const nextIndex = Math.min(
+            Math.max(0, sourceIndex),
+            nextPending.items.length - 1,
+          );
+          setSelectedPhotoId(nextPending.items[nextIndex]?.photoId ?? null);
+        }
+      } else if (sourceRoute === 'pending-delete') {
+        const nextFiltered = filterLibraryPhotos(
+          nextLibrary.photos,
+          saved.filter,
+        );
+        const preferred = nextFiltered.some(
+          (photo) => photo.photoId === result.photoId,
+        )
+          ? result.photoId
+          : saved.photoId;
+        await restoreLibraryContext(nextLibrary, preferred);
       } else {
-        setRoute('library');
-        window.history.replaceState(null, '', '#/library');
-        setSelectedPhotoId(
-          nextLibrary.photos.some((photo) => photo.photoId === result.photoId)
-            ? result.photoId
-            : (nextLibrary.restoredPhotoId ??
-                nextLibrary.photos[0]?.photoId ??
-                null),
+        const nextFiltered = filterLibraryPhotos(
+          nextLibrary.photos,
+          effectiveFilter,
+        );
+        const nextPhotoId = resolveSelectedPhotoId(
+          nextFiltered,
+          result.photoId,
+          saved.orderedPhotoIds,
+          nextLibrary.restoredPhotoId,
+        );
+        if (nextPhotoId !== null) {
+          lastSelectedLibraryPhotoIdRef.current = nextPhotoId;
+        }
+        setSelectedPhotoId(nextPhotoId);
+        showFeedback(
+          result.marked ? '已撤销：恢复待删除标记' : '已撤销待删除标记',
         );
       }
     } catch (reason) {
@@ -606,8 +921,15 @@ function AppContent() {
     returnRoute: 'library' | 'import' = 'library',
   ) => {
     scanReturnRoute.current = returnRoute;
+    setLibraryFilter(DEFAULT_LIBRARY_FILTER);
     const next = await load(sortMode);
     if (next !== null) {
+      savedLibraryContextRef.current = {
+        photoId: next.restoredPhotoId ?? next.photos[0]?.photoId ?? null,
+        orderedPhotoIds: next.photos.map((photo) => photo.photoId),
+        sortMode,
+        filter: DEFAULT_LIBRARY_FILTER,
+      };
       setSnapshot({
         ...next,
         scan: next.scan ?? {
@@ -628,8 +950,8 @@ function AppContent() {
   };
 
   const enterLibrary = async () => {
-    const next = await load(sortMode);
-    if (next !== null) setRoute('library');
+    const next = await load(savedLibraryContextRef.current.sortMode);
+    if (next !== null) await restoreLibraryContext(next);
   };
 
   if (loading && snapshot === null)
@@ -663,9 +985,21 @@ function AppContent() {
       {route === 'library' && (
         <LibraryView
           snapshot={snapshot}
+          photos={filteredLibraryPhotos}
           selectedPhotoId={selectedPhotoId}
           selectedIndex={selectedIndex}
           sortMode={sortMode}
+          filterControls={{
+            searchQuery: effectiveFilter.searchQuery,
+            dateFilter: effectiveFilter.dateFilter,
+            dateOptions,
+            totalPhotoCount: snapshot.photos.length,
+            hasActiveFilter,
+            onSearchChange: handleSearchChange,
+            onDateFilterChange: handleDateFilterChange,
+            onClearFilters: handleClearFilters,
+          }}
+          feedbackMessage={feedbackMessage}
           settingsButtonRef={settingsButtonRef}
           onSelectIndex={selectIndex}
           onNavigate={navigate}
@@ -675,7 +1009,10 @@ function AppContent() {
           duplicateReviewStatus={duplicateReviewStatus}
           onOpenDuplicateReview={openDuplicateReview}
           importEnabled={safetyStatus?.importGate === 'open'}
-          onOpenScan={() => setRoute('scan')}
+          onOpenScan={() => {
+            snapshotLibraryContextIfNeeded();
+            setRoute('scan');
+          }}
           mutationPending={mutationPending}
           onToggleDeletion={() => void performToggle()}
           onUndoDeletion={() => void performUndo()}
@@ -763,14 +1100,16 @@ function AppContent() {
           scan={snapshot.scan}
           safetyStatus={safetyStatus}
           settingsButtonRef={settingsButtonRef}
-          onBack={() =>
-            setRoute(
+          onBack={() => {
+            if (
               snapshot.scan?.kind === 'full' &&
-                snapshot.scan.phase !== 'completed'
-                ? 'scan'
-                : 'library',
-            )
-          }
+              snapshot.scan.phase !== 'completed'
+            ) {
+              setRoute('scan');
+            } else {
+              void restoreLibraryContext();
+            }
+          }}
           onEnterLibrary={() => {
             if (scanReturnRoute.current === 'import') {
               void load(sortMode).then((next) => {

@@ -1,8 +1,16 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, test, vi } from 'vitest';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import type { PhotoSummary } from '../../shared/commands/library';
 import { VirtualFilmstrip } from './VirtualFilmstrip';
+
+afterEach(cleanup);
 
 function photos(count: number): PhotoSummary[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -69,5 +77,87 @@ describe('VirtualFilmstrip', () => {
       ).toHaveAttribute('aria-current', 'true'),
     );
     expect(screen.getAllByRole('button').length).toBeLessThan(20);
+  });
+
+  test('renders filter controls, distinct D / ! badges, and zero-match empty state', () => {
+    const onSearchChange = vi.fn();
+    const onDateFilterChange = vi.fn();
+    const onClearFilters = vi.fn();
+    const items: PhotoSummary[] = [
+      {
+        photoId: 'marked-1',
+        photoVersion: 1,
+        fileName: 'DSCF00001.JPG',
+        captureLocalKey: '2026-07-30T12:00:00',
+        preview: null,
+        deletionState: 'Marked',
+      },
+      {
+        photoId: 'problem-1',
+        photoVersion: 1,
+        fileName: 'DSCF00002.RAF',
+        captureLocalKey: null,
+        preview: null,
+        deletionState: 'Problem',
+      },
+    ];
+
+    const { rerender } = render(
+      <VirtualFilmstrip
+        photos={items}
+        selectedPhotoId="marked-1"
+        selectedIndex={0}
+        onSelectIndex={vi.fn()}
+        onWheel={vi.fn()}
+        filterControls={{
+          searchQuery: 'DSCF',
+          dateFilter: 'all',
+          dateOptions: [
+            { value: 'all', label: '全部日期', count: 12 },
+            { value: '2026-07-30', label: '2026-07-30', count: 11 },
+            { value: 'unknown', label: '日期未知', count: 1 },
+          ],
+          totalPhotoCount: 12,
+          hasActiveFilter: true,
+          onSearchChange,
+          onDateFilterChange,
+          onClearFilters,
+        }}
+      />,
+    );
+
+    expect(screen.getByLabelText('已标记待删除')).toHaveTextContent('D 待删');
+    expect(screen.getByLabelText('待删除标记需要处理')).toHaveTextContent('!');
+    expect(screen.getByText('结果 2 / 12')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '清除搜索关键词' }));
+    expect(onSearchChange).toHaveBeenCalledWith('');
+
+    fireEvent.click(screen.getByRole('button', { name: '清除筛选' }));
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <VirtualFilmstrip
+        photos={[]}
+        selectedPhotoId={null}
+        selectedIndex={-1}
+        onSelectIndex={vi.fn()}
+        onWheel={vi.fn()}
+        filterControls={{
+          searchQuery: 'NONE',
+          dateFilter: 'all',
+          dateOptions: [{ value: 'all', label: '全部日期', count: 12 }],
+          totalPhotoCount: 12,
+          hasActiveFilter: true,
+          onSearchChange,
+          onDateFilterChange,
+          onClearFilters,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('没有匹配当前筛选的照片')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '清除全部筛选' }));
+    expect(onClearFilters).toHaveBeenCalledTimes(2);
   });
 });

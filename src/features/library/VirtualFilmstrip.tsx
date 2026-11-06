@@ -7,6 +7,7 @@ import {
 } from 'react';
 
 import type { PhotoSummary } from '../../shared/commands/library';
+import type { DateFilterOption, DateFilterValue } from './filtering';
 import { PreviewImage } from './preview';
 
 const FILMSTRIP_ITEM_HEIGHT = 106;
@@ -18,6 +19,17 @@ const filmstripSizing = {
   '--filmstrip-row-height': `${FILMSTRIP_ROW_HEIGHT}px`,
 } as CSSProperties;
 
+export interface FilmstripFilterControls {
+  readonly searchQuery: string;
+  readonly dateFilter: DateFilterValue;
+  readonly dateOptions: readonly DateFilterOption[];
+  readonly totalPhotoCount: number;
+  readonly hasActiveFilter: boolean;
+  readonly onSearchChange: (value: string) => void;
+  readonly onDateFilterChange: (value: DateFilterValue) => void;
+  readonly onClearFilters: () => void;
+}
+
 interface VirtualFilmstripProps {
   readonly photos: readonly PhotoSummary[];
   readonly selectedPhotoId: string | null;
@@ -25,6 +37,7 @@ interface VirtualFilmstripProps {
   readonly onSelectIndex: (index: number) => void;
   readonly onWheel: (event: WheelEvent) => void;
   readonly reviewMode?: boolean;
+  readonly filterControls?: FilmstripFilterControls;
 }
 
 export function VirtualFilmstrip({
@@ -34,6 +47,7 @@ export function VirtualFilmstrip({
   onSelectIndex,
   onWheel,
   reviewMode = false,
+  filterControls,
 }: VirtualFilmstripProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -52,7 +66,14 @@ export function VirtualFilmstrip({
 
   useEffect(() => {
     const viewport = viewportRef.current;
-    if (viewport === null || selectedIndex < 0) return;
+    if (viewport === null) return;
+    if (selectedIndex < 0) {
+      if (photos.length === 0 && viewport.scrollTop !== 0) {
+        viewport.scrollTop = 0;
+        setScrollTop(0);
+      }
+      return;
+    }
     const top = selectedIndex * FILMSTRIP_ROW_HEIGHT;
     const bottom = top + FILMSTRIP_ROW_HEIGHT;
     let nextScrollTop = viewport.scrollTop;
@@ -63,7 +84,7 @@ export function VirtualFilmstrip({
       viewport.scrollTop = nextScrollTop;
       setScrollTop(nextScrollTop);
     }
-  }, [selectedIndex]);
+  }, [photos.length, selectedIndex]);
 
   const start = Math.max(
     0,
@@ -74,6 +95,9 @@ export function VirtualFilmstrip({
     Math.ceil((scrollTop + height) / FILMSTRIP_ROW_HEIGHT) + OVERSCAN,
   );
   const visible = photos.slice(start, end);
+  const showFilterBar =
+    filterControls !== undefined &&
+    (filterControls.totalPhotoCount > 0 || filterControls.hasActiveFilter);
 
   return (
     <aside
@@ -81,58 +105,137 @@ export function VirtualFilmstrip({
       aria-label={reviewMode ? '待删除照片缩略图' : '照片缩略图'}
       style={filmstripSizing}
     >
+      {showFilterBar && (
+        <div
+          className="filmstrip-filter-bar"
+          role="search"
+          aria-label="照片定位与筛选"
+        >
+          <div className="filmstrip-search-box">
+            <input
+              type="search"
+              className="filmstrip-search-input"
+              aria-label="搜索文件名"
+              placeholder="搜索文件名…"
+              value={filterControls.searchQuery}
+              onChange={(event) =>
+                filterControls.onSearchChange(event.target.value)
+              }
+            />
+            {filterControls.searchQuery.length > 0 && (
+              <button
+                type="button"
+                className="filmstrip-search-clear"
+                aria-label="清除搜索关键词"
+                onClick={() => filterControls.onSearchChange('')}
+              >
+                ×
+              </button>
+            )}
+          </div>
+          <label className="filmstrip-date-filter">
+            <span className="sr-only">拍摄日期筛选</span>
+            <select
+              aria-label="拍摄日期筛选"
+              value={filterControls.dateFilter}
+              onChange={(event) =>
+                filterControls.onDateFilterChange(event.target.value)
+              }
+            >
+              {filterControls.dateOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({option.count})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="filmstrip-filter-meta">
+            <span className="filmstrip-filter-count" aria-live="polite">
+              {filterControls.hasActiveFilter
+                ? `结果 ${photos.length.toLocaleString('zh-CN')} / ${filterControls.totalPhotoCount.toLocaleString('zh-CN')}`
+                : `共 ${photos.length.toLocaleString('zh-CN')} 张`}
+            </span>
+            {filterControls.hasActiveFilter && (
+              <button
+                type="button"
+                className="filmstrip-clear-all"
+                onClick={filterControls.onClearFilters}
+              >
+                清除筛选
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       <div
         ref={viewportRef}
         className="filmstrip-viewport"
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
         onWheel={onWheel}
       >
-        <div
-          className="filmstrip-track"
-          style={{ height: photos.length * FILMSTRIP_ROW_HEIGHT }}
-        >
-          {visible.map((photo, offset) => {
-            const index = start + offset;
-            return (
-              <button
-                key={photo.photoId}
-                className={
-                  photo.photoId === selectedPhotoId
-                    ? 'filmstrip-item is-selected'
-                    : 'filmstrip-item'
-                }
-                style={{
-                  transform: `translateY(${index * FILMSTRIP_ROW_HEIGHT}px)`,
-                }}
-                type="button"
-                aria-label={`第 ${index + 1} 张：${photo.fileName}`}
-                aria-current={
-                  photo.photoId === selectedPhotoId ? 'true' : undefined
-                }
-                onClick={() => onSelectIndex(index)}
-              >
-                <PreviewImage reference={photo.preview} alt="" thumbnail />
-                <span className="filmstrip-index">{index + 1}</span>
-                {photo.deletionState !== null && (
-                  <span
-                    className={
-                      photo.deletionState === 'Problem'
-                        ? 'deletion-badge is-problem'
-                        : 'deletion-badge'
-                    }
-                    aria-label={
-                      photo.deletionState === 'Problem'
-                        ? '待删除标记需要处理'
-                        : '已标记待删除'
-                    }
-                  >
-                    D
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {photos.length === 0 &&
+        filterControls !== undefined &&
+        filterControls.totalPhotoCount > 0 ? (
+          <div className="filmstrip-empty-filter" role="status">
+            <p>没有匹配当前筛选的照片</p>
+            <button
+              type="button"
+              className="secondary-button filmstrip-empty-reset"
+              onClick={filterControls.onClearFilters}
+            >
+              清除全部筛选
+            </button>
+          </div>
+        ) : (
+          <div
+            className="filmstrip-track"
+            style={{ height: photos.length * FILMSTRIP_ROW_HEIGHT }}
+          >
+            {visible.map((photo, offset) => {
+              const index = start + offset;
+              const isProblem = photo.deletionState === 'Problem';
+              return (
+                <button
+                  key={photo.photoId}
+                  className={
+                    photo.photoId === selectedPhotoId
+                      ? 'filmstrip-item is-selected'
+                      : 'filmstrip-item'
+                  }
+                  style={{
+                    transform: `translateY(${index * FILMSTRIP_ROW_HEIGHT}px)`,
+                  }}
+                  type="button"
+                  aria-label={`第 ${index + 1} 张：${photo.fileName}`}
+                  aria-current={
+                    photo.photoId === selectedPhotoId ? 'true' : undefined
+                  }
+                  onClick={() => onSelectIndex(index)}
+                >
+                  <PreviewImage reference={photo.preview} alt="" thumbnail />
+                  <span className="filmstrip-index">{index + 1}</span>
+                  {photo.deletionState !== null && (
+                    <span
+                      className={
+                        isProblem
+                          ? 'deletion-badge is-problem'
+                          : 'deletion-badge'
+                      }
+                      aria-label={
+                        isProblem ? '待删除标记需要处理' : '已标记待删除'
+                      }
+                      title={
+                        isProblem ? '待删除标记需要处理' : '已标记待删除 (D)'
+                      }
+                    >
+                      {isProblem ? '!' : 'D 待删'}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -69,13 +69,16 @@ export function ScanView({
     }
   };
 
+  const canReturnToLibrary = !isFullGate || scan.phase === 'completed';
+
   return (
     <div className="screen tool-screen scan-screen">
       <TopBar
         context={isFullGate ? '首次扫描图库' : '更新图库'}
         settingsButtonRef={settingsButtonRef}
+        onOpenLibrary={canReturnToLibrary ? onBack : undefined}
         onOpenSettings={onOpenSettings}
-        onBack={!isFullGate || scan.phase === 'completed' ? onBack : undefined}
+        onBack={canReturnToLibrary ? onBack : undefined}
       />
       <main className="tool-workspace">
         <nav className="tool-sidebar" aria-label="扫描状态">

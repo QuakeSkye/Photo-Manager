@@ -3,6 +3,7 @@ import { useId, useState, type ReactNode } from 'react';
 import type {
   FilmSimulationValue,
   PhotoDetail,
+  PhotoSummary,
   RationalValue,
 } from '../../shared/commands/library';
 import type { PhotoshopStatus } from '../../shared/commands/settings';
@@ -12,6 +13,8 @@ interface PhotoInspectorProps {
   readonly loading: boolean;
   readonly error: string | null;
   readonly marked: boolean;
+  readonly deletionState?: PhotoSummary['deletionState'];
+  readonly rootOffline?: boolean;
   readonly mutationPending: boolean;
   readonly toolStatus: PhotoshopStatus | null;
   readonly externalActionPending: boolean;
@@ -28,6 +31,8 @@ export function PhotoInspector({
   loading,
   error,
   marked,
+  deletionState = marked ? 'Marked' : null,
+  rootOffline = false,
   mutationPending,
   toolStatus,
   externalActionPending,
@@ -40,6 +45,8 @@ export function PhotoInspector({
 }: PhotoInspectorProps) {
   const [timeExpanded, setTimeExpanded] = useState(true);
   const [parametersExpanded, setParametersExpanded] = useState(true);
+
+  const effectiveDeletionState = deletionState ?? (marked ? 'Marked' : null);
 
   return (
     <aside className="photo-inspector" aria-label="照片详情">
@@ -54,7 +61,25 @@ export function PhotoInspector({
         {detail !== null && (
           <>
             <section className="photo-identity">
-              <p className="section-label">当前照片</p>
+              <div className="photo-identity-header">
+                <p className="section-label">当前照片</p>
+                <span
+                  className={
+                    effectiveDeletionState === 'Problem'
+                      ? 'inspector-deletion-pill is-problem'
+                      : effectiveDeletionState === 'Marked'
+                        ? 'inspector-deletion-pill is-marked'
+                        : 'inspector-deletion-pill'
+                  }
+                  aria-label="当前待删除状态"
+                >
+                  {effectiveDeletionState === 'Problem'
+                    ? '! 待删除需处理'
+                    : effectiveDeletionState === 'Marked'
+                      ? 'D 已标记待删除'
+                      : '未标记待删除'}
+                </span>
+              </div>
               <h2 title={detail.fileName}>{detail.fileName}</h2>
               <div className="format-badges" aria-label="照片格式">
                 <span
@@ -64,7 +89,7 @@ export function PhotoInspector({
                       : 'format-badge'
                   }
                 >
-                  JPG {detail.jpeg === null ? '×' : '✓'}
+                  {detail.jpeg === null ? '未找到 JPG' : 'JPG ✓'}
                 </span>
                 <span
                   className={
@@ -73,8 +98,31 @@ export function PhotoInspector({
                       : 'format-badge'
                   }
                 >
-                  RAF {detail.raf === null ? '×' : '✓'}
+                  {detail.raf === null ? '未找到 RAF' : 'RAF ✓'}
                 </span>
+              </div>
+              {detail.preview?.state === 'RafEmbeddedJpeg' && (
+                <p className="preview-source-note">当前为 RAF 内嵌预览</p>
+              )}
+            </section>
+            <section className="exposure-strip" aria-label="核心曝光参数">
+              <div className="exposure-cell">
+                <span className="exposure-label">光圈</span>
+                <strong className="exposure-value">
+                  {formatFNumber(detail.fNumber)}
+                </strong>
+              </div>
+              <div className="exposure-cell">
+                <span className="exposure-label">快门</span>
+                <strong className="exposure-value">
+                  {formatExposureTime(detail.exposureTime)}
+                </strong>
+              </div>
+              <div className="exposure-cell">
+                <span className="exposure-label">ISO</span>
+                <strong className="exposure-value">
+                  {detail.iso === null ? '未记录' : `ISO ${detail.iso}`}
+                </strong>
               </div>
             </section>
             <MetadataAccordion
@@ -83,26 +131,37 @@ export function PhotoInspector({
               onToggle={() => setTimeExpanded((current) => !current)}
             >
               <dl>
-                {detail.captureLocalKey !== null && (
-                  <>
-                    <MetadataRow
-                      label="拍摄日期"
-                      value={detail.captureLocalKey.slice(0, 10)}
-                    />
-                    <MetadataRow
-                      label="相机本地时间"
-                      value={detail.captureLocalKey.slice(11, 19)}
-                    />
-                  </>
-                )}
+                <MetadataRow
+                  label="拍摄日期"
+                  value={
+                    detail.captureLocalKey !== null
+                      ? detail.captureLocalKey.slice(0, 10)
+                      : '未知'
+                  }
+                />
+                <MetadataRow
+                  label="相机本地时间"
+                  value={
+                    detail.captureLocalKey !== null
+                      ? detail.captureLocalKey.slice(11, 19)
+                      : '未知'
+                  }
+                />
+                <MetadataRow
+                  label="参考文件时间"
+                  value={formatReferenceFileTime(detail.fileTimeMs)}
+                />
                 <MetadataRow
                   label="照片大小"
                   value={formatBytes(detail.totalSizeBytes)}
                 />
               </dl>
+              <p className="metadata-note">
+                参考文件时间来自文件系统记录，不代表实际拍摄时间或导入时间。
+              </p>
             </MetadataAccordion>
             <MetadataAccordion
-              title="照片参数"
+              title="拍摄参数"
               summary={detail.cameraModel ?? '未记录'}
               expanded={parametersExpanded}
               onToggle={() => setParametersExpanded((current) => !current)}
@@ -116,18 +175,6 @@ export function PhotoInspector({
                   label="镜头"
                   value={detail.lensModel ?? '未记录'}
                   valueClassName="lens-value"
-                />
-                <MetadataRow
-                  label="光圈"
-                  value={formatFNumber(detail.fNumber)}
-                />
-                <MetadataRow
-                  label="快门"
-                  value={formatExposureTime(detail.exposureTime)}
-                />
-                <MetadataRow
-                  label="ISO"
-                  value={detail.iso === null ? '未记录' : `ISO ${detail.iso}`}
                 />
                 <MetadataRow
                   label="焦距"
@@ -161,6 +208,7 @@ export function PhotoInspector({
           className="button-primary photoshop-action"
           type="button"
           disabled={
+            rootOffline ||
             detail?.raf === null ||
             detail === null ||
             externalActionPending ||
@@ -170,10 +218,11 @@ export function PhotoInspector({
         >
           {externalActionPending ? '正在准备…' : '用 Photoshop 打开 RAF'}
         </button>
-        {detail?.raf === null && (
-          <p>当前照片没有 RAF，Photoshop 操作不可用。</p>
+        {detail !== null && detail.raf === null && (
+          <p>当前照片未找到 RAF，Photoshop 操作不可用。</p>
         )}
-        {detail?.raf !== null &&
+        {detail !== null &&
+          detail.raf !== null &&
           toolStatus?.configured === true &&
           !toolStatus.available && (
             <p>
@@ -190,31 +239,41 @@ export function PhotoInspector({
         <button
           className="secondary-button"
           type="button"
-          disabled={detail === null || externalActionPending}
+          disabled={rootOffline || detail === null || externalActionPending}
           onClick={onOpenFileLocation}
         >
           打开当前文件位置
         </button>
-        <button
-          className="delete-outline-button"
-          type="button"
-          disabled={detail === null || mutationPending}
-          onClick={onToggleDeletion}
-        >
-          {mutationPending ? '正在提交…' : marked ? '取消待删除' : '标记待删除'}
-          <kbd>D</kbd>
-        </button>
-        <p className="inspector-shortcuts">
-          ← → 浏览 · <kbd className="keycap-centered">D</kbd> 标记 ·{' '}
+        <div className="culling-action-row">
           <button
-            className="inline-link"
+            className={
+              marked
+                ? 'delete-outline-button is-marked'
+                : 'delete-outline-button'
+            }
             type="button"
+            disabled={detail === null || mutationPending}
+            onClick={onToggleDeletion}
+          >
+            <span>
+              {mutationPending
+                ? '正在提交…'
+                : marked
+                  ? '取消待删除'
+                  : '标记待删除'}
+            </span>
+            <kbd>D</kbd>
+          </button>
+          <button
+            className="neutral-button undo-action-button"
+            type="button"
+            disabled={mutationPending}
             onClick={onUndoDeletion}
           >
-            <kbd>R</kbd> 撤销
+            <span>撤销</span>
+            <kbd>R</kbd>
           </button>
-        </p>
-        <p>D 只保存复核标记，不会移动或修改照片。</p>
+        </div>
       </section>
     </aside>
   );
@@ -294,6 +353,21 @@ function InspectorSkeleton() {
       <i />
     </div>
   );
+}
+
+function formatReferenceFileTime(fileTimeMs: number | null): string {
+  if (fileTimeMs === null || !Number.isFinite(fileTimeMs) || fileTimeMs <= 0) {
+    return '未记录';
+  }
+  const date = new Date(fileTimeMs);
+  if (Number.isNaN(date.getTime())) return '未记录';
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hours = String(date.getUTCHours()).padStart(2, '0');
+  const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+  const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 function formatBytes(bytes: number): string {

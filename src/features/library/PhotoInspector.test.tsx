@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { ComponentProps } from 'react';
 
@@ -54,6 +60,7 @@ const inspectorProps: ComponentProps<typeof PhotoInspector> = {
   onOpenFileLocation: vi.fn(),
   onOpenSettings: vi.fn(),
   onToggleDeletion: vi.fn(),
+  onUndoDeletion: vi.fn(),
 };
 
 function inspector(
@@ -67,24 +74,24 @@ function renderInspector() {
 }
 
 describe('PhotoInspector', () => {
-  test('renders the eight capture parameters in the confirmed order and format', () => {
+  test('renders 3-column exposure strip and grouped capture parameters including film simulation', () => {
     const { container } = renderInspector();
-    const section = screen.getByText('照片参数').closest('section');
+
+    const exposureStrip = screen.getByLabelText('核心曝光参数');
+    expect(within(exposureStrip).getByText('光圈')).toBeInTheDocument();
+    expect(within(exposureStrip).getByText('F2.8')).toBeInTheDocument();
+    expect(within(exposureStrip).getByText('快门')).toBeInTheDocument();
+    expect(within(exposureStrip).getByText('1/500 秒')).toBeInTheDocument();
+    expect(within(exposureStrip).getByText('ISO')).toBeInTheDocument();
+    expect(within(exposureStrip).getByText('ISO 400')).toBeInTheDocument();
+
+    const section = screen.getByText('拍摄参数').closest('section');
     expect(section).not.toBeNull();
     expect(
       [...(section?.querySelectorAll('dt') ?? [])].map(
         (element) => element.textContent,
       ),
-    ).toEqual([
-      '相机',
-      '镜头',
-      '光圈',
-      '快门',
-      'ISO',
-      '焦距',
-      '尺寸',
-      '胶片模拟',
-    ]);
+    ).toEqual(['相机', '镜头', '焦距', '尺寸', '胶片模拟']);
     for (const value of [
       'FUJIFILM X-T5',
       'XF35mmF1.4 R',
@@ -97,6 +104,38 @@ describe('PhotoInspector', () => {
     ]) {
       expect(container).toHaveTextContent(value);
     }
+  });
+
+  test('renders explicit format copy, RAF embedded preview note, and unknown capture time state', () => {
+    render(
+      inspector({
+        marked: true,
+        deletionState: 'Marked',
+        detail: {
+          ...detail,
+          captureLocalKey: null,
+          jpeg: null,
+          preview: {
+            assetId: 'raf-1',
+            assetVersion: 1,
+            mediaKind: 'Raf',
+            state: 'RafEmbeddedJpeg',
+          },
+        },
+      }),
+    );
+
+    expect(screen.getByText('未找到 JPG')).toBeInTheDocument();
+    expect(screen.getByText('RAF ✓')).toBeInTheDocument();
+    expect(screen.getByText('当前为 RAF 内嵌预览')).toBeInTheDocument();
+    expect(screen.getByLabelText('当前待删除状态')).toHaveTextContent(
+      'D 已标记待删除',
+    );
+    expect(screen.getAllByText('未知')).toHaveLength(2);
+    expect(screen.getByText('2026-07-30 14:26:00')).toBeInTheDocument();
+    expect(
+      screen.getByText(/参考文件时间来自文件系统记录/),
+    ).toBeInTheDocument();
   });
 
   test('formats long exposure and unknown film codes while keeping missing fields local', () => {
@@ -124,7 +163,7 @@ describe('PhotoInspector', () => {
 
     const timeToggle = screen.getByRole('button', { name: /时间与文件/ });
     const parameterToggle = screen.getByRole('button', {
-      name: /照片参数.*FUJIFILM X-T5/,
+      name: /拍摄参数.*FUJIFILM X-T5/,
     });
 
     expect(timeToggle).toHaveAttribute('aria-expanded', 'true');
@@ -155,7 +194,7 @@ describe('PhotoInspector', () => {
       'false',
     );
     expect(
-      screen.getByRole('button', { name: /照片参数.*FUJIFILM X-T5/ }),
+      screen.getByRole('button', { name: /拍摄参数.*FUJIFILM X-T5/ }),
     ).toHaveAttribute('aria-expanded', 'false');
 
     expect(
@@ -167,5 +206,6 @@ describe('PhotoInspector', () => {
     expect(
       screen.getByRole('button', { name: /标记待删除/ }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /撤销/ })).toBeInTheDocument();
   });
 });

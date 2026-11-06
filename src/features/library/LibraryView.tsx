@@ -11,6 +11,7 @@ import {
   getPhotoDetail,
   type LibrarySnapshot,
   type PhotoDetail,
+  type PhotoSummary,
   type SortMode,
 } from '../../shared/commands/library';
 import type { DuplicateReviewStatus } from '../../shared/commands/duplicate-review';
@@ -23,15 +24,21 @@ import {
 } from '../../shared/commands/settings';
 import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
-import { VirtualFilmstrip } from './VirtualFilmstrip';
+import {
+  VirtualFilmstrip,
+  type FilmstripFilterControls,
+} from './VirtualFilmstrip';
 import { PhotoCanvas } from './PhotoCanvas';
 import { PhotoInspector } from './PhotoInspector';
 
 interface LibraryViewProps {
   readonly snapshot: LibrarySnapshot;
+  readonly photos?: readonly PhotoSummary[];
   readonly selectedPhotoId: string | null;
   readonly selectedIndex: number;
   readonly sortMode: SortMode;
+  readonly filterControls?: FilmstripFilterControls;
+  readonly feedbackMessage?: string | null;
   readonly settingsButtonRef: RefObject<HTMLButtonElement | null>;
   readonly onSelectIndex: (index: number) => void;
   readonly onNavigate: (delta: number) => void;
@@ -50,9 +57,12 @@ interface LibraryViewProps {
 
 export function LibraryView({
   snapshot,
+  photos,
   selectedPhotoId,
   selectedIndex,
   sortMode,
+  filterControls,
+  feedbackMessage = null,
   settingsButtonRef,
   onSelectIndex,
   onNavigate,
@@ -68,7 +78,8 @@ export function LibraryView({
   onUndoDeletion,
   onOpenPendingDelete,
 }: LibraryViewProps) {
-  const current = snapshot.photos[selectedIndex] ?? null;
+  const activePhotos = photos ?? snapshot.photos;
+  const current = activePhotos[selectedIndex] ?? null;
   const [detail, setDetail] = useState<PhotoDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [toolStatus, setToolStatus] = useState<PhotoshopStatus | null>(null);
@@ -102,6 +113,7 @@ export function LibraryView({
   useEffect(() => {
     if (current === null) {
       setDetail(null);
+      setDetailError(null);
       return;
     }
     let active = true;
@@ -121,7 +133,7 @@ export function LibraryView({
 
   const handleWheel = (event: WheelEvent) => {
     event.preventDefault();
-    if (wheelLocked.current || snapshot.photos.length < 2) return;
+    if (wheelLocked.current || activePhotos.length < 2) return;
     wheelAccumulator.current += event.deltaY;
     if (Math.abs(wheelAccumulator.current) < 36) return;
     const direction = wheelAccumulator.current > 0 ? 1 : -1;
@@ -137,9 +149,32 @@ export function LibraryView({
   const dateContext =
     current?.captureLocalKey?.slice(0, 10).replaceAll('-', ' / ') ?? '日期未知';
   const rootOffline = snapshot.binding?.status !== 'Online';
+  const isFilteredEmpty =
+    snapshot.photos.length > 0 && activePhotos.length === 0;
+  const canOpenFileLocation =
+    !rootOffline &&
+    detail !== null &&
+    (detail.jpeg !== null || detail.raf !== null) &&
+    !externalPending;
+  const showPhotoshopAction =
+    detail !== null
+      ? detail.raf !== null
+      : current?.preview?.mediaKind === 'Raf';
+  const canOpenPhotoshop =
+    !rootOffline &&
+    detail !== null &&
+    detail.raf !== null &&
+    !externalPending &&
+    !(toolStatus?.configured === true && !toolStatus.available);
 
   const requestPhotoshop = async () => {
-    if (detail?.raf === null || detail === null || externalPending) return;
+    if (
+      rootOffline ||
+      detail?.raf === null ||
+      detail === null ||
+      externalPending
+    )
+      return;
     setExternalPending(true);
     setExternalError(null);
     try {
@@ -190,7 +225,7 @@ export function LibraryView({
   };
 
   const revealCurrent = async () => {
-    if (detail === null || externalPending) return;
+    if (rootOffline || detail === null || externalPending) return;
     setExternalPending(true);
     setExternalError(null);
     try {
@@ -231,22 +266,35 @@ export function LibraryView({
       )}
       <main className="photo-workspace">
         <VirtualFilmstrip
-          photos={snapshot.photos}
+          photos={activePhotos}
           selectedPhotoId={selectedPhotoId}
           selectedIndex={selectedIndex}
           onSelectIndex={onSelectIndex}
           onWheel={handleWheel}
+          filterControls={filterControls}
         />
         <PhotoCanvas
           photo={current}
           onWheel={handleWheel}
           onZoomModeChange={resetWheelNavigation}
+          isFilteredEmpty={isFilteredEmpty}
+          onClearFilters={filterControls?.onClearFilters}
+          feedbackMessage={feedbackMessage}
+          rootOffline={rootOffline}
+          canOpenFileLocation={canOpenFileLocation}
+          canOpenPhotoshop={canOpenPhotoshop}
+          showPhotoshopAction={showPhotoshopAction}
+          externalActionPending={externalPending}
+          onOpenFileLocation={() => void revealCurrent()}
+          onOpenPhotoshop={() => void requestPhotoshop()}
         />
         <PhotoInspector
           detail={detail}
           loading={current !== null && detail === null && detailError === null}
           error={detailError}
-          marked={current?.deletionState !== null}
+          marked={current !== null && current.deletionState !== null}
+          deletionState={current?.deletionState ?? null}
+          rootOffline={rootOffline}
           mutationPending={mutationPending}
           toolStatus={toolStatus}
           externalActionPending={externalPending}
@@ -260,9 +308,15 @@ export function LibraryView({
       </main>
       <footer className="status-bar">
         <div>
-          {snapshot.photos.length === 0
+          {activePhotos.length === 0
             ? '0 / 0'
-            : `${(selectedIndex + 1).toLocaleString('zh-CN')} / ${snapshot.photos.length.toLocaleString('zh-CN')}`}
+            : `${(selectedIndex + 1).toLocaleString('zh-CN')} / ${activePhotos.length.toLocaleString('zh-CN')}`}
+          {filterControls?.hasActiveFilter === true && (
+            <span className="status-filter-total">
+              {' '}
+              （全库 {snapshot.photos.length.toLocaleString('zh-CN')}）
+            </span>
+          )}
         </div>
         {snapshot.scan?.kind === 'incremental' &&
         snapshot.scan.phase !== 'completed' ? (
