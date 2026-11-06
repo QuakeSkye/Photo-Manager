@@ -22,7 +22,6 @@ import {
   selectImportSource,
   startImport,
   startImportPreflight,
-  type ImportDraftItem,
   type ImportExecutionStatus,
   type ImportPreflightDraft,
   type ImportPreflightStatus,
@@ -37,6 +36,14 @@ import {
 } from '../../shared/commands/library';
 import { Modal } from '../../shared/ui/Modal';
 import { TopBar } from '../../shared/ui/TopBar';
+import {
+  DraftResults,
+  ExecutionPanel,
+  ImportLocations,
+  PreflightProgress,
+  executionPhaseLabel,
+  formatBytes,
+} from './ImportPanels';
 
 interface ImportViewProps {
   readonly pendingDeleteSummary: PendingDeleteSummary;
@@ -73,8 +80,15 @@ export function ImportView({
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [confirmIsolation, setConfirmIsolation] = useState(false);
   const requestVersion = useRef(0);
+  const [taskLoading, setTaskLoading] = useState(true);
+  const [actionPending, setActionPending] = useState(false);
+  const [stopRequested, setStopRequested] = useState(false);
+  const actionLock = useRef(false);
+  const preflightLock = useRef(false);
   const applyExecution = useCallback((value: ImportExecutionStatus) => {
-    setExecution(value);
+    setExecution(value.phase === 'idle' ? null : value);
+    if (value.phase !== 'running' && value.phase !== 'validatingPlan')
+      setStopRequested(false);
     setRecovery(null);
     if (value.updatedPlan !== null) setDraft(value.updatedPlan);
   }, []);
@@ -86,6 +100,20 @@ export function ImportView({
   } | null>(null);
   const [bindingTarget, setBindingTarget] = useState(false);
   const sourceButtonRef = useRef<HTMLButtonElement>(null);
+  const runAction = async (operation: () => Promise<void>) => {
+    if (actionLock.current) return;
+    actionLock.current = true;
+    setActionPending(true);
+    setError(null);
+    try {
+      await operation();
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      actionLock.current = false;
+      setActionPending(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -117,7 +145,10 @@ export function ImportView({
         if (value !== null && value.phase !== 'idle') applyExecution(value);
         else setRecovery(summary.hasUnfinishedImport ? summary : null);
       })
-      .catch((reason) => active && setError(readError(reason)));
+      .catch((reason) => active && setError(readError(reason)))
+      .finally(() => {
+        if (active) setTaskLoading(false);
+      });
     return () => {
       active = false;
       requestVersion.current++;
@@ -136,12 +167,31 @@ export function ImportView({
 
   useEffect(() => {
     if (!preflightRunning) return;
+    let active = true;
+    let inFlight = false;
     const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
       void getImportPreflightStatus()
-        .then(setStatus)
-        .catch((reason) => setError(readError(reason)));
+        .then((value) => {
+          if (active)
+            setStatus((current) =>
+              current?.phase === 'cancelling' && value.phase === 'running'
+                ? { ...value, phase: 'cancelling' }
+                : value,
+            );
+        })
+        .catch((reason) => {
+          if (active) setError(readError(reason));
+        })
+        .finally(() => {
+          inFlight = false;
+        });
     }, 250);
-    return () => window.clearInterval(timer);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [preflightRunning]);
 
   useEffect(() => {
@@ -150,7 +200,7 @@ export function ImportView({
     let active = true;
     let inFlight = false;
     const timer = window.setInterval(() => {
-      if (inFlight) return;
+      if (inFlight || actionLock.current) return;
       inFlight = true;
       const version = ++requestVersion.current;
       void getImportExecutionStatus()
@@ -198,17 +248,31 @@ export function ImportView({
   const bindTarget = async () => {
     if (targetCandidate === null) return;
     setBindingTarget(true);
+    setConfirmImport(false);
+    setDraft(null);
+    setStatus(null);
     setError(null);
     try {
       await onBindTarget(targetCandidate.path);
       setTargetCandidate(null);
+      setSetup(await getImportSetup());
     } catch (reason) {
       setError(readError(reason));
+    } finally {
       setBindingTarget(false);
     }
   };
 
   const startPreflight = async () => {
+    if (
+      preflightLock.current ||
+      actionLock.current ||
+      !writeEnabled ||
+      !setup?.canStartPreflight
+    )
+      return;
+    preflightLock.current = true;
+    setConfirmImport(false);
     setError(null);
     setDraft(null);
     setStatus({
@@ -234,6 +298,7 @@ export function ImportView({
         // Keep the actionable preflight error already shown.
       }
     } finally {
+      preflightLock.current = false;
       setPreflightRunning(false);
     }
   };
@@ -250,6 +315,7 @@ export function ImportView({
   };
 
   const returnToSelection = async () => {
+    setConfirmImport(false);
     setDraft(null);
     setStatus(null);
     try {
@@ -261,7 +327,7 @@ export function ImportView({
   };
 
   const beginImport = async () => {
-    if (draft === null) return;
+    if (draft === null || !writeEnabled) return;
     requestVersion.current++;
     setStartingImport(true);
     setError(null);
@@ -294,12 +360,15 @@ export function ImportView({
   };
 
   const cancelRemaining = async () => {
+    setStopRequested(true);
+    requestVersion.current++;
     try {
       await cancelRemainingImport();
       requestVersion.current++;
       applyExecution(await getImportExecutionStatus());
       setConfirmCancel(false);
     } catch (reason) {
+      setStopRequested(false);
       setError(readError(reason));
     }
   };
@@ -316,7 +385,7 @@ export function ImportView({
         setRecovery(null);
         setDraft(null);
         setError(
-          '原来源身份不足以直接恢复。旧任务已结束，照片和临时文件保留，请重新预检并确认。',
+          '原来源身份不足以直接恢复。旧任务已结束，照片和临时文件保留，请重新检查导入内容并确认。',
         );
       } else applyExecution(latest);
     } catch (reason) {
@@ -339,14 +408,43 @@ export function ImportView({
   };
 
   const reportVisible = execution !== null && terminalExecution(execution);
-  const step = reportVisible
-    ? 4
-    : execution !== null || recovery !== null
-      ? 3
-      : draft !== null || preflightRunning
-        ? 2
-        : 1;
-  const targetPreview = setup?.target?.displayPath ?? 'FujiRoot';
+  const selectionVisible =
+    !execution && !recovery && !draft && !preflightRunning;
+  const step =
+    execution?.phase === 'awaitingPlanConfirmation'
+      ? 2
+      : reportVisible
+        ? 4
+        : execution || recovery
+          ? 3
+          : draft || preflightRunning
+            ? 2
+            : 1;
+  const busy =
+    loading || taskLoading || actionPending || bindingTarget || startingImport;
+  const activeExecution =
+    execution?.phase === 'running' || execution?.phase === 'validatingPlan';
+  const canCancel =
+    recovery !== null ||
+    (execution !== null &&
+      !['idle', 'completed', 'cancelled'].includes(execution.phase));
+  const canReset =
+    execution?.phase === 'completed' || execution?.phase === 'cancelled';
+  const sourcePath = draft?.sourcePath ?? setup?.source?.displayPath ?? null;
+  const targetPath = draft?.targetPath ?? setup?.target?.displayPath ?? null;
+  const newImport = async () => {
+    const next = await getImportSetup();
+    requestVersion.current++;
+    setSetup(next);
+    setExecution(null);
+    setRecovery(null);
+    setDraft(null);
+    setStatus(null);
+    setRecoveryItems([]);
+    setStopRequested(false);
+    setConfirmImport(false);
+    window.requestAnimationFrame(() => sourceButtonRef.current?.focus());
+  };
 
   return (
     <div className="screen import-screen">
@@ -359,341 +457,359 @@ export function ImportView({
         onOpenSettings={onOpenSettings}
         onBack={onOpenLibrary}
       />
-      <main className="tool-workspace import-workspace">
-        <aside className="tool-sidebar" aria-label="导入步骤">
-          <p className="sidebar-title">导入步骤</p>
-          {['选择位置', '预检与确认', '正在导入', '导入报告'].map(
+      <main className="import-workspace">
+        <nav className="import-stepper" aria-label="导入步骤">
+          {['选择来源与目标', '检查导入计划', '执行导入', '查看结果'].map(
             (label, index) => (
               <div
                 key={label}
-                className={
-                  index + 1 === step ? 'scan-step is-active' : 'scan-step'
-                }
                 aria-current={index + 1 === step ? 'step' : undefined}
+                className={index + 1 === step ? 'is-current' : ''}
               >
                 <span>{index + 1}</span>
-                <div>
-                  <strong>{label}</strong>
-                  {index + 1 < step && <small>已完成</small>}
-                </div>
+                <strong>{label}</strong>
               </div>
             ),
           )}
-        </aside>
-
-        <section className="tool-content import-content">
-          {loading && <p className="empty-records">正在读取导入位置…</p>}
-          {!loading && preflightRunning && status !== null && (
-            <PreflightProgress status={status} setup={setup} />
-          )}
-          {!loading && !preflightRunning && draft === null && (
+        </nav>
+        <section className="import-content" aria-label="导入内容">
+          {loading || taskLoading ? (
+            <p role="status">正在读取导入位置与任务…</p>
+          ) : (
             <>
-              {!writeEnabled && safetyMessage !== undefined && (
-                <div className="inline-error" role="status">
-                  Import 写入安全门已关闭：{safetyMessage}
-                </div>
-              )}
-              <div className="content-heading">
-                <p className="eyebrow">导入 · 第 1 步</p>
-                <h1>选择导入位置</h1>
-                <p>
-                  分别核对内存卡子目录和当前 Fuji
-                  图库；选择位置不会扫描或复制照片。
+              {!writeEnabled && (
+                <p className="import-notice" role="status">
+                  暂时无法导入：{safetyMessage ?? '请检查图库与磁盘状态。'}
                 </p>
-              </div>
-              <div className="continuous-panel import-location-panel">
-                <div className="setting-row import-location-row">
-                  <div className="setting-copy">
-                    <span className="setting-label">内存卡来源文件夹</span>
-                    {setup?.source !== null && setup?.source !== undefined ? (
-                      <>
-                        <strong>{setup.source.volumeName}</strong>
-                        <span className="long-path">
-                          {setup.source.displayPath}
-                        </span>
-                      </>
-                    ) : (
-                      <strong className="path-empty">
-                        {setup?.sourceNeedsReselection
-                          ? '请重新选择来源文件夹'
-                          : '尚未选择来源文件夹'}
-                      </strong>
-                    )}
-                    <span className="setting-label">
-                      将递归扫描此文件夹及其子目录
-                    </span>
+              )}
+              {selectionVisible ? (
+                <>
+                  <div className="import-heading">
+                    <h1>选择导入位置</h1>
+                    <p>从存储卡或其他文件夹复制照片到图库。</p>
                   </div>
-                  <button
-                    ref={sourceButtonRef}
-                    type="button"
-                    onClick={() => void chooseSource()}
-                    disabled={
-                      !writeEnabled ||
-                      (setup?.blockedReason !== null &&
-                        setup?.blockedReason !== undefined)
-                    }
-                  >
-                    {setup?.source === null || setup?.source === undefined
-                      ? '选择文件夹'
-                      : '更改'}
-                  </button>
-                </div>
-                <div className="setting-row import-location-row">
-                  <div className="setting-copy">
-                    <span className="setting-label">Fuji 图库根目录</span>
-                    <strong className="long-path">
-                      {setup?.target?.displayPath ?? '尚未选择 Fuji 图库'}
-                    </strong>
-                    <span className="setting-label">
-                      首次选择后记住；更改会重新绑定当前 Fuji 图库
-                    </span>
+                  <div className="import-location-cards">
+                    <section className="import-location-card">
+                      <span className="section-label">来源文件夹</span>
+                      <h2>从哪里导入</h2>
+                      <p className="long-path">
+                        {setup?.source?.displayPath ??
+                          (setup?.sourceNeedsReselection
+                            ? '请重新选择来源文件夹'
+                            : '尚未选择来源文件夹')}
+                      </p>
+                      {setup?.source && (
+                        <p className="import-muted">
+                          {setup.source.volumeName} · 包含子文件夹中的照片
+                        </p>
+                      )}
+                      <button
+                        ref={sourceButtonRef}
+                        type="button"
+                        disabled={busy || !writeEnabled}
+                        onClick={() => void runAction(chooseSource)}
+                      >
+                        {setup?.source ? '更改来源文件夹' : '选择来源文件夹'}
+                      </button>
+                    </section>
+                    <section className="import-location-card">
+                      <span className="section-label">目标图库</span>
+                      <h2>保存到哪里</h2>
+                      <p className="long-path">
+                        {setup?.target?.displayPath ?? '尚未选择图库'}
+                      </p>
+                      <p className="import-muted">
+                        新文件按拍摄日期保存，现有照片保持原位。
+                      </p>
+                      <button
+                        type="button"
+                        disabled={busy || !writeEnabled}
+                        onClick={() => void runAction(chooseTarget)}
+                      >
+                        {setup?.target ? '更改目标图库' : '选择目标图库'}
+                      </button>
+                    </section>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void chooseTarget()}
-                    disabled={
-                      !writeEnabled ||
-                      (setup?.blockedReason !== null &&
-                        setup?.blockedReason !== undefined)
-                    }
-                  >
-                    {setup?.target === null || setup?.target === undefined
-                      ? '选择文件夹'
-                      : '更改'}
-                  </button>
-                </div>
-                <div className="import-path-preview">
-                  <span>新照片预计保存位置</span>
-                  <code>JPG → {targetPreview}\2026\20260729\</code>
-                  <code>RAF → {targetPreview}\2026\20260729\raw\</code>
-                  <small>没有可靠拍摄日期的文件将进入 Unknown-Date。</small>
-                </div>
-              </div>
-              {setup?.blockedReason !== null &&
-                setup?.blockedReason !== undefined && (
-                  <p className="inline-error" role="status">
-                    {setup.blockedReason}
+                  <p className="import-source-note">
+                    本应用会将来源所在磁盘登记为只读来源，此后不能把它用于本应用的图库或缓存。
                   </p>
-                )}
-            </>
-          )}
-          {!loading &&
-            !preflightRunning &&
-            execution === null &&
-            recovery === null &&
-            draft !== null && <DraftResults draft={draft} />}
-          {!loading &&
-            !preflightRunning &&
-            (execution !== null || recovery !== null) && (
-              <ExecutionPanel execution={execution} recovery={recovery} />
-            )}
-          {recoveryItems.length > 0 && (
-            <section
-              className="import-recovery-files"
-              aria-label="保留文件与异常项"
-            >
-              <h2>保留文件与异常项</h2>
-              <p>文件不会自动删除；大小为已记录值，未知或中断时可能不完整。</p>
-              {recoveryItems.map((item) => (
-                <div key={item.ownershipId}>
-                  <p>
-                    {item.sourcePath} ·{' '}
-                    {item.excluded
-                      ? '已隔离'
-                      : item.state === 'Owned'
-                        ? '临时文件保留'
-                        : '结果待核对'}
-                  </p>
-                  <p className="long-path">{item.retainedPath}</p>
-                  {item.targetPath && (
-                    <p className="long-path">
-                      原计划目标（结果不明时需核对）：{item.targetPath}
+                  <details className="import-details">
+                    <summary>查看保存规则与位置要求</summary>
+                    <p>
+                      来源和目标需要位于不同磁盘卷；此只读约束仅适用于本应用，不改变
+                      Windows 磁盘权限。
+                    </p>
+                    <p>
+                      JPG/JPEG 保存到 年份／拍摄日期，RAF 保存到对应日期的 raw
+                      子文件夹。无法取得可靠拍摄日期时保存到 Unknown-Date。
+                    </p>
+                    <p>
+                      相同内容经核验后跳过；同名不同内容使用计划中的新名称，不覆盖已有文件。
+                    </p>
+                  </details>
+                  {setup?.blockedReason && (
+                    <p className="import-notice" role="status">
+                      {setup.blockedReason}
                     </p>
                   )}
+                </>
+              ) : (
+                <ImportLocations source={sourcePath} target={targetPath} />
+              )}
+              {preflightRunning && status && (
+                <PreflightProgress status={status} />
+              )}
+              {!preflightRunning && !execution && !recovery && draft && (
+                <DraftResults key={draft.draftDigest} draft={draft} />
+              )}
+              {!preflightRunning && (execution || recovery) && (
+                <ExecutionPanel
+                  execution={execution}
+                  recovery={recovery}
+                  stopping={stopRequested}
+                />
+              )}
+              {reportVisible && draft && (
+                <>
+                  {draft.summary.unreadableFiles > 0 && (
+                    <p className="import-notice" role="status">
+                      检查时有 {draft.summary.unreadableFiles}{' '}
+                      个文件无法读取，未纳入新增导入。可在下方计划中查看。
+                    </p>
+                  )}
+                  <details className="import-details">
+                    <summary>查看本次导入计划</summary>
+                    <p>以下是执行前的计划，实际完成数量以上方结果为准。</p>
+                    <DraftResults key={draft.draftDigest} draft={draft} />
+                  </details>
+                </>
+              )}
+              {recoveryItems.length > 0 && (
+                <section
+                  className="import-recovery-files"
+                  aria-label="保留文件与异常项"
+                >
+                  <h2>保留文件与异常项</h2>
                   <p>
-                    {item.observedBytes === null
-                      ? '大小未知'
-                      : formatBytes(item.observedBytes)}
+                    以下文件未自动删除。请核对位置后处理；显示的大小是已记录值。
                   </p>
-                </div>
-              ))}
-            </section>
+                  {recoveryItems.map((item) => (
+                    <div key={item.ownershipId}>
+                      <strong className="long-path">{item.sourcePath}</strong>
+                      <p>
+                        {item.excluded
+                          ? '已排除，将保留'
+                          : item.state === 'Owned'
+                            ? '临时文件保留'
+                            : '结果待核对'}{' '}
+                        ·{' '}
+                        {item.observedBytes === null
+                          ? '大小未知'
+                          : formatBytes(item.observedBytes)}
+                      </p>
+                      <p className="long-path">保留位置：{item.retainedPath}</p>
+                      {item.targetPath && (
+                        <p className="long-path">
+                          原计划目标：{item.targetPath}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </section>
+              )}
+            </>
           )}
-
-          {error !== null && (
+          {error && (
             <p className="inline-error import-error" role="alert">
               {error}
             </p>
           )}
         </section>
-
-        <aside className="tool-summary">
-          {execution !== null || recovery !== null ? (
-            <ExecutionSummary execution={execution} recovery={recovery} />
-          ) : draft === null ? (
-            <div>
-              <p className="section-label">只读预检</p>
-              <strong>
-                {preflightRunning
-                  ? '正在检查全部受支持文件'
-                  : '此步骤不会复制文件'}
-              </strong>
-              <p>来源卷保持只读；预检不会创建日期目录、partial 或正式照片。</p>
-            </div>
-          ) : (
-            <div>
-              <p className="section-label">本次导入计划</p>
-              <strong>{draft.summary.newGroups} 组将新增</strong>
-              <p>
-                {draft.summary.newFiles} 个真实文件 ·{' '}
-                {formatBytes(draft.summary.newBytes)}
-                <br />
-                {draft.summary.skippedFiles} 个已存在 ·{' '}
-                {draft.summary.unreadableFiles} 个无法读取
-              </p>
-            </div>
-          )}
-          <div className="summary-spacer" />
-          <div className="summary-actions">
-            {(recovery !== null ||
-              (execution !== null &&
-                execution.phase !== 'completed' &&
-                execution.phase !== 'cancelled')) &&
-              execution?.phase !== 'running' && (
-                <button type="button" onClick={() => setConfirmCancel(true)}>
-                  取消剩余导入
-                </button>
-              )}
-            {(recovery !== null ||
-              execution?.phase === 'awaitingSource' ||
-              execution?.phase === 'needsAttention') && (
+        <footer className="import-action-bar">
+          <div className="import-action-summary" aria-live="polite">
+            <strong>
+              {stopRequested && activeExecution
+                ? '正在停止导入…'
+                : execution
+                  ? executionPhaseLabel(execution)
+                  : recovery
+                    ? '等待处理未完成任务'
+                    : preflightRunning
+                      ? '正在检查导入内容'
+                      : draft
+                        ? `完整计划：新增 ${draft.summary.newFiles} 个文件 · ${formatBytes(draft.summary.newBytes)}`
+                        : '选好位置后，先检查导入内容'}
+            </strong>
+            <span>
+              {draft && !execution && !preflightRunning
+                ? `已有相同 ${draft.summary.skippedFiles} 个 · 无法读取 ${draft.summary.unreadableFiles} 个`
+                : execution
+                  ? `新增到图库 ${execution.publishedFiles} 个 · 未开始 ${execution.notStartedFiles} 个 · 需处理 ${execution.failedFiles} 个`
+                  : '来源照片不会被移动或删除'}
+            </span>
+          </div>
+          <div className="import-actions">
+            {preflightRunning ? (
               <button
                 type="button"
-                disabled={!writeEnabled}
-                onClick={() => void reconnectSource()}
+                disabled={actionPending || status?.phase === 'cancelling'}
+                onClick={() => void runAction(cancelPreflight)}
               >
-                重新选择原来源
+                {status?.phase === 'cancelling' ? '正在停止检查…' : '取消检查'}
               </button>
-            )}
-            {(recovery !== null ||
-              execution?.phase === 'needsAttention' ||
-              execution?.phase === 'completedWithErrors') &&
-              recoveryItems.some(
-                (item) => !item.excluded && item.canExclude,
-              ) && (
-                <button
-                  type="button"
-                  disabled={!writeEnabled}
-                  onClick={() => setConfirmIsolation(true)}
-                >
-                  隔离异常项并继续…
-                </button>
-              )}
-            {execution?.phase === 'running' ? (
-              <button type="button" onClick={() => setConfirmCancel(true)}>
-                取消剩余导入
-              </button>
-            ) : execution?.phase === 'awaitingPlanConfirmation' ? (
-              <button
-                className="button-primary"
-                type="button"
-                onClick={() => setConfirmImport(true)}
-                disabled={!writeEnabled}
-              >
-                重新确认并导入…
-              </button>
-            ) : recovery !== null ||
-              (execution !== null && retryableExecution(execution)) ? (
-              <button
-                className="button-primary"
-                type="button"
-                onClick={() => void resumeImport()}
-                disabled={!writeEnabled}
-              >
-                {execution?.phase === 'awaitingSpace'
-                  ? '重新检查空间'
-                  : '确认并继续恢复'}
-              </button>
-            ) : execution !== null ? (
-              <button type="button" onClick={onOpenLibrary}>
-                返回图库
-              </button>
-            ) : preflightRunning ? (
-              <button type="button" onClick={() => void cancelPreflight()}>
-                {status?.phase === 'cancelling' ? '正在取消…' : '取消预检'}
-              </button>
-            ) : draft === null ? (
-              <>
-                <button type="button" onClick={onOpenLibrary}>
-                  取消
-                </button>
-                <button
-                  className="button-primary"
-                  type="button"
-                  onClick={() => void startPreflight()}
-                  disabled={!writeEnabled || !setup?.canStartPreflight}
-                >
-                  开始只读预检
-                </button>
-              </>
             ) : (
               <>
-                <button type="button" onClick={() => void returnToSelection()}>
-                  返回选择位置
-                </button>
-                <button
-                  className="button-primary"
-                  type="button"
-                  onClick={() => setConfirmImport(true)}
-                  disabled={!writeEnabled}
-                >
-                  确认并导入…
-                </button>
+                {canCancel && (
+                  <button
+                    type="button"
+                    disabled={busy || stopRequested}
+                    onClick={() => setConfirmCancel(true)}
+                  >
+                    {stopRequested
+                      ? '正在停止…'
+                      : activeExecution
+                        ? '停止导入…'
+                        : '取消剩余导入'}
+                  </button>
+                )}
+                {(recovery ||
+                  execution?.phase === 'awaitingSource' ||
+                  execution?.phase === 'needsAttention') && (
+                  <button
+                    type="button"
+                    disabled={busy || !writeEnabled}
+                    onClick={() => void runAction(reconnectSource)}
+                  >
+                    重新选择原来源
+                  </button>
+                )}
+                {(recovery ||
+                  execution?.phase === 'needsAttention' ||
+                  execution?.phase === 'completedWithErrors') &&
+                  recoveryItems.some(
+                    (item) => !item.excluded && item.canExclude,
+                  ) && (
+                    <button
+                      type="button"
+                      disabled={busy || !writeEnabled}
+                      onClick={() => setConfirmIsolation(true)}
+                    >
+                      保留异常项并继续…
+                    </button>
+                  )}
+                {execution?.phase === 'awaitingPlanConfirmation' ? (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    disabled={busy || !writeEnabled || !execution.updatedPlan}
+                    onClick={() => setConfirmImport(true)}
+                  >
+                    重新确认并导入…
+                  </button>
+                ) : !activeExecution &&
+                  (recovery || (execution && retryableExecution(execution))) ? (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    disabled={busy || !writeEnabled}
+                    onClick={() => void runAction(resumeImport)}
+                  >
+                    {execution?.phase === 'awaitingSpace'
+                      ? '重新检查空间'
+                      : '检查并继续'}
+                  </button>
+                ) : !execution && !recovery && draft ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void runAction(returnToSelection)}
+                    >
+                      更改来源或目标
+                    </button>
+                    <button
+                      type="button"
+                      className="button-primary"
+                      disabled={busy || !writeEnabled}
+                      onClick={() => setConfirmImport(true)}
+                    >
+                      确认导入…
+                    </button>
+                  </>
+                ) : selectionVisible ? (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    disabled={
+                      busy || !writeEnabled || !setup?.canStartPreflight
+                    }
+                    onClick={() => void startPreflight()}
+                  >
+                    检查导入内容
+                  </button>
+                ) : null}
+                {canReset && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void runAction(newImport)}
+                  >
+                    导入其他照片
+                  </button>
+                )}
+                {reportVisible && (
+                  <button
+                    type="button"
+                    className={canReset ? 'button-primary' : undefined}
+                    disabled={busy}
+                    onClick={onOpenLibrary}
+                  >
+                    返回图库
+                  </button>
+                )}
               </>
             )}
           </div>
-        </aside>
+        </footer>
       </main>
-      <footer className="status-bar tool-status">
+      <footer className="status-bar import-status">
         <span>
-          {execution !== null
-            ? executionPhaseLabel(execution)
-            : draft !== null
-              ? '只读计划草案已生成'
-              : '内存卡只读'}
+          {step === 1
+            ? '选择位置'
+            : step === 2
+              ? '核对导入内容'
+              : step === 3
+                ? '处理导入任务'
+                : '查看导入结果'}
         </span>
-        <span>来源卷永久拒绝应用写入</span>
-        <span>
-          {execution?.phase === 'running'
-            ? '正式文件仅 no-replace 发布'
-            : preflightRunning
-              ? '正在只读检查'
-              : '安全门已启用'}
-        </span>
+        <span>JPG / JPEG / RAF</span>
+        <span />
       </footer>
-
       {confirmCancel && (
         <Modal
-          title="取消剩余导入"
+          title={activeExecution ? '停止导入' : '取消剩余导入'}
           confirmLabel="保留文件并取消"
-          onConfirm={() => void cancelRemaining()}
+          busy={actionPending}
+          onConfirm={() => void runAction(cancelRemaining)}
           onCancel={() => setConfirmCancel(false)}
         >
           <p>
-            已导入照片和临时文件均保留。等待当前操作安全收尾后结束任务，结果不明路径仍受保护。
+            已导入照片和临时文件均保留。等待当前操作结束后停止，不会继续处理剩余文件。
           </p>
         </Modal>
       )}
       {confirmIsolation && (
         <Modal
-          title="隔离异常项"
+          title="保留异常项并继续"
           className="import-recovery-modal"
-          confirmLabel="隔离并继续安全项"
-          onConfirm={() => void isolateAndContinue()}
+          confirmLabel="保留异常项并继续"
+          busy={actionPending}
+          confirmDisabled={!writeEnabled}
+          onConfirm={() => void runAction(isolateAndContinue)}
           onCancel={() => setConfirmIsolation(false)}
         >
           <p>
-            下列项目将保留并从后续导入中排除，剩余文件会重新验证；计划变化仍需确认。
+            下列项目将保留并从后续导入中排除。其余文件会重新检查；计划变化时仍需再次确认。
           </p>
           {recoveryItems
             .filter((item) => !item.excluded && item.canExclude)
@@ -704,147 +820,66 @@ export function ImportView({
             ))}
         </Modal>
       )}
-      {targetCandidate !== null && (
+      {targetCandidate && (
         <Modal
           title={
             targetCandidate.candidate.reconnectsExistingLibrary
               ? '重新连接原图库'
-              : '切换到新的 Fuji 图库'
+              : '切换到新的图库'
           }
           confirmLabel={
             targetCandidate.candidate.reconnectsExistingLibrary
               ? '确认重新连接'
               : '确认切换'
           }
-          busy={bindingTarget}
-          onConfirm={() => void bindTarget()}
+          busy={bindingTarget || actionPending}
+          confirmDisabled={!writeEnabled}
+          onConfirm={() => void runAction(bindTarget)}
           onCancel={() => setTargetCandidate(null)}
         >
           <p className="long-path">{targetCandidate.candidate.displayPath}</p>
           <p>
             {targetCandidate.candidate.reconnectsExistingLibrary
-              ? '卷身份和根目录身份匹配；原索引、浏览位置、标记与历史会保留。'
-              : '旧图库状态会保留但不会迁移；新图库需要完成首次全量扫描。'}
+              ? '已识别为原图库，保留原索引、浏览位置和标记。'
+              : '旧图库状态保留，新图库需要完成首次扫描。不会移动现有照片。'}
           </p>
         </Modal>
       )}
-      {confirmImport && draft !== null && (
+      {confirmImport && draft && (
         <Modal
-          title="最终确认导入"
+          title="确认导入"
           confirmLabel="开始导入"
-          busy={startingImport}
-          onConfirm={() => void beginImport()}
+          busy={startingImport || actionPending}
+          confirmDisabled={!writeEnabled}
+          onConfirm={() => void runAction(beginImport)}
           onCancel={() => setConfirmImport(false)}
         >
+          <ImportLocations
+            source={draft.sourcePath}
+            target={draft.targetPath}
+          />
           <p>
-            将新增 {draft.summary.newFiles} 个文件（
-            {formatBytes(draft.summary.newBytes)}），跳过{' '}
-            {draft.summary.skippedFiles} 个已完整证明的重复文件。
+            将按完整计划新增{' '}
+            <strong>
+              {draft.summary.newFiles} 个文件（
+              {formatBytes(draft.summary.newBytes)}）
+            </strong>
+            ，跳过 {draft.summary.skippedFiles} 个已有相同文件。
           </p>
-          <p>
-            点击“开始导入”后才会创建 TaskIntent、ImportJob 和首个 Confirmed
-            Generation；执行前仍会全量验证计划并检查空间。
-          </p>
-          <p>来源卷保持零写入，正式目标使用 ReplaceIfExists=FALSE 发布。</p>
+          {draft.summary.conflictGroups > 0 && (
+            <p>
+              {draft.summary.conflictGroups}{' '}
+              组存在同名不同内容的文件，将使用计划中的新名称导入。
+            </p>
+          )}
+          {draft.summary.unreadableFiles > 0 && (
+            <p>
+              {draft.summary.unreadableFiles} 个文件无法读取，本次不会导入。
+            </p>
+          )}
+          <p>确认后开始导入。来源或目标发生变化时，会要求重新检查计划。</p>
         </Modal>
       )}
-    </div>
-  );
-}
-
-function ExecutionPanel({
-  execution,
-  recovery,
-}: {
-  execution: ImportExecutionStatus | null;
-  recovery: ImportRecoverySummary | null;
-}) {
-  if (recovery !== null && execution === null) {
-    return (
-      <div className="content-heading" aria-live="polite">
-        <p className="eyebrow">导入 · 恢复</p>
-        <h1>检测到未终结导入</h1>
-        <p>{recovery.message}</p>
-        <p>
-          {recovery.completedFiles} 个已完成，{recovery.unresolvedFiles}{' '}
-          个待协调；不会自动恢复写入。
-        </p>
-      </div>
-    );
-  }
-  if (execution === null) return null;
-  if (
-    execution.phase === 'awaitingPlanConfirmation' &&
-    execution.updatedPlan !== null
-  ) {
-    return (
-      <>
-        <p className="inline-error" role="status">
-          磁盘现状改变了未完成计划。请检查更新后的名称、分类与新增字节，再次明确确认。
-        </p>
-        <DraftResults draft={execution.updatedPlan} />
-      </>
-    );
-  }
-  return (
-    <div className="content-heading" aria-live="polite">
-      <p className="eyebrow">
-        导入 · 第 {terminalExecution(execution) ? '4' : '3'} 步
-      </p>
-      <h1>{executionPhaseLabel(execution)}</h1>
-      {execution.message !== null && <p>{execution.message}</p>}
-      {execution.currentFile !== null && (
-        <p className="long-path">
-          {execution.currentAction}：{execution.currentFile}
-        </p>
-      )}
-      {execution.space !== null && (
-        <p className="inline-error" role="status">
-          还缺 {formatBytes(execution.space.missingBytes)}；本轮没有创建
-          Attempt，也没有写文件。
-        </p>
-      )}
-      <dl className="preflight-progress-metrics">
-        <div>
-          <dt>已完成</dt>
-          <dd>{execution.completedFiles}</dd>
-        </div>
-        <div>
-          <dt>已发布</dt>
-          <dd>{execution.publishedFiles}</dd>
-        </div>
-        <div>
-          <dt>已跳过</dt>
-          <dd>{execution.skippedFiles}</dd>
-        </div>
-        <div>
-          <dt>需处理</dt>
-          <dd>{execution.failedFiles}</dd>
-        </div>
-      </dl>
-      <p>来源写请求：{execution.sourceWriteRequests}（必须为 0）</p>
-    </div>
-  );
-}
-
-function ExecutionSummary({
-  execution,
-  recovery,
-}: {
-  execution: ImportExecutionStatus | null;
-  recovery: ImportRecoverySummary | null;
-}) {
-  return (
-    <div>
-      <p className="section-label">导入执行</p>
-      <strong>
-        {execution !== null ? executionPhaseLabel(execution) : '等待显式恢复'}
-      </strong>
-      <p>
-        {execution !== null
-          ? `${execution.completedFiles} 个完成 · ${execution.notStartedFiles} 个未开始`
-          : `${recovery?.unresolvedFiles ?? 0} 个待协调`}
-      </p>
     </div>
   );
 }
@@ -854,203 +889,14 @@ function terminalExecution(status: ImportExecutionStatus): boolean {
     status.phase,
   );
 }
-
 function retryableExecution(status: ImportExecutionStatus): boolean {
   return [
-    'awaitingPlanConfirmation',
     'awaitingSpace',
     'awaitingSource',
     'needsAttention',
     'completedWithErrors',
   ].includes(status.phase);
 }
-
-function executionPhaseLabel(status: ImportExecutionStatus): string {
-  const labels: Record<ImportExecutionStatus['phase'], string> = {
-    idle: '等待开始',
-    validatingPlan: '正在全量验证计划',
-    awaitingPlanConfirmation: '计划已变化，等待重新确认',
-    awaitingSpace: '空间不足',
-    running: '正在安全导入',
-    awaitingSource: '等待原始内存卡',
-    needsAttention: '需要人工处理',
-    completed: '导入完成',
-    completedWithErrors: '导入部分完成',
-    cancelled: '导入已取消',
-  };
-  return labels[status.phase];
-}
-
-function PreflightProgress({
-  status,
-  setup,
-}: {
-  status: ImportPreflightStatus;
-  setup: ImportSetupSnapshot | null;
-}) {
-  return (
-    <div className="import-progress" aria-live="polite">
-      <div className="content-heading">
-        <p className="eyebrow">导入 · 第 2 步</p>
-        <h1>正在只读预检</h1>
-        <p>不会复制、移动或删除内存卡中的文件。</p>
-      </div>
-      <div className="scan-orbit" aria-hidden="true">
-        <i />
-        <i />
-        <span>只读</span>
-      </div>
-      <dl className="preflight-progress-metrics">
-        <div>
-          <dt>已扫描文件</dt>
-          <dd>{status.scannedFiles.toLocaleString('zh-CN')}</dd>
-        </div>
-        <div>
-          <dt>识别照片文件</dt>
-          <dd>{status.supportedFiles.toLocaleString('zh-CN')}</dd>
-        </div>
-      </dl>
-      <p className="long-path">
-        <strong>来源：</strong> {setup?.source?.displayPath}
-      </p>
-      <p className="long-path">
-        <strong>目标：</strong> {setup?.target?.displayPath}
-      </p>
-      <p className="current-scan-path">
-        当前：{status.currentRelativePath ?? '正在验证所选位置'}
-      </p>
-    </div>
-  );
-}
-
-function DraftResults({ draft }: { draft: ImportPreflightDraft }) {
-  const groups = groupItems(draft.items);
-  return (
-    <>
-      <div className="content-heading">
-        <p className="eyebrow">导入 · 第 2 步</p>
-        <h1>预检与确认</h1>
-        <p>
-          这是尚未创建导入任务的“本次导入计划”。执行时仍须重新验证已存在项目。
-        </p>
-      </div>
-      <div className="preflight-summary-grid">
-        <SummaryMetric
-          label="将新增"
-          value={`${draft.summary.newFiles} 个文件`}
-        />
-        <SummaryMetric
-          label="已存在，跳过"
-          value={`${draft.summary.skippedFiles} 个文件`}
-        />
-        <SummaryMetric
-          label="同名但内容不同"
-          value={`${draft.summary.conflictGroups} 组`}
-        />
-        <SummaryMetric
-          label="日期未知"
-          value={`${draft.summary.unknownDateFiles} 个文件`}
-        />
-        <SummaryMetric
-          label="无法读取"
-          value={`${draft.summary.unreadableFiles} 个文件`}
-          warning={draft.summary.unreadableFiles > 0}
-        />
-      </div>
-      {draft.summary.unreadableFiles > 0 && (
-        <p className="inline-error" role="status">
-          无法读取的文件不会被混入“跳过”；其余安全项目仍保留在本次计划中。
-        </p>
-      )}
-      <div className="import-plan-list">
-        {Array.from(groups.entries()).map(([group, items]) => (
-          <details key={group} className="import-plan-group" open>
-            <summary>
-              <strong>{group}</strong>
-              <span>{groupSummary(items)}</span>
-            </summary>
-            {items.map((item) => (
-              <div className="import-plan-item" key={item.sourceRelativePath}>
-                <span
-                  className={`plan-badge disposition-${item.disposition.toLowerCase()}`}
-                >
-                  {dispositionLabel(item)}
-                </span>
-                <div>
-                  <strong>{item.fileName}</strong>
-                  <span>{item.sourceRelativePath}</span>
-                  {item.targetRelativePath !== null && (
-                    <code>→ {item.targetRelativePath}</code>
-                  )}
-                  {item.warning !== null && <em>{item.warning}</em>}
-                </div>
-                <span>{formatBytes(item.sizeBytes)}</span>
-              </div>
-            ))}
-          </details>
-        ))}
-      </div>
-      <p className="preflight-proof-note">
-        “已存在”已由当前双端内容和路径绑定证明；不是由历史记录、文件名或哈希单独推断。
-      </p>
-    </>
-  );
-}
-
-function SummaryMetric({
-  label,
-  value,
-  warning = false,
-}: {
-  label: string;
-  value: string;
-  warning?: boolean;
-}) {
-  return (
-    <div className={warning ? 'is-warning' : undefined}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function groupItems(items: readonly ImportDraftItem[]) {
-  const groups = new Map<string, ImportDraftItem[]>();
-  for (const item of items) {
-    const current = groups.get(item.logicalGroup) ?? [];
-    current.push(item);
-    groups.set(item.logicalGroup, current);
-  }
-  return groups;
-}
-
-function groupSummary(items: readonly ImportDraftItem[]): string {
-  if (items.some((item) => item.disposition === 'Unreadable'))
-    return '无法读取';
-  if (items.some((item) => item.disposition === 'Conflict'))
-    return '使用安全后缀';
-  if (items.every((item) => item.disposition === 'Skip')) return '已存在';
-  return `${items.filter((item) => item.disposition === 'New').length} 个将新增`;
-}
-
-function dispositionLabel(item: ImportDraftItem): string {
-  if (item.disposition === 'Skip') return '跳过';
-  if (item.disposition === 'Conflict') return '改后缀';
-  if (item.disposition === 'Unreadable') return '读取失败';
-  if (item.dateUnknown) return '日期未知';
-  return '新增';
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const index = Math.min(
-    units.length - 1,
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-  );
-  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
-}
-
 function readError(reason: unknown): string {
   if (typeof reason === 'string') return reason;
   if (reason && typeof reason === 'object') {
@@ -1059,5 +905,5 @@ function readError(reason: unknown): string {
     if ('message' in reason && typeof reason.message === 'string')
       return reason.message;
   }
-  return '导入预检暂时不可用，请核对位置后重试。';
+  return '暂时无法完成导入操作，请检查位置后重试。';
 }

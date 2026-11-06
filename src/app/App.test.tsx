@@ -1043,3 +1043,35 @@ describe('phase one integration regressions', () => {
     ).toHaveAttribute('aria-current', 'true');
   });
 });
+
+test('returning from import reloads the library snapshot and preserves selection', async () => {
+  const getSnapshot = libraryCommands.getLibrarySnapshot;
+  const read = vi.spyOn(libraryCommands, 'getLibrarySnapshot');
+  render(<App />);
+  await screen.findByRole('button', { name: '第 3 张：DSCF1031.JPG' });
+  fireEvent.click(screen.getByRole('button', { name: '导入照片' }));
+  await screen.findByRole('heading', { name: '选择导入位置' });
+  const latest = await getSnapshot('captureDesc');
+  read.mockResolvedValue({
+    ...latest,
+    photos: [
+      ...latest.photos,
+      {
+        ...latest.photos[0],
+        photoId: 'new-import-photo',
+        fileName: 'NEW_IMPORT.JPG',
+      },
+    ],
+  });
+  const before = read.mock.calls.length;
+  fireEvent.click(
+    within(screen.getByRole('banner')).getByRole('button', {
+      name: '返回图库',
+    }),
+  );
+  await screen.findByText('共 13 张');
+  expect(read.mock.calls.length).toBeGreaterThan(before);
+  expect(
+    screen.getByRole('button', { name: '第 3 张：DSCF1031.JPG' }),
+  ).toHaveAttribute('aria-current', 'true');
+});

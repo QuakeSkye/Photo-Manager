@@ -2265,3 +2265,316 @@ kbd {
   overflow: auto;
   overscroll-behavior: contain;
 }
+/* Import workflow: content-first layout, scoped to this page. */
+.import-workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--canvas);
+}
+.import-stepper {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.import-stepper > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.import-stepper > div > span {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+.import-stepper .is-current {
+  color: var(--text-primary);
+}
+.import-stepper .is-current > span {
+  color: white;
+  background: var(--selection);
+  border-color: var(--selection);
+}
+.import-content {
+  overflow: auto;
+  min-height: 0;
+  padding: 24px max(24px, calc((100% - 1120px) / 2));
+}
+.import-heading {
+  margin-bottom: 12px;
+}
+.import-heading h1,
+.import-progress-panel h1 {
+  font-size: 22px;
+  margin-bottom: 6px;
+}
+.import-heading p {
+  margin: 0;
+}
+.import-content p {
+  font-size: 13px;
+  line-height: 1.65;
+}
+.import-content .import-muted,
+.import-source-note {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.import-location-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-bottom: 18px;
+}
+.import-location-card {
+  min-width: 0;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.import-location-card h2 {
+  font-size: 17px;
+  margin: 8px 0 16px;
+}
+.import-location-card .long-path {
+  min-height: 44px;
+  font-weight: 600;
+}
+.import-locations {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.import-locations dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 5px;
+}
+.import-locations dd {
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 600;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.import-location-arrow {
+  color: var(--text-secondary);
+}
+.modal .import-locations {
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 12px;
+}
+.modal .import-location-arrow {
+  display: none;
+}
+.import-plan-filters {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.import-plan-filters button {
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.import-plan-filters button span {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 7px;
+}
+.import-plan-filters button strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.import-plan-filters button[aria-pressed='true'] {
+  border-color: var(--selection);
+  box-shadow: inset 0 0 0 1px var(--selection);
+}
+.import-plan-filters button[aria-pressed='true'] span {
+  color: var(--selection);
+}
+.import-plan-scope {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.import-notice {
+  padding: 12px 16px;
+  border: 1px solid var(--warning-border);
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  margin: 16px 0;
+}
+.import-notice p {
+  margin: 6px 0 0;
+}
+.import-plan-group {
+  background: var(--surface);
+}
+.import-plan-item {
+  grid-template-columns: 80px minmax(0, 1fr) 90px;
+  padding: 16px;
+}
+.import-plan-item strong {
+  font-size: 13px;
+}
+.import-plan-item small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 400;
+}
+.import-plan-item code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.import-plan-item > span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.import-plan-empty {
+  padding: 32px;
+  border: 1px dashed var(--border);
+  text-align: center;
+}
+.import-date-tag {
+  font-size: 11px;
+}
+.import-details {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface);
+}
+.import-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.import-details p {
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+.import-details ul {
+  margin-bottom: 0;
+}
+.import-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  margin: 20px 0 12px;
+}
+.import-metrics > div {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.import-metrics dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.import-metrics dd {
+  margin: 8px 0 0;
+  font-size: 24px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.import-metrics small {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.import-progress-panel progress,
+.import-execution > progress {
+  width: 100%;
+  height: 6px;
+  accent-color: var(--selection);
+}
+.import-recovery-files h2 {
+  font-size: 16px;
+}
+.import-recovery-files .long-path {
+  overflow-wrap: anywhere;
+}
+.import-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.import-action-summary {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  font-size: 13px;
+}
+.import-action-summary > span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.import-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 66%;
+}
+.import-actions button {
+  min-height: 36px;
+  font-size: 12px;
+}
+.import-status {
+  color: var(--text-secondary);
+}
+@media (max-width: 1200px) {
+  .import-stepper {
+    gap: 18px;
+  }
+  .import-action-summary {
+    max-width: 34%;
+  }
+}
+.import-plan .import-plan-list {
+  max-width: none;
+}
+.import-plan .import-plan-item {
+  font-size: 12px;
+}
+.import-plan .import-plan-group summary {
+  font-size: 13px;
+}
+.import-plan .plan-badge {
+  font-size: 11px;
+}

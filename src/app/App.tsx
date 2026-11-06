@@ -600,6 +600,21 @@ function AppContent() {
     void restoreLibraryContext();
   };
 
+  const returnFromImport = async () => {
+    if (mutationInFlight.current) return;
+    mutationInFlight.current = true;
+    try {
+      const latest = await getLibrarySnapshot(
+        savedLibraryContextRef.current.sortMode,
+      );
+      await restoreLibraryContext(latest);
+    } catch (reason) {
+      setError(readError(reason));
+    } finally {
+      mutationInFlight.current = false;
+    }
+  };
+
   const openImport = () => {
     if (mutationInFlight.current || snapshot === null) return;
     snapshotLibraryContextIfNeeded();
@@ -1072,7 +1087,7 @@ function AppContent() {
         <ImportView
           pendingDeleteSummary={snapshot.pendingDeleteSummary}
           settingsButtonRef={settingsButtonRef}
-          onOpenLibrary={openLibrary}
+          onOpenLibrary={() => void returnFromImport()}
           onOpenPendingDelete={() => void openPendingDelete()}
           onOpenSettings={openSettings}
           onBindTarget={async (path) => {
